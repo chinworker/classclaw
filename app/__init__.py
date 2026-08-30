@@ -1,0 +1,2 @@
+"""ClassClaw class-management backend."""
+

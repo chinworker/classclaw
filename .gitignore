@@ -1,0 +1,14 @@
+.venv/
+node_modules/
+dist/
+.DS_Store
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.env
+data/*.db
+data/*.db-*
+data/attachments/**
+!data/attachments/.gitkeep
+data/openclaw-agents/
+backups/

@@ -1,0 +1,39 @@
+{
+  "id": "classclaw",
+  "name": "ClassClaw 班级管理",
+  "description": "Parse, preview, confirm in chat, and write class-management information through ClassClaw.",
+  "version": "0.1.0",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "baseUrl": { "type": "string", "description": "ClassClaw backend base URL" },
+      "apiToken": { "type": "string", "description": "Bearer token matching CLASSCLAW_API_TOKEN" },
+      "timeoutMs": { "type": "number", "minimum": 1000, "maximum": 120000 },
+      "allowedUploadRoots": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Host directories from which the plugin may upload files"
+      },
+      "agentClasses": {
+        "type": "object",
+        "additionalProperties": { "type": "string" },
+        "description": "Provisioned OpenClaw agent id to immutable ClassClaw class id mapping"
+      }
+    }
+  },
+  "activation": { "onStartup": true },
+  "contracts": {
+    "tools": [
+      "classclaw_health", "classclaw_upload_file", "classclaw_read",
+      "classclaw_analyze_interaction",
+      "classclaw_propose_write", "classclaw_commit_write", "classclaw_commit_writes",
+      "classclaw_mark_reminder_sent", "classclaw_cancel_write"
+    ]
+  },
+  "toolMetadata": {
+    "classclaw_commit_write": { "optional": true },
+    "classclaw_commit_writes": { "optional": true }
+  },
+  "skills": ["skills/classclaw-manager"]
+}

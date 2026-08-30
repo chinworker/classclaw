@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="ClassClaw 后端综合接口验收台">
+  <title>ClassClaw · API 验收台</title>
+  <link rel="stylesheet" href="./test.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="./"><span>C</span><div><b>ClassClaw</b><small>后端 API 验收台</small></div></a>
+    <nav><a href="./">班级创建向导</a><a href="/docs" target="_blank">Swagger</a><button id="logout" class="ghost hidden">退出</button></nav>
+  </header>
+
+  <main class="page">
+    <section id="loginCard" class="login-card card">
+      <div><p class="eyebrow">账户验证</p><h1>登录后全面检查后端</h1><p>初始管理员为 <code>admin</code>，默认密码为 <code>32767</code>。</p></div>
+      <form id="loginForm">
+        <label>用户名<input id="username" autocomplete="username" value="admin" required></label>
+        <label>密码<input id="password" type="password" autocomplete="current-password" value="32767" required></label>
+        <button class="primary" type="submit">登录验收台</button>
+      </form>
+      <p id="loginError" class="error hidden"></p>
+    </section>
+
+    <section id="console" class="console hidden">
+      <aside class="sidebar card">
+        <div class="identity"><span id="avatar">管</span><div><b id="identityName">—</b><small id="identityRole">—</small></div></div>
+        <nav id="tabs">
+          <button class="active" data-tab="overview">总览与自动巡检</button>
+          <button data-tab="capabilities">后端功能地图</button>
+          <button data-tab="users" data-admin>用户管理</button>
+          <button data-tab="classes">班级与归属</button>
+          <button data-tab="agents" data-admin>智能体与微信</button>
+          <button data-tab="database" data-admin>数据库调试</button>
+          <button data-tab="api">通用 API 调试</button>
+        </nav>
+      </aside>
+
+      <div class="content">
+        <section class="panel active" data-panel="overview">
+          <div class="heading"><div><p class="eyebrow">Overview</p><h2>运行状态</h2></div><button id="runChecks" class="primary">运行自动巡检</button></div>
+          <div class="metric-grid">
+            <article class="metric"><span>当前账户</span><b id="metricUser">—</b><small id="metricUserSub">—</small></article>
+            <article class="metric"><span>OpenClaw</span><b id="metricOpenClaw">待检查</b><small id="metricOpenClawSub">—</small></article>
+            <article class="metric"><span>班级</span><b id="metricClasses">—</b><small>当前权限可见</small></article>
+            <article class="metric"><span>数据库表</span><b id="metricTables">—</b><small>管理员只读调试</small></article>
+          </div>
+          <div class="card inset"><h3>巡检结果</h3><div id="checkResults" class="checks"><p class="muted">点击“运行自动巡检”检查认证、权限、OpenClaw、班级、智能体和数据库接口。</p></div></div>
+        </section>
+
+        <section class="panel" data-panel="capabilities">
+          <div class="heading"><div><p class="eyebrow">Backend map</p><h2>后端功能梳理</h2></div></div>
+          <div id="capabilityGrid" class="capability-grid"></div>
+        </section>
+
+        <section class="panel" data-panel="users">
+          <div class="heading"><div><p class="eyebrow">Admin</p><h2>用户管理</h2></div><button id="reloadUsers" class="secondary">刷新</button></div>
+          <form id="createUser" class="inline-form card inset">
+            <label>用户名<input name="username" required placeholder="例如 teacher01"></label>
+            <label>显示名<input name="display_name" placeholder="例如 李老师"></label>
+            <label>初始密码<input name="password" value="32767" required></label>
+            <button class="primary" type="submit">添加班主任</button>
+          </form>
+          <div class="table-wrap"><table><thead><tr><th>用户名</th><th>身份</th><th>显示名</th><th>班级</th><th>状态</th><th>操作</th></tr></thead><tbody id="userRows"></tbody></table></div>
+        </section>
+
+        <section class="panel" data-panel="classes">
+          <div class="heading"><div><p class="eyebrow">Ownership</p><h2>班级与归属</h2></div><div class="actions"><a class="button secondary" href="./">打开创建向导</a><button id="reloadClasses" class="secondary">刷新</button></div></div>
+          <p class="note">班主任只会看到自己的一个班级；管理员可以看到全部班级，并在用户管理页分配历史班级。</p>
+          <div id="classCards" class="card-grid"></div>
+        </section>
+
+        <section class="panel" data-panel="agents">
+          <div class="heading"><div><p class="eyebrow">OpenClaw</p><h2>智能体与微信</h2></div><button id="reloadAgents" class="secondary">刷新</button></div>
+          <div id="agentCards" class="card-grid"></div>
+          <div id="qrBox" class="qr-box hidden"><button id="closeQr" class="close" aria-label="关闭">×</button><h3>微信绑定二维码</h3><img id="agentQr" alt="微信登录二维码"><p id="qrMessage"></p></div>
+        </section>
+
+        <section class="panel" data-panel="database">
+          <div class="heading"><div><p class="eyebrow">Read only</p><h2>数据库调试</h2></div><button id="reloadDatabase" class="secondary">刷新表清单</button></div>
+          <p class="note">仅允许选择元数据中的表和分页读取，不接受 SQL；密码与会话令牌已脱敏。</p>
+          <div class="database-layout"><div id="tableList" class="table-list"></div><div><div id="tableMeta" class="table-meta">选择左侧数据表</div><div id="databaseRows" class="json-view">—</div></div></div>
+        </section>
+
+        <section class="panel" data-panel="api">
+          <div class="heading"><div><p class="eyebrow">API Console</p><h2>通用接口调试器</h2></div></div>
+          <form id="apiForm" class="api-form card inset">
+            <select id="apiMethod"><option>GET</option><option>POST</option><option>PATCH</option><option>PUT</option><option>DELETE</option></select>
+            <input id="apiPath" value="/auth/me" aria-label="接口路径">
+            <button class="primary" type="submit">发送</button>
+            <textarea id="apiBody" rows="8" spellcheck="false" placeholder='JSON 请求体，例如 {"username":"teacher01"}'></textarea>
+          </form>
+          <div class="response-head"><b>响应</b><span id="responseStatus">尚未请求</span></div><pre id="apiResponse" class="json-view">—</pre>
+        </section>
+      </div>
+    </section>
+  </main>
+  <div id="toast" class="toast" role="status"></div>
+  <script type="module" src="./test.js"></script>
+</body>
+</html>
