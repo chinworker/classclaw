@@ -10,8 +10,8 @@ from app.core.responses import ok
 from app.core.security import require_owned_class, require_owned_record, require_owned_student, scoped_class_id
 from app.database import get_db
 from app.models.entities import AttendanceRecord, Exam, Homework, HomeworkStudentStatus, Score, StudentEvent
-from app.schemas.domain import AttendanceSet, ExamCreate, HomeworkBatchStatus, HomeworkCreate, ScoreBatch, StudentEventCreate
-from app.services import academic as service
+from app.schemas.domain import AttendanceSet, ExamCreate, HomeworkBatchStatus, HomeworkCreate, ScoreBatch, StudentEventAnalyzeRequest, StudentEventCreate
+from app.services import academic as service, admin_console, openclaw_bridge
 
 
 router = APIRouter(tags=["作业、表现、考勤与成绩"])
@@ -70,6 +70,15 @@ def student_event_create(request: Request, body: StudentEventCreate, db: Session
     require_owned_class(request, body.class_id)
     require_owned_student(request, db, body.student_id)
     return ok(request, service.create_student_event(db, body), "学生事件已登记", 201)
+
+
+@router.post("/classes/{class_id}/student-events/analyze")
+async def student_event_analyze(request: Request, class_id: str, body: StudentEventAnalyzeRequest, db: Session = Depends(get_db)):
+    require_owned_class(request, class_id)
+    require_owned_student(request, db, body.student_id)
+    admin_console.require_feature(db, "feature.event_ai")
+    result = await openclaw_bridge.analyze_student_event(db, class_id, body.student_id, body.event_date, body.content, body.subject)
+    return ok(request, result, "事件已分析，请核对后登记")
 
 
 @router.post("/student-events/batch", status_code=201)
@@ -145,6 +154,19 @@ def attendance_summary(request: Request, class_id: str, start_date: date, end_da
 def exam_create(request: Request, body: ExamCreate, db: Session = Depends(get_db)):
     require_owned_class(request, body.class_id)
     return ok(request, service.create_exam(db, body), "考试已创建", 201)
+
+
+@router.get("/exams")
+def exam_list(
+    request: Request,
+    class_id: str | None = None,
+    status: str | None = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    db: Session = Depends(get_db),
+):
+    class_id = scoped_class_id(request, class_id)
+    return ok(request, service.list_exams(db, class_id=class_id, status=status, start_date=start_date, end_date=end_date))
 
 
 @router.post("/exams/{exam_id}/scores", status_code=201)

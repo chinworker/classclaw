@@ -286,6 +286,38 @@ def create_exam(db: Session, data: ExamCreate, *, commit: bool = True) -> Exam:
     return exam
 
 
+def list_exams(
+    db: Session,
+    *,
+    class_id: str | None = None,
+    status: str | None = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
+) -> list[dict]:
+    stmt = select(Exam)
+    if class_id:
+        stmt = stmt.where(Exam.class_id == class_id)
+    if status:
+        stmt = stmt.where(Exam.status == status)
+    if start_date:
+        stmt = stmt.where(Exam.exam_date >= start_date)
+    if end_date:
+        stmt = stmt.where(Exam.exam_date <= end_date)
+    exams = list(db.scalars(stmt.order_by(Exam.exam_date.desc(), Exam.created_at.desc())))
+    if not exams:
+        return []
+
+    subjects_by_exam: dict[str, list[dict]] = defaultdict(list)
+    subjects = db.scalars(
+        select(ExamSubject)
+        .where(ExamSubject.exam_id.in_([exam.id for exam in exams]))
+        .order_by(ExamSubject.exam_id, ExamSubject.subject)
+    )
+    for subject in subjects:
+        subjects_by_exam[subject.exam_id].append({"id": subject.id, "subject": subject.subject, "full_score": subject.full_score})
+    return [{**entity_dict(exam), "subjects": subjects_by_exam[exam.id]} for exam in exams]
+
+
 def save_scores(db: Session, exam_id: str, data: ScoreBatch, *, commit: bool = True) -> list[Score]:
     exam = db.get(Exam, exam_id)
     if not exam:

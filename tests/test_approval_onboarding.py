@@ -1,10 +1,11 @@
 import base64
+import asyncio
 
 from sqlalchemy import func, select
 from types import SimpleNamespace
 
 from app.core.errors import AppError
-from app.models.entities import AttendanceRecord, BaseTimetable, ClassAgentBinding, ClassOnboardingSession, ClassRoom, ClassSubject, InteractionAnalysis, Student, WriteProposal
+from app.models.entities import AttendanceRecord, BaseTimetable, ClassAgentBinding, ClassOnboardingSession, ClassPeriod, ClassRoom, ClassSubject, InteractionAnalysis, Student, WriteProposal
 from app.schemas.domain import ClassOnboardingUpdate
 from app.services import approval as approval_service
 from app.services import openclaw_bridge
@@ -21,7 +22,7 @@ def test_class_onboarding_is_draft_until_explicit_confirmation(client, db):
             {"student_no": "001", "name": "张三", "gender": "男"},
             {"student_no": "002", "name": "李四", "gender": "女"},
         ],
-        "periods": [{"period_no": 1, "name": "第一节", "sort_order": 1}],
+        "periods": [{"period_no": 1, "name": None, "sort_order": 1}],
         "base_timetable": [
             {"weekday": 1, "period_no": 1, "subject": "语文", "teacher": "李老师"},
             {"weekday": 2, "period_no": 1, "subject": "数学", "teacher": "王老师"},
@@ -48,6 +49,7 @@ def test_class_onboarding_is_draft_until_explicit_confirmation(client, db):
     assert db.scalar(select(func.count(Student.id))) == 2
     assert db.scalar(select(func.count(ClassSubject.id))) == 2
     assert db.scalar(select(func.count(ClassAgentBinding.id))) == 1
+    assert db.scalar(select(ClassPeriod.name)) is None
     assert {row.room for row in db.scalars(select(BaseTimetable))} == {"303"}
     assert db.get(ClassOnboardingSession, session["id"]).status == "completed"
 
@@ -65,19 +67,21 @@ def test_incomplete_onboarding_cannot_commit(client, db):
 def test_web_onboarding_wizard_is_served(client):
     response = client.get("/app/")
     assert response.status_code == 200
-    assert "ClassClaw · 新班级向导" in response.text
-    assert "确认并创建班级" in response.text
-    assert "先连接 OpenClaw" in response.text
-    assert "上传学生名单" in response.text
-    assert "专属 OpenClaw 智能体" in response.text
-    assert "暂不绑定微信" in response.text
-    assert "我已扫码，检查绑定" not in response.text
-    assert "classNameStatus" in response.text
-    script = client.get("/app/app.js")
-    assert script.status_code == 200
-    assert "scheduleBindingPoll" in script.text
-    assert "/agent-binding/wait" in script.text
-    assert "/agent-binding/provision" in script.text
+    assert "ClassClaw · 班主任工作台" in response.text
+    assert 'type="module" src="./app.js"' in response.text
+    onboarding = client.get("/app/js/pages/onboarding.js")
+    assert onboarding.status_code == 200
+    assert "确认并创建班级" in onboarding.text
+    assert "班级专属助手" in onboarding.text
+    assert "暂不绑定" in onboarding.text
+    assert "/agent-binding/provision" in onboarding.text
+    assert "初始座位" not in onboarding.text
+    assert "seatMapEditor" not in onboarding.text
+    assert "自定义名称" in onboarding.text
+    components = client.get("/app/js/components.js")
+    assert components.status_code == 200
+    assert "/agent-binding/wait" in components.text
+    assert "我已扫码，检查绑定" not in components.text
 
 
 def test_class_agent_can_be_provisioned_without_wechat(client, db, sample, tmp_path, monkeypatch):
@@ -490,8 +494,31 @@ def test_interaction_cleaner_prompt_contains_common_database_semantics(monkeypat
             "operations": [],
         }
 
+    async def extractor_ready() -> bool:
+        return True
+
+    async def extractor_off() -> bool:
+        return False
+
     monkeypatch.setattr(openclaw_bridge, "_responses_json", responses)
-    result = __import__("asyncio").run(openclaw_bridge.analyze_interaction(
+
+    # Default path: extractor agent is ready, semantics live in its AGENTS.md.
+    monkeypatch.setattr(openclaw_bridge, "ensure_extractor_agent", extractor_ready)
+    asyncio.run(openclaw_bridge.analyze_interaction(
+        analysis_id="analysis-1",
+        channel="wechat",
+        raw_text="21号语文作业未交，不需要先新建",
+        attachments=[],
+        context={"current_datetime": "2026-08-30T08:00:00+08:00"},
+    ))
+    agents_md = openclaw_bridge._extractor_agents_md()
+    assert "subtype=homework_missing" in agents_md
+    assert "不新建/不关联具体作业" in agents_md
+    assert "上学迟到" in agents_md
+
+    # Fallback path: switch off, semantics stay in the inline prompt.
+    monkeypatch.setattr(openclaw_bridge, "ensure_extractor_agent", extractor_off)
+    result = asyncio.run(openclaw_bridge.analyze_interaction(
         analysis_id="analysis-1",
         channel="wechat",
         raw_text="21号语文作业未交，不需要先新建",

@@ -1,0 +1,49 @@
+// 管理员 · 审计日志：轻量审计（操作人、动作、实体、时间），不展示完整前后快照。
+
+import { el, clear, fmtDateTime } from "../util.js";
+import { api } from "../api.js";
+import { pageHeader, dataTable, errorPanel, skeleton, emptyState, field, statusBadge } from "../components.js";
+
+export async function render(mount) {
+  const host = el("div");
+  const entityTypeInput = el("input", { type: "text", placeholder: "如 write_proposal / user" });
+  const entityIdInput = el("input", { type: "text", placeholder: "实体 ID（可选）" });
+  mount.append(
+    pageHeader("审计日志", "仅管理员可见；最多返回最近 200 条。"),
+    el("div", { class: "filter-bar" },
+      field("实体类型", entityTypeInput),
+      field("实体 ID", entityIdInput),
+      el("button", { class: "secondary", type: "button", onclick: () => load() }, "筛选"),
+      el("button", { class: "text-button", type: "button", onclick: () => { entityTypeInput.value = ""; entityIdInput.value = ""; load(); } }, "清空筛选")),
+    host);
+
+  async function load() {
+    clear(host);
+    host.append(skeleton(5));
+    const params = new URLSearchParams();
+    if (entityTypeInput.value.trim()) params.set("entity_type", entityTypeInput.value.trim());
+    if (entityIdInput.value.trim()) params.set("entity_id", entityIdInput.value.trim());
+    let rows;
+    try {
+      rows = await api(`/audit-logs${params.size ? `?${params}` : ""}`);
+    } catch (error) {
+      clear(host);
+      host.append(errorPanel(error, { onRetry: load }));
+      return;
+    }
+    clear(host);
+    if (!rows.length) { host.append(emptyState("没有匹配的审计记录", "当前筛选条件下没有记录。")); return; }
+    host.append(dataTable({
+      columns: [
+        { key: "created_at", label: "时间", render: (r) => fmtDateTime(r.created_at) },
+        { key: "operator_type", label: "操作人", render: (r) => el("span", {}, r.operator_type, r.operator_id ? el("code", { style: { marginLeft: "4px" } }, r.operator_id) : null) },
+        { key: "action", label: "动作", render: (r) => statusBadge(null, r.action) },
+        { key: "entity_type", label: "实体类型" },
+        { key: "entity_id", label: "实体 ID", render: (r) => el("code", {}, `${r.entity_id.slice(0, 12)}…`) },
+      ],
+      rows,
+    }));
+  }
+
+  await load();
+}

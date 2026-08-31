@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends
 
-from app.api.v1 import academic, analytics, approval, auth_admin, classes_students, interactions, operations, seating_duty, timetable
+from app.api.v1 import academic, admin_console, analytics, approval, auth_admin, classes_students, interactions, operations, seating_duty, timetable
 from app.core.security import require_authenticated
 
 
@@ -10,6 +10,7 @@ api_router.include_router(auth_admin.public_router)
 protected_router = APIRouter(dependencies=[Depends(require_authenticated)])
 protected_router.include_router(auth_admin.account_router)
 protected_router.include_router(auth_admin.admin_router)
+protected_router.include_router(admin_console.router)
 protected_router.include_router(approval.router)
 protected_router.include_router(interactions.router)
 protected_router.include_router(classes_students.router)

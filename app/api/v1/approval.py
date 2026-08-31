@@ -11,6 +11,7 @@ from app.database import get_db
 from app.models.entities import ClassOnboardingSession, ClassSubject, WriteProposal
 from app.schemas.domain import ClassOnboardingCreate, ClassOnboardingUpdate, WechatLoginWait, WriteProposalBatchConfirm, WriteProposalConfirm, WriteProposalCreate
 from app.services import approval as service
+from app.services import admin_console
 from app.services import openclaw_bridge
 from app.services import openclaw_provisioning
 from app.services import operations as operations_service
@@ -176,6 +177,7 @@ async def class_onboarding_files(
     db: Session = Depends(get_db),
 ):
     _require_web(request)
+    admin_console.require_feature(db, "feature.file_analysis")
     if not files or len(files) > 8:
         from app.core.errors import AppError
 
@@ -216,6 +218,7 @@ async def class_agent_provision(request: Request, class_id: str, db: Session = D
 async def class_agent_binding_start(request: Request, class_id: str, force: bool = Body(default=False, embed=True), db: Session = Depends(get_db)):
     _require_web(request)
     require_owned_class(request, class_id)
+    admin_console.require_feature(db, "feature.wechat_binding")
     return ok(request, await openclaw_provisioning.start_wechat_binding(db, class_id, force), "专属智能体已创建，请扫码绑定微信")
 
 

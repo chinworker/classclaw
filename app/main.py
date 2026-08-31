@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -13,16 +14,18 @@ from sqlalchemy.exc import OperationalError
 from app.api.v1.router import api_router
 from app.config import settings
 from app.core.errors import AppError
-from app.database import SessionLocal, init_db
+from app.core.logging import configure_logging, get_logger
+from app.database import init_db, writer_session
 from app.services import accounts
 from app.services.http_client import close_http_client
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    configure_logging()
     settings.attachment_dir.mkdir(parents=True, exist_ok=True)
     init_db()
-    with SessionLocal() as db:
+    with writer_session() as db:
         accounts.ensure_default_admin(db)
     try:
         yield
@@ -40,9 +43,22 @@ app = FastAPI(
 
 @app.middleware("http")
 async def request_context(request: Request, call_next):
+    started = time.perf_counter()
     request.state.request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
     response = await call_next(request)
     response.headers["X-Request-ID"] = request.state.request_id
+    if request.url.path == "/app" or request.url.path.startswith("/app/"):
+        response.headers["Cache-Control"] = "no-store, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    if request.url.path.startswith(settings.api_prefix) or request.url.path == "/health":
+        get_logger("request").info(
+            "%s %s %s", request.method, request.url.path, response.status_code,
+            extra={
+                "request_id": request.state.request_id, "method": request.method, "path": request.url.path,
+                "status_code": response.status_code, "duration_ms": round((time.perf_counter() - started) * 1000, 2),
+            },
+        )
     return response
 
 
@@ -66,6 +82,10 @@ async def database_error_handler(request: Request, exc: OperationalError):
 
 @app.exception_handler(Exception)
 async def internal_error_handler(request: Request, _exc: Exception):
+    get_logger("error").exception(
+        "Unhandled request error", exc_info=(type(_exc), _exc, _exc.__traceback__),
+        extra={"request_id": request.state.request_id, "path": request.url.path, "error_type": type(_exc).__name__},
+    )
     return JSONResponse(status_code=500, content={"success": False, "error": {"code": "INTERNAL_ERROR", "message": "服务器内部错误", "details": {}}, "request_id": request.state.request_id})
 
 

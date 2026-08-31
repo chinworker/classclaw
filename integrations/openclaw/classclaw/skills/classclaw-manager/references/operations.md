@@ -19,6 +19,7 @@ For user prose, WeChat messages, pasted lists, OCR, or attachments, do not const
 | `lesson_override.create` | `{class_id,lesson_date,period_no,replacement_subject?,replacement_teacher?,replacement_room?,status,reason}` |
 | `arrangement.create` | `{class_id?,title,summary?,start_at?,due_at?,priority?,reminder_times?}`; at most 3 reminders, default once at target minus 3 hours |
 | `duty.schedule.confirm` | Confirmed structured duty preview payload |
+| `duty.assignment.score` | `{assignment_id,score:0..5,note?}`; assignment must come from current read context |
 
 Dates are `YYYY-MM-DD`; datetimes are ISO 8601 with timezone. Use a stable idempotency key derived from the external message id plus the intended operation, for example `wechat-message-id:attendance:student-id:date:period`.
 
@@ -40,3 +41,5 @@ If a preview returns `ready=false`, do not call the commit tool.
 After showing one preview, an explicit affirmative reply authorizes `classclaw_commit_write` directly. After showing several previews together, an affirmative covering all of them authorizes one atomic `classclaw_commit_writes` call. There is no separate OpenClaw approval card.
 
 When a user says an unsubmitted homework item should not be linked to or create a homework record, represent it as `student_event.create` with `event_type="homework"`, `subtype="homework_missing"`, and content such as “语文作业未交”.
+
+For student events, infer subtype/sentiment/severity from content. The following are always negative unless the user is explicitly negating that they happened: homework missing, forgotten materials, late arrival, absence, sleeping in class, noise, disruption, fighting, rule violations, and unfinished tasks. Neutral is reserved for factual communication or information without praise or a problem.

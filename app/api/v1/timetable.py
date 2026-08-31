@@ -2,16 +2,16 @@ from __future__ import annotations
 
 from datetime import date
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, File, Request, UploadFile
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.responses import ok
 from app.core.security import require_owned_class, require_owned_record
 from app.database import get_db
-from app.models.entities import BaseTimetable, ClassPeriod, LessonOverride
-from app.schemas.domain import LessonBatchChangeRequest, LessonOverrideCreate, LessonSwapRequest, PeriodCreate, TimetableReplace
-from app.services import timetable as service
+from app.models.entities import BaseTimetable, ClassPeriod, ClassSubject, LessonOverride
+from app.schemas.domain import LessonBatchChangeRequest, LessonOverrideCreate, LessonSwapRequest, PeriodCreate, TimetableImportApply, TimetableReplace
+from app.services import admin_console, openclaw_bridge, operations, timetable as service
 
 
 router = APIRouter(tags=["课表与调课"])
@@ -29,6 +29,12 @@ def period_list(request: Request, class_id: str, db: Session = Depends(get_db)):
     return ok(request, list(db.scalars(select(ClassPeriod).where(ClassPeriod.class_id == class_id).order_by(ClassPeriod.sort_order, ClassPeriod.period_no))))
 
 
+@router.get("/classes/{class_id}/subjects")
+def subject_list(request: Request, class_id: str, db: Session = Depends(get_db)):
+    require_owned_class(request, class_id)
+    return ok(request, list(db.scalars(select(ClassSubject).where(ClassSubject.class_id == class_id, ClassSubject.enabled.is_(True)).order_by(ClassSubject.name))))
+
+
 @router.get("/classes/{class_id}/timetable/base")
 def timetable_base_get(request: Request, class_id: str, db: Session = Depends(get_db)):
     require_owned_class(request, class_id)
@@ -39,6 +45,28 @@ def timetable_base_get(request: Request, class_id: str, db: Session = Depends(ge
 def timetable_base_update(request: Request, class_id: str, body: TimetableReplace, db: Session = Depends(get_db)):
     require_owned_class(request, class_id)
     return ok(request, service.replace_base_timetable(db, class_id, body), "基础课表已替换")
+
+
+@router.post("/classes/{class_id}/timetable/import-preview")
+async def timetable_import_preview(request: Request, class_id: str, files: list[UploadFile] = File(...), db: Session = Depends(get_db)):
+    require_owned_class(request, class_id)
+    admin_console.require_feature(db, "feature.file_analysis")
+    if not files or len(files) > 4:
+        from app.core.errors import AppError
+
+        raise AppError("VALIDATION_ERROR", "每次请上传 1 至 4 个课表文件", 422)
+    attachments = []
+    for upload in files:
+        attachment = operations.save_attachment(db, upload, None, "课表文件识别")
+        operations.link_attachment(db, attachment.id, "class", class_id)
+        attachments.append(attachment)
+    return ok(request, await openclaw_bridge.analyze_timetable_files(db, class_id, attachments), "课表文件已整理，请核对预览后保存")
+
+
+@router.post("/classes/{class_id}/timetable/import-apply")
+def timetable_import_apply(request: Request, class_id: str, body: TimetableImportApply, db: Session = Depends(get_db)):
+    require_owned_class(request, class_id)
+    return ok(request, service.apply_imported_timetable(db, class_id, body), "新的基础课表已保存")
 
 
 @router.get("/classes/{class_id}/timetable/daily")

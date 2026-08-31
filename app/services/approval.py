@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.core.errors import AppError, not_found
 from app.config import settings
-from app.models.entities import ClassAgentBinding, ClassOnboardingSession, ClassRoom, ClassSubject, Exam, Homework, Student, WriteProposal
+from app.models.entities import ClassAgentBinding, ClassOnboardingSession, ClassRoom, ClassSubject, DutyAssignment, DutySchedule, Exam, Homework, Student, WriteProposal
 from app.schemas.domain import (
     ArrangementCreate,
     AttendanceSet,
@@ -19,6 +19,7 @@ from app.schemas.domain import (
     ClassOnboardingCreate,
     ClassOnboardingUpdate,
     DutyConfirmRequest,
+    DutyAssignmentScore,
     ExamCreate,
     HomeworkBatchStatus,
     HomeworkCreate,
@@ -56,6 +57,7 @@ SUPPORTED_OPERATIONS = {
     "lesson_override.create",
     "arrangement.create",
     "duty.schedule.confirm",
+    "duty.assignment.score",
 }
 
 
@@ -156,7 +158,7 @@ def _onboarding_preview(payload: dict, evidence: list[dict] | None = None) -> tu
         missing.append("base_timetable")
     if base_timetable and not periods:
         for period_no in sorted({row["period_no"] for row in base_timetable}):
-            periods.append({"period_no": period_no, "name": f"第{period_no}节", "sort_order": period_no, "enabled": True})
+            periods.append({"period_no": period_no, "name": None, "sort_order": period_no, "enabled": True})
         seen_periods = {row["period_no"] for row in periods}
     subject_rows: dict[str, list[dict]] = {}
     for row in base_timetable:
@@ -234,6 +236,12 @@ def normalize_and_preview(operation_type: str, payload: dict, evidence: list[dic
         if not items:
             raise AppError("VALIDATION_ERROR", "事件列表不能为空")
         return {"items": items}, {"ready": True, "title": "批量登记学生事件", "summary": {"record_count": len(items)}, "missing_fields": [], "validation_errors": [], "confirmation_message": f"即将登记{len(items)}条学生事件。"}
+    if operation_type == "duty.assignment.score":
+        if not payload.get("assignment_id"):
+            raise AppError("VALIDATION_ERROR", "duty.assignment.score缺少assignment_id")
+        body = _model(DutyAssignmentScore, payload)
+        normalized = {"assignment_id": payload["assignment_id"], **body}
+        return normalized, {"ready": True, "title": "登记值日评分", "summary": normalized, "missing_fields": [], "validation_errors": [], "confirmation_message": "即将按0至5分登记值日，评分后自动完成。"}
     raise AppError("VALIDATION_ERROR", "操作类型尚未实现")
 
 
@@ -293,6 +301,11 @@ def _proposal_class_ids(db: Session, proposal: WriteProposal) -> set[str]:
         exam = db.get(Exam, payload["exam_id"])
         if exam:
             result.add(exam.class_id)
+    if payload.get("assignment_id"):
+        assignment = db.get(DutyAssignment, payload["assignment_id"])
+        schedule = db.get(DutySchedule, assignment.duty_schedule_id) if assignment else None
+        if schedule:
+            result.add(schedule.class_id)
     return result
 
 
@@ -364,6 +377,8 @@ def _execute(db: Session, proposal: WriteProposal) -> Any:
         return {"arrangement": arrangement, "reminders": reminders}
     if op == "duty.schedule.confirm":
         return duty.confirm_schedule(db, DutyConfirmRequest.model_validate(p), commit=False)
+    if op == "duty.assignment.score":
+        return duty.score_assignment(db, p["assignment_id"], p["score"], p.get("note"), commit=False)
     raise AppError("VALIDATION_ERROR", "操作类型没有执行器", details={"operation_type": op})
 
 

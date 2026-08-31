@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
-from fastapi import APIRouter, Body, Depends, Query, Request
+from fastapi import APIRouter, Body, Depends, File, Query, Request, UploadFile
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -10,9 +10,9 @@ from app.core.errors import AppError, not_found
 from app.core.responses import ok
 from app.core.security import require_owned_class, require_owned_record, require_owned_student
 from app.database import get_db
-from app.models.entities import DutyAssignment, DutySchedule, DutyScoreItem, SeatingSnapshot
-from app.schemas.domain import DutyConfirmRequest, DutyEvaluationCreate, DutyPreviewRequest, DutyReplaceRequest, DutyRuleCreate, SeatingCreate, SeatingSwap
-from app.services import duty, seating
+from app.models.entities import DutyAssignment, DutyRule, DutySchedule, DutyScoreItem, SeatingSnapshot
+from app.schemas.domain import DutyAssignmentScore, DutyConfirmRequest, DutyEvaluationCreate, DutyPreviewRequest, DutyReplaceRequest, DutyRuleAnalyzeRequest, DutyRuleCreate, DutyRuleUpdate, SeatingCreate, SeatingRename, SeatingSwap
+from app.services import admin_console, duty, openclaw_bridge, operations, seating
 from app.services.common import audit, entity_dict
 from app.utils.time import today
 
@@ -23,7 +23,7 @@ router = APIRouter(tags=["座位与值日"])
 @router.get("/classes/{class_id}/seating/current")
 def seat_current_get(request: Request, class_id: str, db: Session = Depends(get_db)):
     require_owned_class(request, class_id)
-    return ok(request, seating.current_snapshot(db, class_id))
+    return ok(request, seating.current_snapshot(db, class_id, required=False))
 
 
 @router.get("/classes/{class_id}/seating/history")
@@ -41,10 +41,36 @@ def seat_snapshot_get(request: Request, snapshot_id: str, db: Session = Depends(
     return ok(request, obj)
 
 
+@router.patch("/seating/{snapshot_id}")
+def seat_snapshot_rename(request: Request, snapshot_id: str, body: SeatingRename, db: Session = Depends(get_db)):
+    require_owned_record(request, db, SeatingSnapshot, snapshot_id)
+    return ok(request, seating.rename_snapshot(db, snapshot_id, body.name), "座位表已重命名")
+
+
+@router.delete("/seating/{snapshot_id}")
+def seat_snapshot_delete(request: Request, snapshot_id: str, db: Session = Depends(get_db)):
+    require_owned_record(request, db, SeatingSnapshot, snapshot_id)
+    return ok(request, seating.delete_snapshot(db, snapshot_id), "座位表已删除")
+
+
 @router.post("/classes/{class_id}/seating", status_code=201)
 def seat_update(request: Request, class_id: str, body: SeatingCreate, db: Session = Depends(get_db)):
     require_owned_class(request, class_id)
     return ok(request, seating.create_snapshot(db, class_id, body), "座位快照已保存", 201)
+
+
+@router.post("/classes/{class_id}/seating/import-preview")
+async def seat_import_preview(request: Request, class_id: str, files: list[UploadFile] = File(...), db: Session = Depends(get_db)):
+    require_owned_class(request, class_id)
+    admin_console.require_feature(db, "feature.file_analysis")
+    if not files or len(files) > 4:
+        raise AppError("VALIDATION_ERROR", "每次请上传 1 至 4 个座位表文件", 422)
+    attachments = []
+    for upload in files:
+        attachment = operations.save_attachment(db, upload, None, "座位表文件识别")
+        operations.link_attachment(db, attachment.id, "class", class_id)
+        attachments.append(attachment)
+    return ok(request, await openclaw_bridge.analyze_seating_files(db, class_id, attachments), "座位表文件已整理，请核对预览后保存")
 
 
 @router.post("/classes/{class_id}/seating/swap", status_code=201)
@@ -73,6 +99,32 @@ def duty_rule_save(request: Request, body: DutyRuleCreate, db: Session = Depends
     return ok(request, duty.save_rule(db, body), "值日规则已保存", 201)
 
 
+@router.get("/duty/rules")
+def duty_rule_list(request: Request, class_id: str, db: Session = Depends(get_db)):
+    require_owned_class(request, class_id)
+    stmt = select(DutyRule).where(DutyRule.class_id == class_id).order_by(DutyRule.created_at.desc())
+    return ok(request, list(db.scalars(stmt)))
+
+
+@router.patch("/duty/rules/{rule_id}")
+def duty_rule_update(request: Request, rule_id: str, body: DutyRuleUpdate, db: Session = Depends(get_db)):
+    require_owned_record(request, db, DutyRule, rule_id)
+    return ok(request, duty.update_rule(db, rule_id, body), "值日规则已更新")
+
+
+@router.delete("/duty/rules/{rule_id}")
+def duty_rule_delete(request: Request, rule_id: str, db: Session = Depends(get_db)):
+    require_owned_record(request, db, DutyRule, rule_id)
+    return ok(request, duty.delete_rule(db, rule_id), "值日规则已删除")
+
+
+@router.post("/classes/{class_id}/duty/rules/analyze")
+async def duty_rule_analyze(request: Request, class_id: str, body: DutyRuleAnalyzeRequest, db: Session = Depends(get_db)):
+    require_owned_class(request, class_id)
+    admin_console.require_feature(db, "feature.file_analysis")
+    return ok(request, await openclaw_bridge.analyze_duty_rule(db, class_id, body.text, body.base_rule), "补充规则已整理，请核对后保存")
+
+
 @router.post("/duty/schedules/preview")
 def duty_schedule_preview(request: Request, body: DutyPreviewRequest, db: Session = Depends(get_db)):
     require_owned_class(request, body.class_id)
@@ -96,6 +148,7 @@ def duty_assignments(
     db: Session = Depends(get_db),
 ):
     require_owned_class(request, class_id)
+    duty.complete_overdue_assignments(db, class_id)
     stmt = select(DutyAssignment).join(DutySchedule, DutySchedule.id == DutyAssignment.duty_schedule_id).where(DutySchedule.class_id == class_id)
     if duty_date:
         stmt = stmt.where(DutyAssignment.duty_date == duty_date)
@@ -111,6 +164,7 @@ def duty_assignments(
 @router.get("/duty/today")
 def duty_today(request: Request, class_id: str, day: date | None = None, db: Session = Depends(get_db)):
     require_owned_class(request, class_id)
+    duty.complete_overdue_assignments(db, class_id)
     target = day or today()
     stmt = select(DutyAssignment).join(DutySchedule, DutySchedule.id == DutyAssignment.duty_schedule_id).where(DutySchedule.class_id == class_id, DutyAssignment.duty_date == target, DutyAssignment.status != "replaced")
     return ok(request, list(db.scalars(stmt)))
@@ -119,6 +173,7 @@ def duty_today(request: Request, class_id: str, day: date | None = None, db: Ses
 @router.get("/duty/weekly")
 def duty_weekly(request: Request, class_id: str, week_start: date, db: Session = Depends(get_db)):
     require_owned_class(request, class_id)
+    duty.complete_overdue_assignments(db, class_id)
     stmt = select(DutyAssignment).join(DutySchedule, DutySchedule.id == DutyAssignment.duty_schedule_id).where(DutySchedule.class_id == class_id, DutyAssignment.duty_date.between(week_start, week_start + timedelta(days=6)))
     return ok(request, list(db.scalars(stmt.order_by(DutyAssignment.duty_date))))
 
@@ -138,6 +193,14 @@ def duty_complete(request: Request, assignment_id: str, db: Session = Depends(ge
     schedule = db.get(DutySchedule, assignment.duty_schedule_id) if assignment else None
     require_owned_class(request, schedule.class_id if schedule else "")
     return ok(request, duty.complete_assignment(db, assignment_id), "值日已完成")
+
+
+@router.put("/duty/assignments/{assignment_id}/score")
+def duty_assignment_score(request: Request, assignment_id: str, body: DutyAssignmentScore, db: Session = Depends(get_db)):
+    assignment = db.get(DutyAssignment, assignment_id)
+    schedule = db.get(DutySchedule, assignment.duty_schedule_id) if assignment else None
+    require_owned_class(request, schedule.class_id if schedule else "")
+    return ok(request, duty.score_assignment(db, assignment_id, body.score, body.note), "值日评分已保存并标记完成")
 
 
 @router.post("/duty/score-items", status_code=201)
@@ -164,4 +227,5 @@ def duty_score_create(request: Request, body: DutyEvaluationCreate, db: Session 
 @router.get("/duty/statistics")
 def duty_statistics(request: Request, class_id: str, start_date: date | None = None, end_date: date | None = None, db: Session = Depends(get_db)):
     require_owned_class(request, class_id)
+    duty.complete_overdue_assignments(db, class_id)
     return ok(request, duty.duty_statistics(db, class_id, start_date, end_date))

@@ -2,21 +2,42 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from sqlalchemy import String, cast, func, or_, select
+from sqlalchemy import String, cast, delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.core.errors import AppError, not_found
 from app.models.entities import (
+    Arrangement,
+    Attachment,
+    AttachmentLink,
     AttendanceRecord,
+    BaseTimetable,
+    ClassAgentBinding,
+    ClassOnboardingSession,
+    ClassPeriod,
     ClassRoom,
+    ClassSubject,
     DutyAssignment,
+    DutyEvaluation,
+    DutyEvaluationDetail,
+    DutyRule,
+    DutySchedule,
+    DutyScoreItem,
+    Exam,
+    ExamSubject,
+    Homework,
     HomeworkStudentStatus,
+    InteractionAnalysis,
+    LessonOverride,
+    Reminder,
     Score,
     SeatingSnapshot,
     Student,
     StudentEvent,
     SystemSetting,
+    WriteProposal,
 )
 from app.schemas.domain import ClassCreate, ClassUpdate, StudentCreate, StudentUpdate
 from app.services.common import audit, entity_dict
@@ -48,6 +69,234 @@ def update_class(db: Session, class_id: str, data: ClassUpdate) -> ClassRoom:
     audit(db, "update", "class", obj.id, before=before, after=entity_dict(obj))
     db.commit()
     return obj
+
+
+def _value_references_class(value: object, class_id: str) -> bool:
+    if isinstance(value, dict):
+        return any((key == "class_id" and item == class_id) or _value_references_class(item, class_id) for key, item in value.items())
+    if isinstance(value, list):
+        return any(_value_references_class(item, class_id) for item in value)
+    return False
+
+
+def _attachment_ids_from_value(value: object) -> set[str]:
+    found: set[str] = set()
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key == "attachment_id" and isinstance(item, str):
+                found.add(item)
+            elif key in {"attachment_ids", "attachment_ids_json"} and isinstance(item, list):
+                found.update(str(attachment_id) for attachment_id in item if attachment_id)
+            found.update(_attachment_ids_from_value(item))
+    elif isinstance(value, list):
+        for item in value:
+            found.update(_attachment_ids_from_value(item))
+    return found
+
+
+def hard_delete_class(db: Session, class_id: str, *, operator_id: str | None = None) -> dict:
+    cls = get_class(db, class_id, include_inactive=True)
+    class_name = cls.name
+    owner_user_id = cls.owner_user_id
+
+    def ids(model, condition) -> set[str]:
+        return set(db.scalars(select(model.id).where(condition)))
+
+    student_ids = ids(Student, Student.class_id == class_id)
+    schedule_ids = ids(DutySchedule, DutySchedule.class_id == class_id)
+    assignment_ids = ids(DutyAssignment, DutyAssignment.duty_schedule_id.in_(schedule_ids))
+    evaluation_ids = ids(DutyEvaluation, DutyEvaluation.duty_schedule_id.in_(schedule_ids))
+    evaluation_detail_ids = ids(DutyEvaluationDetail, DutyEvaluationDetail.evaluation_id.in_(evaluation_ids))
+    homework_ids = ids(Homework, Homework.class_id == class_id)
+    homework_status_ids = ids(HomeworkStudentStatus, HomeworkStudentStatus.homework_id.in_(homework_ids))
+    exam_ids = ids(Exam, Exam.class_id == class_id)
+    exam_subject_ids = ids(ExamSubject, ExamSubject.exam_id.in_(exam_ids))
+    score_ids = ids(Score, Score.exam_id.in_(exam_ids))
+    arrangement_ids = ids(Arrangement, Arrangement.class_id == class_id)
+    reminder_ids = ids(Reminder, Reminder.arrangement_id.in_(arrangement_ids))
+    onboarding_rows = list(db.scalars(select(ClassOnboardingSession).where(ClassOnboardingSession.class_id == class_id)))
+    onboarding_ids = {row.id for row in onboarding_rows}
+    interaction_rows = list(
+        db.scalars(
+            select(InteractionAnalysis).where(
+                or_(InteractionAnalysis.class_id == class_id, InteractionAnalysis.onboarding_session_id.in_(onboarding_ids))
+            )
+        )
+    )
+    interaction_ids = {row.id for row in interaction_rows}
+    proposal_rows = list(db.scalars(select(WriteProposal)))
+    proposal_ids = {
+        proposal.id
+        for proposal in proposal_rows
+        if proposal.onboarding_session_id in onboarding_ids
+        or _value_references_class(proposal.payload_json, class_id)
+        or _value_references_class(proposal.normalized_payload_json, class_id)
+        or _value_references_class(proposal.preview_json, class_id)
+        or _value_references_class(proposal.result_json, class_id)
+    }
+
+    entity_ids_by_type = {
+        "classes": {class_id},
+        "class_agent_bindings": ids(ClassAgentBinding, ClassAgentBinding.class_id == class_id),
+        "class_subjects": ids(ClassSubject, ClassSubject.class_id == class_id),
+        "students": student_ids,
+        "seating_snapshots": ids(SeatingSnapshot, SeatingSnapshot.class_id == class_id),
+        "duty_rules": ids(DutyRule, DutyRule.class_id == class_id),
+        "duty_schedules": schedule_ids,
+        "duty_assignments": assignment_ids,
+        "duty_score_items": ids(DutyScoreItem, DutyScoreItem.class_id == class_id),
+        "duty_evaluations": evaluation_ids,
+        "duty_evaluation_details": evaluation_detail_ids,
+        "homework": homework_ids,
+        "homework_student_statuses": homework_status_ids,
+        "student_events": ids(StudentEvent, StudentEvent.class_id == class_id),
+        "attendance_records": ids(AttendanceRecord, AttendanceRecord.class_id == class_id),
+        "exams": exam_ids,
+        "exam_subjects": exam_subject_ids,
+        "scores": score_ids,
+        "class_periods": ids(ClassPeriod, ClassPeriod.class_id == class_id),
+        "base_timetable": ids(BaseTimetable, BaseTimetable.class_id == class_id),
+        "lesson_overrides": ids(LessonOverride, LessonOverride.class_id == class_id),
+        "arrangements": arrangement_ids,
+        "reminders": reminder_ids,
+        "interaction_analyses": interaction_ids,
+        "write_proposals": proposal_ids,
+        "class_onboarding_sessions": onboarding_ids,
+    }
+    class_entity_ids = set().union(*entity_ids_by_type.values())
+
+    attachment_links = [link for link in db.scalars(select(AttachmentLink)) if link.entity_id in class_entity_ids]
+    attachment_ids = {link.attachment_id for link in attachment_links}
+    for row in onboarding_rows:
+        attachment_ids.update(_attachment_ids_from_value(row.draft_json))
+        attachment_ids.update(_attachment_ids_from_value(row.field_evidence_json))
+    for row in interaction_rows:
+        attachment_ids.update(str(value) for value in (row.attachment_ids_json or []) if value)
+        attachment_ids.update(_attachment_ids_from_value(row.structured_json))
+    for proposal in proposal_rows:
+        if proposal.id not in proposal_ids:
+            continue
+        attachment_ids.update(_attachment_ids_from_value(proposal.payload_json))
+        attachment_ids.update(_attachment_ids_from_value(proposal.normalized_payload_json))
+        attachment_ids.update(_attachment_ids_from_value(proposal.preview_json))
+        attachment_ids.update(_attachment_ids_from_value(proposal.result_json))
+    if homework_status_ids:
+        attachment_ids.update(
+            value
+            for value in db.scalars(select(HomeworkStudentStatus.attachment_id).where(HomeworkStudentStatus.id.in_(homework_status_ids)))
+            if value
+        )
+    event_ids = entity_ids_by_type["student_events"]
+    if event_ids:
+        attachment_ids.update(
+            value for value in db.scalars(select(StudentEvent.attachment_id).where(StudentEvent.id.in_(event_ids))) if value
+        )
+    if arrangement_ids:
+        attachment_ids.update(
+            value for value in db.scalars(select(Arrangement.attachment_id).where(Arrangement.id.in_(arrangement_ids))) if value
+        )
+
+    try:
+        for link in attachment_links:
+            db.delete(link)
+        if proposal_ids:
+            db.execute(delete(WriteProposal).where(WriteProposal.id.in_(proposal_ids)))
+        if interaction_ids:
+            db.execute(delete(InteractionAnalysis).where(InteractionAnalysis.id.in_(interaction_ids)))
+        if onboarding_ids:
+            db.execute(delete(ClassOnboardingSession).where(ClassOnboardingSession.id.in_(onboarding_ids)))
+        if arrangement_ids:
+            db.execute(delete(Arrangement).where(Arrangement.id.in_(arrangement_ids)))
+        if exam_ids:
+            db.execute(delete(Exam).where(Exam.id.in_(exam_ids)))
+        if homework_ids:
+            db.execute(delete(Homework).where(Homework.id.in_(homework_ids)))
+        if event_ids:
+            db.execute(delete(StudentEvent).where(StudentEvent.id.in_(event_ids)))
+        db.execute(delete(AttendanceRecord).where(AttendanceRecord.class_id == class_id))
+        if schedule_ids:
+            db.execute(delete(DutySchedule).where(DutySchedule.id.in_(schedule_ids)))
+        db.execute(delete(DutyRule).where(DutyRule.class_id == class_id))
+        db.execute(delete(DutyScoreItem).where(DutyScoreItem.class_id == class_id))
+        db.execute(delete(SeatingSnapshot).where(SeatingSnapshot.class_id == class_id))
+        db.execute(delete(Student).where(Student.class_id == class_id))
+
+        current = db.scalar(select(SystemSetting).where(SystemSetting.key == "current_class_id"))
+        if current and current.value_json == class_id:
+            current.value_json = None
+        audit(db, "hard_delete", "class", class_id, operator_id=operator_id)
+        db.delete(cls)
+        db.flush()
+
+        remaining_attachment_ids: set[str] = set()
+        if attachment_ids:
+            remaining_attachment_ids.update(
+                db.scalars(select(AttachmentLink.attachment_id).where(AttachmentLink.attachment_id.in_(attachment_ids)))
+            )
+            remaining_attachment_ids.update(
+                value
+                for value in db.scalars(
+                    select(HomeworkStudentStatus.attachment_id).where(HomeworkStudentStatus.attachment_id.in_(attachment_ids))
+                )
+                if value
+            )
+            remaining_attachment_ids.update(
+                value
+                for value in db.scalars(select(StudentEvent.attachment_id).where(StudentEvent.attachment_id.in_(attachment_ids)))
+                if value
+            )
+            remaining_attachment_ids.update(
+                value
+                for value in db.scalars(select(Arrangement.attachment_id).where(Arrangement.attachment_id.in_(attachment_ids)))
+                if value
+            )
+            for row in db.scalars(select(InteractionAnalysis)):
+                remaining_attachment_ids.update(str(value) for value in (row.attachment_ids_json or []) if value)
+                remaining_attachment_ids.update(_attachment_ids_from_value(row.structured_json))
+            for row in db.scalars(select(ClassOnboardingSession)):
+                remaining_attachment_ids.update(_attachment_ids_from_value(row.draft_json))
+                remaining_attachment_ids.update(_attachment_ids_from_value(row.field_evidence_json))
+            for proposal in db.scalars(select(WriteProposal)):
+                remaining_attachment_ids.update(_attachment_ids_from_value(proposal.payload_json))
+                remaining_attachment_ids.update(_attachment_ids_from_value(proposal.normalized_payload_json))
+                remaining_attachment_ids.update(_attachment_ids_from_value(proposal.preview_json))
+                remaining_attachment_ids.update(_attachment_ids_from_value(proposal.result_json))
+        orphan_attachment_ids = attachment_ids - remaining_attachment_ids
+        orphan_attachments = (
+            list(db.scalars(select(Attachment).where(Attachment.id.in_(orphan_attachment_ids)))) if orphan_attachment_ids else []
+        )
+        attachment_paths = [attachment.stored_path for attachment in orphan_attachments]
+        for attachment in orphan_attachments:
+            db.delete(attachment)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+
+    file_warnings = []
+    attachment_root = settings.attachment_dir.resolve()
+    for stored_path in attachment_paths:
+        path = (settings.attachment_dir.parent / stored_path).resolve()
+        if path == attachment_root or attachment_root not in path.parents:
+            file_warnings.append(f"跳过不安全的附件路径：{stored_path}")
+            continue
+        try:
+            if path.exists():
+                path.unlink()
+        except OSError as exc:
+            file_warnings.append(f"附件文件删除失败：{stored_path}（{exc}）")
+
+    deleted_counts = {name: len(values) for name, values in entity_ids_by_type.items() if values}
+    if orphan_attachments:
+        deleted_counts["attachments"] = len(orphan_attachments)
+    return {
+        "class_id": class_id,
+        "class_name": class_name,
+        "deleted": True,
+        "owner_user_id": owner_user_id,
+        "deleted_counts": deleted_counts,
+        "warnings": file_warnings,
+    }
 
 
 def list_classes(db: Session, page: int, page_size: int, status: str | None = None, owner_user_id: str | None = None) -> dict:

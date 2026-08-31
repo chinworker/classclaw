@@ -10,6 +10,11 @@ from app.models.entities import SeatingSnapshot, Student
 from app.schemas.domain import SeatingCreate, SeatingSwap
 from app.services.class_student import get_class
 from app.services.common import audit, entity_dict
+from app.utils.time import now
+
+
+def default_snapshot_name() -> str:
+    return f"座位表 {now().strftime('%Y-%m-%d %H:%M')}"
 
 
 def current_snapshot(db: Session, class_id: str, required: bool = True) -> SeatingSnapshot | None:
@@ -70,6 +75,7 @@ def create_snapshot(db: Session, class_id: str, data: SeatingCreate, action: str
     previous = current_snapshot(db, class_id, required=False)
     snapshot = SeatingSnapshot(
         class_id=class_id,
+        name=(data.name or "").strip() or default_snapshot_name(),
         rows=data.rows,
         cols=data.cols,
         layout_json=data.layout,
@@ -115,6 +121,28 @@ def restore_snapshot(db: Session, class_id: str, snapshot_id: str) -> dict:
     return create_snapshot(
         db,
         class_id,
-        SeatingCreate(rows=source.rows, cols=source.cols, layout=deepcopy(source.layout_json), change_note=f"恢复快照 {snapshot_id}"),
+        SeatingCreate(name=f"{source.name}（恢复）", rows=source.rows, cols=source.cols, layout=deepcopy(source.layout_json), change_note=f"恢复座位表“{source.name}”"),
         action="restore",
     )
+
+
+def rename_snapshot(db: Session, snapshot_id: str, name: str) -> SeatingSnapshot:
+    snapshot = db.get(SeatingSnapshot, snapshot_id)
+    if not snapshot:
+        raise not_found("座位表", snapshot_id)
+    before = entity_dict(snapshot)
+    snapshot.name = name.strip()
+    audit(db, "rename", "seating_snapshot", snapshot.id, before=before, after=entity_dict(snapshot))
+    db.commit()
+    return snapshot
+
+
+def delete_snapshot(db: Session, snapshot_id: str) -> dict:
+    snapshot = db.get(SeatingSnapshot, snapshot_id)
+    if not snapshot:
+        raise not_found("座位表", snapshot_id)
+    before = entity_dict(snapshot)
+    db.delete(snapshot)
+    audit(db, "delete", "seating_snapshot", snapshot_id, before=before, after=None)
+    db.commit()
+    return {"deleted_id": snapshot_id, "deleted_name": before["name"]}

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
 import json
 import re
+import shutil
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +20,17 @@ from app.models.entities import ClassAgentBinding, ClassRoom
 from app.services.common import audit, entity_dict
 from app.services.http_client import get_http_client
 from app.utils.time import now
+
+
+EDITABLE_WORKSPACE_FILES = {
+    "AGENTS.md": {"label": "系统提示词", "description": "核心行为、写入流程和回复规则。"},
+    "SOUL.md": {"label": "Soul", "description": "人格、语气、价值取向与边界。"},
+    "IDENTITY.md": {"label": "Identity", "description": "名称、角色、主题和对外身份。"},
+    "TOOLS.md": {"label": "Tools", "description": "工具使用策略和调用约定。"},
+    "USER.md": {"label": "User", "description": "班级和主要用户上下文。"},
+    "HEARTBEAT.md": {"label": "Heartbeat", "description": "心跳任务说明；默认不启用定时心跳。"},
+}
+_CUSTOMIZED_FILES_META = ".classclaw-admin-customized.json"
 
 
 def _headers() -> dict[str, str]:
@@ -145,6 +159,78 @@ def ensure_binding(db: Session, cls: ClassRoom) -> ClassAgentBinding:
     return binding
 
 
+def _remove_workspace(workspace_path: str) -> bool:
+    root = settings.openclaw_class_workspace_root.resolve()
+    workspace = Path(workspace_path).resolve()
+    if workspace == root or root not in workspace.parents:
+        raise AppError("VALIDATION_ERROR", "智能体工作目录不在配置的根目录中", 500)
+    if not workspace.exists():
+        return False
+    shutil.rmtree(workspace)
+    return True
+
+
+async def cleanup_class_agent_resources(db: Session, class_id: str) -> dict[str, Any]:
+    """Remove the class agent from OpenClaw runtime config and delete its isolated workspace."""
+    cls = db.get(ClassRoom, class_id)
+    if not cls:
+        raise not_found("班级", class_id)
+    binding = db.scalar(select(ClassAgentBinding).where(ClassAgentBinding.class_id == class_id))
+    if not binding:
+        return {"binding_found": False, "runtime_removed": False, "workspace_removed": False}
+
+    runtime_removed = False
+    agent_id = binding.openclaw_agent_id
+    if agent_id or binding.channel_account_id:
+        snapshot = await admin_rpc("config.get")
+        config = snapshot.get("config") or {}
+        agents_config = config.get("agents") if isinstance(config.get("agents"), dict) else {}
+        agent_rows = agents_config.get("list") if isinstance(agents_config.get("list"), list) else []
+        bindings = config.get("bindings") if isinstance(config.get("bindings"), list) else []
+        plugin = ((config.get("plugins") or {}).get("entries") or {}).get("classclaw") or {}
+        plugin_config = plugin.get("config") if isinstance(plugin.get("config"), dict) else {}
+        agent_classes = plugin_config.get("agentClasses") if isinstance(plugin_config.get("agentClasses"), dict) else {}
+
+        filtered_agents = [row for row in agent_rows if not isinstance(row, dict) or str(row.get("id") or row.get("agentId")) != agent_id]
+        filtered_bindings = [
+            row
+            for row in bindings
+            if not isinstance(row, dict)
+            or not (
+                (agent_id and row.get("agentId") == agent_id)
+                or (
+                    binding.channel_account_id
+                    and (row.get("match") or {}).get("channel") == binding.channel_id
+                    and (row.get("match") or {}).get("accountId") == binding.channel_account_id
+                )
+            )
+        ]
+        filtered_agent_classes = {key: value for key, value in agent_classes.items() if key != agent_id and value != class_id}
+        raw = {
+            "agents": {"list": filtered_agents},
+            "bindings": filtered_bindings,
+            "plugins": {"entries": {"classclaw": {"config": {"agentClasses": filtered_agent_classes}}}},
+        }
+        patch_params: dict[str, Any] = {
+            "raw": json.dumps(raw, ensure_ascii=False),
+            "replacePaths": ["bindings", "agents.list", "plugins.entries.classclaw.config.agentClasses"],
+            "note": f"Remove ClassClaw runtime for deleted class {class_id}",
+            "restartDelayMs": 500,
+        }
+        if snapshot.get("hash"):
+            patch_params["baseHash"] = snapshot["hash"]
+        await admin_rpc("config.patch", patch_params)
+        runtime_removed = True
+
+    return {
+        "binding_found": True,
+        "agent_id": agent_id,
+        "channel_account_id": binding.channel_account_id,
+        "runtime_removed": runtime_removed,
+        "workspace_removed": _remove_workspace(binding.workspace_path),
+    }
+
+
 def class_id_for_agent(db: Session, agent_id: str) -> str | None:
     binding = db.scalar(select(ClassAgentBinding).where(ClassAgentBinding.openclaw_agent_id == agent_id))
     return binding.class_id if binding else None
@@ -188,16 +274,108 @@ def _workspace_files(cls: ClassRoom, binding: ClassAgentBinding) -> dict[str, st
     }
 
 
-def _prepare_workspace(cls: ClassRoom, binding: ClassAgentBinding) -> None:
+def _workspace(binding: ClassAgentBinding) -> Path:
     root = settings.openclaw_class_workspace_root.resolve()
     workspace = Path(binding.workspace_path).resolve()
     if workspace != root and root not in workspace.parents:
         raise AppError("VALIDATION_ERROR", "智能体工作目录不在配置的根目录中", 500)
+    return workspace
+
+
+def _customized_files(workspace: Path) -> set[str]:
+    path = workspace / _CUSTOMIZED_FILES_META
+    if not path.is_file():
+        return set()
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return set()
+    return {str(name) for name in value if name in EDITABLE_WORKSPACE_FILES} if isinstance(value, list) else set()
+
+
+def _write_customized_files(workspace: Path, names: set[str]) -> None:
+    (workspace / _CUSTOMIZED_FILES_META).write_text(json.dumps(sorted(names), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def _atomic_text_write(target: Path, content: str) -> None:
+    temporary = target.parent / f".{target.name}.{uuid.uuid4().hex}.tmp"
+    temporary.write_text(content, encoding="utf-8")
+    temporary.replace(target)
+
+
+def _prepare_workspace(cls: ClassRoom, binding: ClassAgentBinding, *, force: bool = False) -> None:
+    workspace = _workspace(binding)
     workspace.mkdir(parents=True, exist_ok=True)
+    customized = set() if force else _customized_files(workspace)
     for name, content in _workspace_files(cls, binding).items():
         target = workspace / name
-        if not target.is_file() or target.read_text(encoding="utf-8") != content:
-            target.write_text(content, encoding="utf-8")
+        if not target.is_file() or (name not in customized and target.read_text(encoding="utf-8") != content):
+            _atomic_text_write(target, content)
+    if force:
+        _write_customized_files(workspace, set())
+
+
+def workspace_files(db: Session, class_id: str) -> dict[str, Any]:
+    cls = db.get(ClassRoom, class_id)
+    binding = get_binding(db, class_id)
+    if not cls:
+        raise not_found("班级", class_id)
+    _prepare_workspace(cls, binding)
+    workspace = _workspace(binding)
+    customized = _customized_files(workspace)
+    items = []
+    for name, metadata in EDITABLE_WORKSPACE_FILES.items():
+        path = workspace / name
+        content = path.read_text(encoding="utf-8") if path.is_file() else ""
+        items.append({
+            "name": name, **metadata, "content": content,
+            "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+            "characters": len(content), "customized": name in customized,
+        })
+    return {"workspace": str(workspace), "files": items}
+
+
+def update_workspace_file(db: Session, class_id: str, filename: str, content: str, expected_sha256: str | None = None) -> dict[str, Any]:
+    if filename not in EDITABLE_WORKSPACE_FILES:
+        raise AppError("WORKSPACE_FILE_NOT_ALLOWED", "该工作区文件不允许通过管理端修改", 422, {"filename": filename})
+    if "\x00" in content:
+        raise AppError("VALIDATION_ERROR", "文件内容包含无效字符", 422)
+    binding = get_binding(db, class_id)
+    workspace = _workspace(binding)
+    workspace.mkdir(parents=True, exist_ok=True)
+    target = workspace / filename
+    current = target.read_text(encoding="utf-8") if target.is_file() else ""
+    current_hash = hashlib.sha256(current.encode("utf-8")).hexdigest()
+    if expected_sha256 and expected_sha256 != current_hash:
+        raise AppError("WORKSPACE_FILE_CONFLICT", "文件已被其他操作修改，请刷新后重试", 409, {"current_sha256": current_hash})
+    _atomic_text_write(target, content)
+    customized = _customized_files(workspace)
+    customized.add(filename)
+    _write_customized_files(workspace, customized)
+    digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    audit(db, "update_workspace_file", "class_agent_binding", binding.id, operator_type="admin", after={"filename": filename, "sha256": digest, "characters": len(content)})
+    db.commit()
+    return {"name": filename, "sha256": digest, "characters": len(content), "customized": True}
+
+
+def reset_workspace_file(db: Session, class_id: str, filename: str) -> dict[str, Any]:
+    if filename not in EDITABLE_WORKSPACE_FILES:
+        raise AppError("WORKSPACE_FILE_NOT_ALLOWED", "该工作区文件不允许通过管理端修改", 422, {"filename": filename})
+    cls = db.get(ClassRoom, class_id)
+    binding = get_binding(db, class_id)
+    if not cls:
+        raise not_found("班级", class_id)
+    workspace = _workspace(binding)
+    workspace.mkdir(parents=True, exist_ok=True)
+    content = _workspace_files(cls, binding)[filename]
+    _atomic_text_write(workspace / filename, content)
+    customized = _customized_files(workspace)
+    customized.discard(filename)
+    _write_customized_files(workspace, customized)
+    digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    audit(db, "reset_workspace_file", "class_agent_binding", binding.id, operator_type="admin", after={"filename": filename, "sha256": digest})
+    db.commit()
+    return {"name": filename, "content": content, "sha256": digest, "characters": len(content), "customized": False}
 
 
 def _adopt_existing_agent(db: Session, cls: ClassRoom, binding: ClassAgentBinding, row: dict[str, Any]) -> None:
@@ -242,7 +420,7 @@ async def _configure_agent_identity(cls: ClassRoom, binding: ClassAgentBinding) 
             "emoji": "🏫",
         },
     )
-    # agents.update may regenerate bootstrap files, so our compact policy wins last.
+    # agents.update may regenerate bootstrap files; defaults are repaired while admin-customized files are preserved.
     _prepare_workspace(cls, binding)
 
 

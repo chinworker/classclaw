@@ -34,6 +34,25 @@ def test_lesson_key_override_swap_and_remove(db, sample):
     assert daily[0]["subject"] == "语文"
 
 
+def test_period_custom_name_is_optional_and_has_chinese_fallback(db, sample):
+    cls = sample[0]
+    first = timetable.create_period(db, cls.id, PeriodCreate(period_no=1))
+    custom = timetable.create_period(db, cls.id, PeriodCreate(period_no=2, name=" 早读 "))
+    assert first.name is None
+    assert custom.name == "早读"
+    assert timetable.period_display_name(1, first.name) == "第一节"
+    assert timetable.period_display_name(12) == "第十二节"
+    assert timetable.period_display_name(2, custom.name) == "早读"
+
+    timetable.replace_base_timetable(
+        db,
+        cls.id,
+        TimetableReplace(items=[TimetableItem(weekday=1, period_no=1, subject="语文")]),
+    )
+    daily = timetable.daily_timetable(db, cls.id, date(2026, 9, 7))
+    assert daily[0]["period_name"] == "第一节"
+
+
 def test_analytics_returns_evidence_and_warnings(db, sample):
     cls, _, students = sample
     event = academic.create_student_event(db, StudentEventCreate(class_id=cls.id, student_id=students[0].id, event_type="behavior", subtype="课堂", event_date=date(2026, 9, 1), content="课堂积极发言", sentiment="positive"))

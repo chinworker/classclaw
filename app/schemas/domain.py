@@ -79,6 +79,7 @@ class StudentUpdate(BaseModel):
 
 
 class SeatingCreate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=100)
     rows: int = Field(ge=1, le=30)
     cols: int = Field(ge=1, le=30)
     layout: list[list[str | None]]
@@ -91,6 +92,10 @@ class SeatingSwap(BaseModel):
     change_note: str | None = None
 
 
+class SeatingRename(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+
+
 class DutyRuleCreate(BaseModel):
     class_id: str
     name: str
@@ -99,6 +104,15 @@ class DutyRuleCreate(BaseModel):
     effective_from: date
     effective_to: date
     status: Literal["draft", "active", "disabled"] = "draft"
+
+
+class DutyRuleUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    original_text: str | None = None
+    rule_json: dict[str, Any] | None = None
+    effective_from: date | None = None
+    effective_to: date | None = None
+    status: Literal["draft", "active", "disabled"] | None = None
 
 
 class DutyPreviewRequest(BaseModel):
@@ -116,6 +130,11 @@ class DutyConfirmRequest(DutyPreviewRequest):
 
 class DutyReplaceRequest(BaseModel):
     replacement_student_id: str
+    note: str | None = None
+
+
+class DutyAssignmentScore(BaseModel):
+    score: float = Field(ge=0, le=5)
     note: str | None = None
 
 
@@ -205,7 +224,7 @@ class ScoreBatch(BaseModel):
 
 class PeriodCreate(BaseModel):
     period_no: int = Field(ge=1)
-    name: str
+    name: str | None = Field(default=None, max_length=100)
     sort_order: int = 0
     enabled: bool = True
 
@@ -219,6 +238,11 @@ class TimetableItem(BaseModel):
 
 
 class TimetableReplace(BaseModel):
+    items: list[TimetableItem] = Field(min_length=1)
+
+
+class TimetableImportApply(BaseModel):
+    periods: list[PeriodCreate] = Field(min_length=1)
     items: list[TimetableItem] = Field(min_length=1)
 
 
@@ -302,6 +326,18 @@ class OnboardingAnalyzeText(BaseModel):
     target_section: Literal["class_info", "subjects", "students", "timetable", "all"]
     expected_revision: int = Field(ge=1)
     text: str = Field(min_length=1, max_length=100_000)
+
+
+class DutyRuleAnalyzeRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=10_000)
+    base_rule: dict[str, Any] = Field(default_factory=dict)
+
+
+class StudentEventAnalyzeRequest(BaseModel):
+    student_id: str
+    event_date: date
+    content: str = Field(min_length=1, max_length=5000)
+    subject: str | None = Field(default=None, max_length=100)
 
 
 class AttachmentLinkCreate(BaseModel):

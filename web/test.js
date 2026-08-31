@@ -63,7 +63,7 @@ async function runChecks() {
   const box = $("#checkResults"); box.innerHTML = ""; let openclaw; let classes; let db;
   for (const [label, path] of checks) {
     const node = document.createElement("div"); node.className = "check"; node.innerHTML = `<b>…</b><div><strong>${escapeHtml(label)}</strong><div class="muted">${escapeHtml(path)}</div></div>`; box.append(node);
-    try { const data = await api(path); node.classList.add("ok"); node.querySelector("b").textContent = "✓"; if (path === "/openclaw/status") openclaw = data; if (path === "/classes") classes = data; if (path.endsWith("overview")) db = data; }
+    try { const data = await api(path); node.classList.add("ok"); node.querySelector("b").textContent = "通过"; if (path === "/openclaw/status") openclaw = data; if (path === "/classes") classes = data; if (path.endsWith("overview")) db = data; }
     catch (error) { node.classList.add("fail"); node.querySelector("b").textContent = "×"; node.querySelector(".muted").textContent = `${path} — ${error.message}`; }
   }
   $("#metricOpenClaw").textContent = openclaw?.ready ? "已连接" : "未就绪"; $("#metricOpenClawSub").textContent = openclaw?.error || openclaw?.gateway_url || "查看巡检结果";

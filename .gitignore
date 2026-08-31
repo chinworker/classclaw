@@ -11,4 +11,5 @@ data/*.db-*
 data/attachments/**
 !data/attachments/.gitkeep
 data/openclaw-agents/
+data/logs/
 backups/

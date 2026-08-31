@@ -96,6 +96,23 @@ class SystemSetting(Base, IdMixin, TimestampMixin):
     value_json: Mapped[dict | list | str | int | float | bool | None] = mapped_column(JSON)
 
 
+class AiUsageRecord(Base, IdMixin):
+    """Token usage reported by the OpenClaw Responses API."""
+
+    __tablename__ = "ai_usage_records"
+    __table_args__ = (Index("ix_ai_usage_created_operation", "created_at", "operation"),)
+
+    source: Mapped[str] = mapped_column(String(50), default="openclaw_responses")
+    operation: Mapped[str] = mapped_column(String(100), index=True)
+    model: Mapped[str | None] = mapped_column(String(200))
+    response_id: Mapped[str | None] = mapped_column(String(200))
+    input_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    output_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    total_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    cached_input_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
 class Student(Base, IdMixin, TimestampMixin, SoftDeleteMixin):
     __tablename__ = "students"
     __table_args__ = (
@@ -141,6 +158,7 @@ class SeatingSnapshot(Base, IdMixin):
     __table_args__ = (Index("ix_seating_current", "class_id", "snapshot_at"),)
 
     class_id: Mapped[str] = mapped_column(ForeignKey("classes.id", ondelete="RESTRICT"))
+    name: Mapped[str] = mapped_column(String(100), default=lambda: f"座位表 {now().strftime('%Y-%m-%d %H:%M')}")
     snapshot_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
     rows: Mapped[int] = mapped_column(Integer)
     cols: Mapped[int] = mapped_column(Integer)
@@ -185,6 +203,7 @@ class DutyAssignment(Base, IdMixin):
     student_id: Mapped[str] = mapped_column(ForeignKey("students.id", ondelete="RESTRICT"), index=True)
     group_name: Mapped[str | None] = mapped_column(String(100))
     status: Mapped[str] = mapped_column(String(20), default="pending")
+    score: Mapped[float | None] = mapped_column(Float)
     replacement_for_assignment_id: Mapped[str | None] = mapped_column(ForeignKey("duty_assignments.id", ondelete="SET NULL"))
     note: Mapped[str | None] = mapped_column(Text)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -329,7 +348,7 @@ class ClassPeriod(Base, IdMixin):
 
     class_id: Mapped[str] = mapped_column(ForeignKey("classes.id", ondelete="CASCADE"), index=True)
     period_no: Mapped[int] = mapped_column(Integer)
-    name: Mapped[str] = mapped_column(String(100))
+    name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
 

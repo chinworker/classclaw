@@ -1,194 +1,346 @@
-const state = { session: null, proposal: null, step: 0, openclawConnected: false, classId: null, classNameCheck: null, classNameCheckTimer: null, agentProvisioned: false, bindingPollTimer: null, bindingPollInFlight: false, bindingPollDeadline: 0 };
-const $ = (selector) => document.querySelector(selector);
-const $$ = (selector) => [...document.querySelectorAll(selector)];
-const form = $("#wizard");
+// ClassClaw 工作台入口：登录恢复、AppShell、路由守卫、页面挂载。
 
-function token() { return $("#apiToken").value.trim(); }
-function operator() { return $("#operator").value.trim() || "网页端用户"; }
-function toast(message, error = false) {
-  const node = $("#toast"); node.textContent = message; node.className = `toast show${error ? " error" : ""}`;
-  clearTimeout(toast.timer); toast.timer = setTimeout(() => { node.className = "toast"; }, 4200);
-}
-async function api(path, options = {}) {
-  const headers = new Headers(options.headers || {}); headers.set("X-ClassClaw-Surface", "web");
-  if (token()) headers.set("Authorization", `Bearer ${token()}`);
-  if (options.body && !(options.body instanceof FormData)) headers.set("Content-Type", "application/json");
-  const response = await fetch(`/api/v1${path}`, { ...options, headers });
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok || payload.success === false) {
-    const error = new Error(payload.error?.message || `HTTP ${response.status}`); error.code = payload.error?.code; error.details = payload.error?.details;
-    if (error.code === "OPENCLAW_CONNECTION_REQUIRED") setConnected(false, error.message);
-    throw error;
-  }
-  return payload.data;
-}
-function setConnected(connected, detail = "") {
-  state.openclawConnected = connected; form.classList.toggle("locked", !connected); $("#newSession").disabled = !connected;
-  $("#openclawBadge").textContent = connected ? "已连接" : "未连接"; $("#openclawBadge").className = `link-badge ${connected ? "ok" : detail ? "error" : ""}`;
-  $("#healthDot").className = `dot ${connected ? "ok" : detail ? "error" : ""}`; $("#healthText").textContent = connected ? "OpenClaw 已连接" : "OpenClaw 未连接";
-  $("#connectionDetail").textContent = detail || "连接检查会同时验证 Gateway、ClassClaw 插件和创建专属智能体所需的管理接口。";
-  $("#reloadSession").disabled = !connected || !state.session;
-}
-function ensureConnected() { if (!state.openclawConnected) throw new Error("请先连接 OpenClaw"); }
-function clean(object) { return Object.fromEntries(Object.entries(object).filter(([, value]) => value !== "" && value !== null && value !== undefined)); }
-function classInfo() {
-  const data = new FormData(form); return clean({ name: data.get("class_name")?.trim(), grade: data.get("grade")?.trim(), head_teacher: data.get("head_teacher")?.trim(), room: data.get("room")?.trim(), semester_name: data.get("semester_name")?.trim(), semester_start: data.get("semester_start"), semester_end: data.get("semester_end") });
-}
-function renderClassNameStatus(message, kind = "") { const node = $("#classNameStatus"); node.textContent = message; node.className = `field-status${kind ? ` ${kind}` : ""}`; }
-async function checkClassName() {
-  const input = form.elements.class_name; const name = input.value.trim();
-  clearTimeout(state.classNameCheckTimer);
-  if (!name) { state.classNameCheck = null; input.setCustomValidity(""); renderClassNameStatus("输入后将检查已有班级和 OpenClaw 智能体"); return true; }
-  if (!state.openclawConnected) { state.classNameCheck = null; input.setCustomValidity(""); renderClassNameStatus("连接 OpenClaw 后自动检查名称"); return false; }
-  renderClassNameStatus("正在检查班级和智能体名称…", "checking");
-  try {
-    const result = await api(`/class-onboarding/name-check?class_name=${encodeURIComponent(name)}`);
-    if (form.elements.class_name.value.trim() !== name) return false;
-    state.classNameCheck = { name, available: result.available }; input.setCustomValidity(result.available ? "" : result.message);
-    renderClassNameStatus(result.message, result.available ? "ok" : "error"); return result.available;
-  } catch (error) {
-    if (form.elements.class_name.value.trim() !== name) return false;
-    state.classNameCheck = { name, available: false }; input.setCustomValidity(error.message); renderClassNameStatus(error.message, "error"); return false;
-  }
-}
-async function ensureClassNameAvailable() {
-  const name = form.elements.class_name.value.trim();
-  if (!name) throw new Error("请填写班级名称");
-  if (state.classNameCheck?.name !== name || !state.classNameCheck.available) {
-    if (!await checkClassName()) throw new Error(form.elements.class_name.validationMessage || "班级名称不可用");
-  }
-}
-function tableInput(value, key, type = "text") { const input = document.createElement("input"); input.type = type; input.value = value ?? ""; input.dataset.key = key; return input; }
-function removeButton() { const button = document.createElement("button"); button.type = "button"; button.className = "row-remove"; button.textContent = "删除"; button.addEventListener("click", () => button.closest("tr").remove()); return button; }
-function appendRow(tableName, row = {}) {
-  const tbody = $(`#${tableName}Table tbody`); const tr = document.createElement("tr");
-  const specs = tableName === "students"
-    ? [["student_no", "text"], ["name", "text"], ["gender", "text"], ["phone", "text"], ["boarding_status", "text"], ["group_no", "text"], ["notes", "text"]]
-    : tableName === "periods" ? [["period_no", "number"], ["name", "text"]]
-      : [["weekday", "number"], ["period_no", "number"], ["subject", "text"], ["teacher", "text"], ["room", "text"]];
-  for (const [key, type] of specs) { const td = document.createElement("td"); td.append(tableInput(row[key], key, type)); tr.append(td); }
-  const action = document.createElement("td"); action.append(removeButton()); tr.append(action); tbody.append(tr);
-}
-function rows(tableName) {
-  return [...$(`#${tableName}Table tbody`).rows].map((tr) => {
-    const row = {}; tr.querySelectorAll("input[data-key]").forEach((input) => { let value = input.value.trim(); if (["weekday", "period_no"].includes(input.dataset.key)) value = value === "" ? null : Number(value); if (value !== "" && value !== null) row[input.dataset.key] = value; });
-    if (tableName === "students") { row.tags = []; row.status = "active"; }
-    if (tableName === "periods") { row.sort_order = row.period_no || 0; row.enabled = true; }
-    return row;
+import { el, clear, toast, todayStr, installEnhancedControls } from "./js/util.js";
+import { onUnauthorized } from "./js/api.js";
+import { login, logout, restoreSession } from "./js/auth.js";
+import { state, clearSession, refreshIdentity, refreshClassInfo, refreshOpenclaw, savePrefs } from "./js/state.js";
+import { defineRoutes, setRouteResolver, startRouter, dispatch, navigate, parseHash } from "./js/router.js";
+import { field, fieldError } from "./js/components.js";
+
+const root = document.getElementById("root");
+installEnhancedControls();
+
+const TEACHER_NAV = [
+  { group: "工作台", items: [
+    { path: "/dashboard", label: "今日仪表盘", requiresClass: true },
+    { path: "/briefing", label: "每日早报", requiresClass: true },
+  ]},
+  { group: "快捷查询", items: [
+    { path: "/query", label: "班级问题查询", requiresClass: true },
+  ]},
+  { group: "学生中心", items: [
+    { path: "/students", label: "学生档案", requiresClass: true },
+    { path: "/seating", label: "座位表", requiresClass: true },
+    { path: "/events", label: "日常表现", requiresClass: true },
+  ]},
+  { group: "教学管理", items: [
+    { path: "/homework", label: "作业", requiresClass: true },
+    { path: "/attendance", label: "考勤", requiresClass: true },
+    { path: "/exams", label: "成绩与考试", requiresClass: true },
+    { path: "/timetable", label: "课表与调课", requiresClass: true },
+  ]},
+  { group: "班级事务", items: [
+    { path: "/duty", label: "值日管理", requiresClass: true },
+    { path: "/arrangements", label: "日常安排", requiresClass: true },
+    { path: "/attachments", label: "班级资料", requiresClass: true },
+    { path: "/class-settings", label: "班级设置", requiresClass: true },
+  ]},
+  { group: "数据分析", items: [
+    { path: "/analytics/students", label: "学生分析", requiresClass: true },
+    { path: "/analytics/class", label: "班级分析", requiresClass: true },
+    { path: "/analytics/attention", label: "重点关注", requiresClass: true },
+  ]},
+  { group: "工作流", items: [
+    { path: "/workflow", label: "待确认记录" },
+  ]},
+  { group: "智能体", items: [
+    { path: "/agent", label: "班级助手与微信" },
+  ]},
+  { group: "账户", items: [
+    { path: "/account", label: "账户设置" },
+  ]},
+];
+
+const ADMIN_NAV = [
+  { group: "控制台", items: [
+    { path: "/admin/overview", label: "运行概览" },
+  ]},
+  { group: "资源", items: [
+    { path: "/admin/users", label: "用户" },
+    { path: "/admin/classes", label: "班级" },
+    { path: "/admin/openclaw", label: "OpenClaw" },
+  ]},
+  { group: "可观测性", items: [
+    { path: "/admin/usage", label: "使用量与 Token" },
+    { path: "/admin/logs", label: "运行日志" },
+    { path: "/admin/database", label: "数据库" },
+    { path: "/admin/audit", label: "审计日志" },
+  ]},
+  { group: "系统", items: [
+    { path: "/admin/settings", label: "功能与常量" },
+  ]},
+];
+
+const NAV = [...TEACHER_NAV, ...ADMIN_NAV];
+
+const PAGE_META = {};
+for (const group of NAV) for (const item of group.items) PAGE_META[item.path] = item;
+
+const routes = [
+  { path: "/dashboard", title: "今日仪表盘", loader: () => import("./js/pages/dashboard.js"), requiresClass: true },
+  { path: "/briefing", title: "每日早报", loader: () => import("./js/pages/briefing.js"), requiresClass: true },
+  { path: "/query", title: "快捷查询", loader: () => import("./js/pages/query.js"), requiresClass: true },
+  { path: "/students", title: "学生档案", loader: () => import("./js/pages/students.js"), requiresClass: true },
+  { path: "/seating", title: "座位表", loader: () => import("./js/pages/seating.js"), requiresClass: true },
+  { path: "/events", title: "日常表现", loader: () => import("./js/pages/events.js"), requiresClass: true },
+  { path: "/homework", title: "作业", loader: () => import("./js/pages/homework.js"), requiresClass: true },
+  { path: "/attendance", title: "考勤", loader: () => import("./js/pages/attendance.js"), requiresClass: true },
+  { path: "/exams", title: "成绩与考试", loader: () => import("./js/pages/exams.js"), requiresClass: true },
+  { path: "/timetable", title: "课表与调课", loader: () => import("./js/pages/timetablePage.js"), requiresClass: true },
+  { path: "/duty", title: "值日管理", loader: () => import("./js/pages/duty.js"), requiresClass: true },
+  { path: "/arrangements", title: "日常安排", loader: () => import("./js/pages/arrangements.js"), requiresClass: true },
+  { path: "/attachments", title: "附件", loader: () => import("./js/pages/attachments.js"), requiresClass: true },
+  { path: "/class-settings", title: "班级设置", loader: () => import("./js/pages/classSettings.js"), requiresClass: true },
+  { path: "/analytics/students", title: "学生分析", loader: () => import("./js/pages/analytics.js"), requiresClass: true, section: "students" },
+  { path: "/analytics/class", title: "班级分析", loader: () => import("./js/pages/analytics.js"), requiresClass: true, section: "class" },
+  { path: "/analytics/attention", title: "重点关注", loader: () => import("./js/pages/analytics.js"), requiresClass: true, section: "attention" },
+  { path: "/workflow", title: "待确认记录", loader: () => import("./js/pages/workflow.js") },
+  { path: "/agent", title: "班级助手与微信", loader: () => import("./js/pages/agent.js") },
+  { path: "/admin/overview", title: "运行概览", loader: () => import("./js/pages/adminOverview.js"), adminOnly: true },
+  { path: "/admin/users", title: "用户管理", loader: () => import("./js/pages/adminUsers.js"), adminOnly: true },
+  { path: "/admin/classes", title: "班级管理", loader: () => import("./js/pages/adminClasses.js"), adminOnly: true },
+  { path: "/admin/openclaw", title: "OpenClaw", loader: () => import("./js/pages/adminAgents.js"), adminOnly: true },
+  { path: "/admin/agents", title: "智能体管理", loader: () => import("./js/pages/adminAgents.js"), adminOnly: true },
+  { path: "/admin/usage", title: "使用量与 Token", loader: () => import("./js/pages/adminUsage.js"), adminOnly: true },
+  { path: "/admin/logs", title: "运行日志", loader: () => import("./js/pages/adminLogs.js"), adminOnly: true },
+  { path: "/admin/database", title: "数据库调试", loader: () => import("./js/pages/adminDatabase.js"), adminOnly: true },
+  { path: "/admin/audit", title: "审计日志", loader: () => import("./js/pages/adminAudit.js"), adminOnly: true },
+  { path: "/admin/settings", title: "功能与常量", loader: () => import("./js/pages/adminSettings.js"), adminOnly: true },
+  { path: "/account", title: "账户设置", loader: () => import("./js/pages/account.js") },
+  { path: "/welcome", title: "创建班级", loader: () => import("./js/pages/welcome.js"), bare: true },
+  { path: "/onboarding", title: "班级创建向导", loader: () => import("./js/pages/onboarding.js") },
+  { path: "/onboarding/:id", title: "班级创建向导", loader: () => import("./js/pages/onboarding.js") },
+];
+defineRoutes(routes);
+
+let shell = null; // { content, navMap, topTitle, topSub, classChip, statusDot, sidebar }
+let loginNotice = null;
+
+/* ---------------- 登录页 ---------------- */
+
+function renderLogin(notice = null) {
+  shell = null;
+  const userInput = el("input", { type: "text", autocomplete: "username", required: true, maxlength: "100" });
+  const passInput = el("input", { type: "password", autocomplete: "current-password", required: true, maxlength: "128" });
+  const errorBox = el("div", { class: "error-panel hidden", role: "alert" });
+  const submit = el("button", { class: "primary", type: "submit" }, "登录");
+  const form = el("form", { novalidate: false },
+    field("用户名", userInput),
+    field("密码", passInput),
+    errorBox,
+    submit,
+  );
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    errorBox.classList.add("hidden");
+    submit.disabled = true;
+    submit.textContent = "登录中…";
+    try {
+      await login(userInput.value.trim(), passInput.value);
+      toast("登录成功", "success");
+      await renderApp();
+    } catch (error) {
+      clear(errorBox);
+      errorBox.append(el("b", {}, error.message));
+      if (error.requestId) errorBox.append(el("div", { class: "error-meta" }, el("span", { class: "tag tag-id" }, `问题编号：${error.requestId}`)));
+      errorBox.classList.remove("hidden");
+    } finally {
+      submit.disabled = false;
+      submit.textContent = "登录";
+      passInput.value = "";
+    }
   });
+  clear(root);
+  root.append(el("div", { class: "login-page" },
+    el("div", { class: "login-card" },
+      el("div", { class: "brand-line" },
+        el("span", { class: "brand-mark" }, "C"),
+        el("div", {}, el("h2", { style: { margin: "0" } }, "ClassClaw"), el("span", { class: "muted" }, "班主任工作台"))),
+      el("p", { class: "muted" }, "班级管理、座位课表、值日作业考勤与班级专属智能体。"),
+      notice ? el("p", { class: "login-hint" }, notice) : null,
+      form,
+      el("p", { class: "login-hint" }, "班主任账号由管理员创建，系统不提供自行注册。"))));
 }
-function renderTables(draft = {}) {
-  for (const name of ["students", "periods", "timetable"]) $(`#${name}Table tbody`).replaceChildren();
-  (draft.students || []).forEach((row) => appendRow("students", row)); (draft.periods || []).forEach((row) => appendRow("periods", row)); (draft.base_timetable || []).forEach((row) => appendRow("timetable", row));
-  $("#studentsEmpty").classList.toggle("hidden", (draft.students || []).length > 0); $("#timetableEmpty").classList.toggle("hidden", (draft.base_timetable || []).length > 0);
-}
-function populate(draft = {}) {
-  const info = draft.class_info || {}; const values = { class_name: info.name, grade: info.grade, head_teacher: info.head_teacher, room: info.room, semester_name: info.semester_name, semester_start: info.semester_start, semester_end: info.semester_end };
-  Object.entries(values).forEach(([name, value]) => { if (form.elements.namedItem(name)) form.elements.namedItem(name).value = value || ""; }); renderTables(draft); checkClassName();
-}
-function draft() { return { class_info: classInfo(), students: rows("students"), periods: rows("periods"), base_timetable: rows("timetable") }; }
-function setStep(step) {
-  state.step = Math.max(0, Math.min(3, step)); $$('[data-panel]').forEach((node) => node.classList.toggle("active", Number(node.dataset.panel) === state.step)); $$('[data-step]').forEach((node) => node.classList.toggle("active", Number(node.dataset.step) === state.step));
-  $("#previous").disabled = state.step === 0; $("#next").classList.toggle("hidden", state.step === 3); $("#preview").classList.toggle("hidden", state.step !== 3); window.scrollTo({ top: 0, behavior: "smooth" });
-}
-function setSession(session) {
-  state.session = session; $("#sessionId").textContent = session?.id || "尚未创建"; $("#reloadSession").disabled = !state.openclawConnected || !session;
-  if (session) { const url = new URL(location.href); url.searchParams.set("session", session.id); history.replaceState({}, "", url); $("#saveState").textContent = `草稿版本 ${session.revision}`; }
-  if (session?.class_id) {
-    state.classId = session.class_id; $("#bindingPanel").classList.remove("hidden"); $("#saveDraft").disabled = true; $("#preview").disabled = true;
-    $("#startBinding").classList.remove("hidden"); $("#skipBinding").classList.remove("hidden"); $("#startBinding").disabled = false; $("#skipBinding").disabled = false; $("#startBinding").textContent = "绑定微信";
-    $("#bindingMessage").textContent = "班级已创建。可选择绑定微信，也可以暂不绑定。";
-  }
-}
-async function connect() {
-  sessionStorage.setItem("classclaw-token", token()); sessionStorage.setItem("classclaw-operator", operator()); $("#connectOpenClaw").disabled = true;
-  try { const status = await api("/openclaw/status?refresh=true"); if (!status.ready) throw new Error(status.error || "OpenClaw 连接检查未通过"); setConnected(true, `Gateway、ClassClaw 插件和管理接口均已连接；主智能体：${status.agent_id}`); const id = new URL(location.href).searchParams.get("session"); if (id) await loadSession(id); else await checkClassName(); toast("OpenClaw 已连接，可以创建班级"); }
-  catch (error) { setConnected(false, error.message); toast(error.message, true); }
-  finally { $("#connectOpenClaw").disabled = false; }
-}
-async function createSession() {
-  ensureConnected(); if (form.elements.class_name.value.trim()) await ensureClassNameAvailable(); const session = await api("/class-onboarding/sessions", { method: "POST", body: JSON.stringify({ created_by: operator(), initial_draft: { class_info: classInfo(), students: [], periods: [], base_timetable: [] } }) });
-  setSession(session); state.proposal = null; state.classId = null; renderTables(session.draft_json); setStep(0); $("#bindingPanel").classList.add("hidden"); toast("网页班级草稿已建立");
-}
-async function saveDraft() {
-  ensureConnected(); await ensureClassNameAvailable(); if (!state.session) await createSession();
-  const updated = await api(`/class-onboarding/sessions/${state.session.id}`, { method: "PATCH", body: JSON.stringify({ expected_revision: state.session.revision, current_step: ["class_info", "students", "timetable", "review"][state.step], draft_patch: draft(), replace_lists: true }) });
-  setSession(updated); state.proposal = null; $("#reviewContent").classList.add("hidden"); $("#reviewEmpty").classList.remove("hidden"); toast("当前结构化数据已保存，不会再由智能体改写"); return updated;
-}
-async function loadSession(id = state.session?.id) { if (!id) return; const current = await api(`/class-onboarding/sessions/${id}`); setSession(current); populate(current.draft_json || {}); }
-async function uploadFiles(zone, files) {
-  ensureConnected(); if (!files.length) return; if (files.length > 8) throw new Error("每次最多上传 8 个文件"); if (!state.session) await createSession(); else await saveDraft();
-  zone.classList.add("processing"); const body = new FormData(); body.set("target_section", zone.dataset.target); body.set("expected_revision", state.session.revision); [...files].forEach((file) => body.append("files", file));
-  try { toast("OpenClaw 正在独立解析本次文件…"); const result = await api(`/class-onboarding/sessions/${state.session.id}/files`, { method: "POST", body }); setSession(result.session); populate(result.session.draft_json || {}); zone.classList.add("success"); const warnings = result.analysis?.warnings || []; toast(warnings.length ? `解析完成，有 ${warnings.length} 项需核对` : "解析完成，请核对下方结构化表格", warnings.length > 0); }
-  catch (error) { zone.classList.add("failed"); toast(error.message, true); throw error; }
-  finally { zone.classList.remove("processing"); setTimeout(() => zone.classList.remove("success", "failed"), 2600); }
-}
-function showReview(proposal) {
-  const preview = proposal.preview_json; const summary = preview.summary || {}; const metrics = [[summary.student_count || 0, "学生"], [summary.subject_count || 0, "课表科目"], [summary.period_count || 0, "节次"], [summary.timetable_item_count || 0, "课程"]];
-  $("#reviewSummary").innerHTML = metrics.map(([value, label]) => `<div class="metric"><b>${value}</b><span>${label}</span></div>`).join("");
-  const issues = [...(preview.missing_fields || []).map((value) => `缺少：${value}`), ...(preview.validation_errors || []).map((value) => value.message || JSON.stringify(value)), ...(preview.low_confidence_evidence || []).map((value) => `低置信度：${value.location || value.summary || "文件字段"}`)];
-  $("#reviewWarnings").innerHTML = issues.length ? issues.map((value) => `<div class="warning error"></div>`).join("") : '<div class="warning">后端校验通过。科目由当前课表归纳，未设置科目满分。</div>';
-  $("#reviewWarnings").querySelectorAll(".warning.error").forEach((node, index) => { node.textContent = issues[index]; });
-  $("#reviewEmpty").classList.add("hidden"); $("#reviewContent").classList.remove("hidden"); $("#commit").disabled = true;
-}
-async function preview() { await saveDraft(); state.proposal = await api(`/class-onboarding/sessions/${state.session.id}/preview`, { method: "POST", body: JSON.stringify({ requested_by: operator() }) }); showReview(state.proposal); toast(state.proposal.preview_json.ready ? "最终预览已生成，请逐项复核" : "预览仍有缺失或格式问题", !state.proposal.preview_json.ready); }
-function updateCommit() { const expected = form.elements.class_name.value.trim(); $("#commit").disabled = !state.proposal?.preview_json?.ready || !$("#confirmCheck").checked || $("#confirmName").value.trim() !== expected; }
-async function commit() {
-  if (!state.proposal) return; $("#commit").disabled = true;
-  try { const completed = await api(`/write-proposals/${state.proposal.id}/confirm`, { method: "POST", body: JSON.stringify({ revision: state.proposal.revision, confirmed_by: operator(), confirmation_note: "网页端已核对结构化名单与课表" }) }); state.classId = completed.result_json.class_id; $("#reviewContent").classList.add("hidden"); $("#reviewEmpty").classList.add("hidden"); $("#bindingPanel").classList.remove("hidden"); $("#saveDraft").disabled = true; $("#preview").disabled = true; toast("班级已创建，正在创建专属智能体…"); await provisionAgent(); }
-  catch (error) { toast(error.message, true); updateCommit(); }
-}
-async function provisionAgent() {
-  if (!state.classId) return null;
-  $("#startBinding").disabled = true; $("#skipBinding").disabled = true; $("#bindingMessage").textContent = "正在创建专属智能体并写入身份与系统提示词…";
-  try {
-    const binding = await api(`/classes/${state.classId}/agent-binding/provision`, { method: "POST", body: "{}" });
-    state.agentProvisioned = true; $("#startBinding").disabled = false; $("#skipBinding").disabled = false; $("#startBinding").textContent = "绑定微信"; $("#bindingMessage").textContent = `专属智能体 ${binding.agent_name} 已创建。微信为可选项，可现在绑定或暂时跳过。`; return binding;
-  } catch (error) {
-    state.agentProvisioned = false; $("#startBinding").disabled = false; $("#skipBinding").disabled = false; $("#bindingMessage").textContent = `智能体创建失败：${error.message}。可以重试绑定或暂后处理。`; toast(error.message, true); return null;
-  }
-}
-async function startBinding(force = false) {
-  if (!state.classId) return; stopBindingPolling(); state.bindingPollDeadline = Date.now() + 5 * 60 * 1000; $("#startBinding").disabled = true; $("#skipBinding").disabled = true; $("#bindingMessage").textContent = "正在启动微信登录会话…";
-  try { const result = await api(`/classes/${state.classId}/agent-binding/start`, { method: "POST", body: JSON.stringify({ force }) }); if (!showBinding(result)) scheduleBindingPoll(); }
-  catch (error) { $("#qrArea").classList.add("hidden"); $("#bindingMessage").textContent = `${error.message}。修复 OpenClaw 配置后可重试，或选择暂不绑定微信。`; $("#startBinding").disabled = false; $("#skipBinding").disabled = false; toast(error.message, true); }
-}
-function showBinding(result) {
-  const binding = result.binding || {}; if (result.connected && result.route_ready !== false) { stopBindingPolling(); $("#bindingMessage").textContent = `绑定完成：${binding.agent_name} 已连接微信账号 ${binding.channel_account_id || ""}，消息路由已就绪。`; $("#qrArea").classList.add("hidden"); $("#startBinding").classList.add("hidden"); $("#skipBinding").classList.add("hidden"); toast("班级专属智能体、微信与消息路由已就绪"); return true; }
-  $("#bindingMessage").textContent = `${result.message || "专属智能体已创建，请扫码绑定微信。"} 网页正在自动等待扫码结果。`;
-  const qr = $("#wechatQr"); const qrError = $("#qrError");
-  if (result.qr_data_url) { qr.onload = () => { qr.classList.remove("hidden"); qrError.classList.add("hidden"); }; qr.onerror = () => { qr.classList.add("hidden"); qrError.textContent = "二维码图片加载失败，请点击“重新生成二维码”。"; qrError.classList.remove("hidden"); }; qr.src = result.qr_data_url; $("#qrArea").classList.remove("hidden"); }
-  else { qr.classList.add("hidden"); qrError.textContent = "未获得二维码，请点击“重新生成二维码”。"; qrError.classList.remove("hidden"); $("#qrArea").classList.remove("hidden"); }
-  $("#startBinding").disabled = false; $("#skipBinding").disabled = false; $("#startBinding").textContent = "重新生成二维码";
-  return false;
-}
-async function skipBinding() {
-  stopBindingPolling(); $("#skipBinding").disabled = true; $("#startBinding").disabled = true;
-  try {
-    await api(`/classes/${state.classId}/agent-binding/provision`, { method: "POST", body: "{}" }); state.agentProvisioned = true;
-    $("#qrArea").classList.add("hidden"); $("#skipBinding").classList.add("hidden"); $("#startBinding").disabled = false; $("#startBinding").textContent = "以后绑定微信"; $("#bindingMessage").textContent = "本班已选择暂不绑定微信；班级和专属智能体均已保留，以后仍可在这里绑定。"; toast("已跳过微信绑定");
-  } catch (error) { $("#skipBinding").disabled = false; $("#startBinding").disabled = false; $("#bindingMessage").textContent = `暂时无法保存选择：${error.message}`; toast(error.message, true); }
-}
-function stopBindingPolling() { clearTimeout(state.bindingPollTimer); state.bindingPollTimer = null; state.bindingPollInFlight = false; }
-function scheduleBindingPoll(delay = 1200) { clearTimeout(state.bindingPollTimer); state.bindingPollTimer = setTimeout(pollBinding, delay); }
-async function pollBinding() {
-  if (!state.classId || state.bindingPollInFlight) return;
-  if (Date.now() >= state.bindingPollDeadline) { stopBindingPolling(); $("#bindingMessage").textContent = "自动等待扫码已超时；需要时可重新生成二维码。"; return; }
-  state.bindingPollInFlight = true;
-  try {
-    const result = await api(`/classes/${state.classId}/agent-binding/wait`, { method: "POST", body: "{}" });
-    if (!showBinding(result)) scheduleBindingPoll(1800);
-  } catch (error) {
-    $("#bindingMessage").textContent = `自动确认暂未完成：${error.message}。网页会继续重试。`;
-    scheduleBindingPoll(3000);
-  } finally { state.bindingPollInFlight = false; }
-}
-form.addEventListener("submit", (event) => event.preventDefault()); $("#connectOpenClaw").addEventListener("click", connect); $("#newSession").addEventListener("click", createSession); $("#reloadSession").addEventListener("click", () => loadSession().catch((error) => toast(error.message, true)));
-form.elements.class_name.addEventListener("input", () => { state.classNameCheck = null; form.elements.class_name.setCustomValidity(""); clearTimeout(state.classNameCheckTimer); renderClassNameStatus("等待检查…", "checking"); state.classNameCheckTimer = setTimeout(() => checkClassName(), 450); });
-form.elements.class_name.addEventListener("blur", () => checkClassName());
-$("#saveDraft").addEventListener("click", () => saveDraft().catch((error) => toast(error.message, true))); $("#previous").addEventListener("click", () => setStep(state.step - 1)); $("#next").addEventListener("click", async () => { try { await saveDraft(); setStep(state.step + 1); } catch (error) { toast(error.message, true); } }); $("#preview").addEventListener("click", () => preview().catch((error) => toast(error.message, true))); $("#confirmCheck").addEventListener("change", updateCommit); $("#confirmName").addEventListener("input", updateCommit); $("#commit").addEventListener("click", commit); $("#startBinding").addEventListener("click", () => startBinding(true)); $("#skipBinding").addEventListener("click", skipBinding);
-$$('[data-step]').forEach((button) => button.addEventListener("click", () => setStep(Number(button.dataset.step)))); $$(".add-row").forEach((button) => button.addEventListener("click", () => { appendRow(button.dataset.table); $(`#${button.dataset.table === "timetable" ? "timetable" : button.dataset.table === "students" ? "students" : "timetable"}Empty`)?.classList.add("hidden"); }));
-$$('.dropzone').forEach((zone) => { const input = zone.querySelector('input[type="file"]'); zone.addEventListener("click", () => input.click()); zone.addEventListener("keydown", (event) => { if (["Enter", " "].includes(event.key)) { event.preventDefault(); input.click(); } }); input.addEventListener("change", () => uploadFiles(zone, input.files).catch(() => {})); zone.addEventListener("dragover", (event) => { event.preventDefault(); zone.classList.add("dragging"); }); zone.addEventListener("dragleave", () => zone.classList.remove("dragging")); zone.addEventListener("drop", (event) => { event.preventDefault(); zone.classList.remove("dragging"); uploadFiles(zone, event.dataTransfer.files).catch(() => {}); }); });
 
-$("#apiToken").value = sessionStorage.getItem("classclaw-token") || ""; $("#operator").value = sessionStorage.getItem("classclaw-operator") || "班主任"; renderTables();
-if (token()) connect(); else setConnected(false);
+/* ---------------- AppShell ---------------- */
+
+function buildShell() {
+  const isAdmin = state.user?.role === "admin";
+  const sidebar = el("aside", { class: "sidebar", id: "sidebar" });
+  sidebar.append(el("div", { class: "brand-line" },
+    el("span", { class: "brand-mark" }, "C"),
+    el("div", {}, el("b", {}, isAdmin ? "ClassClaw Control" : "ClassClaw"), el("span", { class: "muted", style: { fontSize: "12px" } }, isAdmin ? "ADMIN CONSOLE" : "班主任工作台"))));
+  const navMap = new Map();
+  for (const group of (isAdmin ? ADMIN_NAV : TEACHER_NAV)) {
+    const box = el("div", { class: "nav-group" }, el("div", { class: "nav-group-title" }, group.group));
+    for (const item of group.items) {
+      const btn = el("button", { class: "nav-item", type: "button" }, item.label);
+      btn.addEventListener("click", () => { navigate(item.path); closeSidebar(); });
+      navMap.set(item.path, btn);
+      box.append(btn);
+    }
+    sidebar.append(box);
+  }
+
+  const hamburger = el("button", { class: "hamburger", type: "button", "aria-label": "打开导航" }, "菜单");
+  hamburger.addEventListener("click", openSidebar);
+  const topTitle = el("div", {}, el("div", { class: "page-title" }, "…"), el("div", { class: "page-sub" }));
+  const classChip = el("span", { class: "class-chip hidden" });
+  const statusDot = isAdmin ? el("span", { class: "status-dot", title: "智能服务状态" }) : null;
+  const statusBtn = isAdmin ? el("button", { class: "text-button", type: "button", style: { display: "flex", alignItems: "center", gap: "6px" } }, statusDot, "智能服务") : null;
+  statusBtn?.addEventListener("click", () => navigate("/admin/openclaw"));
+  const today = el("span", { class: "today" }, todayStr());
+
+  const menuBtn = el("button", { class: "user-menu-btn", type: "button", "aria-haspopup": "menu" },
+    el("span", { class: "avatar" }, state.user?.role === "admin" ? "管" : (state.user?.display_name || state.user?.username || "?").slice(0, 1)),
+    el("span", {}, state.user?.display_name || state.user?.username || ""),
+    el("span", { class: "muted", style: { fontSize: "12px" } }, state.user?.role === "admin" ? "管理员" : "班主任"));
+  const menuBox = el("div", { class: "user-menu" }, menuBtn);
+  menuBtn.addEventListener("click", () => {
+    if (menuBox.querySelector(".user-menu-pop")) { menuBox.querySelector(".user-menu-pop").remove(); return; }
+    const pop = el("div", { class: "user-menu-pop", role: "menu" },
+      el("button", { type: "button", onclick: () => { navigate("/account"); pop.remove(); } }, "账户设置"),
+      el("button", { type: "button", onclick: async () => { pop.remove(); await logout(); renderLogin("已退出登录"); } }, "退出登录"));
+    menuBox.append(pop);
+    const dismiss = (e) => { if (!menuBox.contains(e.target)) { pop.remove(); document.removeEventListener("mousedown", dismiss); } };
+    document.addEventListener("mousedown", dismiss);
+  });
+
+  const topbar = el("header", { class: "topbar" },
+    hamburger, topTitle, classChip, el("span", { class: "spacer" }),
+    statusBtn, today, menuBox);
+
+  const content = el("main", { class: "content", id: "content" });
+  const main = el("div", { class: "main" }, topbar, content);
+  clear(root);
+  root.append(el("div", { class: `shell${isAdmin ? " admin-shell" : ""}` }, sidebar, main));
+  shell = { content, navMap, topTitle, topSub: topTitle.querySelector(".page-sub"), classChip, statusDot, sidebar };
+  if (isAdmin) refreshOpenclawDot();
+}
+
+function openSidebar() {
+  shell.sidebar.classList.add("open");
+  const backdrop = el("div", { class: "sidebar-backdrop" });
+  backdrop.addEventListener("click", closeSidebar);
+  document.body.append(backdrop);
+  shell.backdrop = backdrop;
+  const onKey = (e) => { if (e.key === "Escape") { closeSidebar(); document.removeEventListener("keydown", onKey); } };
+  document.addEventListener("keydown", onKey);
+}
+function closeSidebar() {
+  shell?.sidebar.classList.remove("open");
+  shell?.backdrop?.remove();
+}
+
+async function refreshOpenclawDot() {
+  if (!shell?.statusDot) return;
+  try {
+    const status = state.openclaw?.ready !== undefined && !state.openclawDirty ? state.openclaw : await refreshOpenclaw();
+    shell.statusDot.className = `status-dot ${status.ready ? "ok" : "bad"}`;
+    shell.statusDot.title = status.ready ? "OpenClaw 已连接" : `OpenClaw 未就绪：${status.error || ""}`;
+  } catch {
+    shell.statusDot.className = "status-dot bad";
+    shell.statusDot.title = "OpenClaw 状态检查失败";
+  }
+}
+
+function updateClassChip() {
+  if (!shell) return;
+  if (state.classInfo?.name) {
+    shell.classChip.textContent = state.classInfo.name;
+    shell.classChip.classList.remove("hidden");
+  } else if (state.classId) {
+    shell.classChip.textContent = "当前班级";
+    shell.classChip.classList.remove("hidden");
+  } else {
+    shell.classChip.classList.add("hidden");
+  }
+}
+
+/* ---------------- 路由守卫与页面挂载 ---------------- */
+
+setRouteResolver(async (route, ctx) => {
+  if (!state.user) { renderLogin("请先登录"); return; }
+  const isAdmin = state.user.role === "admin";
+  if (route.adminOnly && !isAdmin) {
+    mountErrorState("权限不足", "该页面仅管理员可以访问。", "403");
+    return;
+  }
+  if (isAdmin && !route.adminOnly && route.path !== "/account") {
+    navigate("/admin/overview");
+    return;
+  }
+  // 无班级班主任：只能停留在 welcome / onboarding / account / agent / workflow
+  if (!isAdmin && !state.classId && !["/welcome", "/onboarding", "/account", "/agent", "/workflow"].some((p) => ctx.path === p || ctx.path.startsWith(`${p}/`))) {
+    navigate("/welcome");
+    return;
+  }
+  if (route.requiresClass && !state.classId && !isAdmin) { navigate("/welcome"); return; }
+  // 无班级管理员访问需要班级的页面：给出班级选择提示
+  if (route.requiresClass && !state.classId && isAdmin) {
+    mountErrorState("管理员没有绑定班级", "请以班主任账号登录，或在用户管理中为账号分配历史班级后由班主任查看。", null);
+    return;
+  }
+
+  const meta = PAGE_META[ctx.path] || {};
+  shell.topTitle.firstChild.textContent = route.title;
+  shell.topSub.textContent = meta.label ? `${meta.group || ""}` : "";
+  for (const [path, btn] of shell.navMap) btn.classList.toggle("active", path === ctx.path);
+  updateClassChip();
+
+  clear(shell.content);
+  const mount = el("div", { class: "page-mount" });
+  shell.content.append(mount);
+  try {
+    const mod = await route.loader();
+    await mod.render(mount, ctx, { refreshShell: renderApp, refreshOpenclawDot });
+  } catch (error) {
+    console.error(error);
+    clear(mount);
+    mount.append(el("div", { class: "error-panel" }, el("b", {}, `页面加载失败：${error.message}`)));
+  }
+});
+
+function mountErrorState(title, hint, code) {
+  clear(shell.content);
+  shell.content.append(el("div", { class: "card" },
+    el("h3", {}, title), el("p", { class: "muted" }, hint),
+    code ? el("span", { class: "tag tag-warn" }, `HTTP ${code}`) : null));
+}
+
+async function renderApp() {
+  buildShell();
+  if (state.classId) {
+    refreshClassInfo().then(updateClassChip).catch(() => {});
+  }
+  const { path } = parseHash();
+  const known = routes.some((r) => r.path === path || (r.path.includes(":") && path.startsWith(r.path.split(":")[0])));
+  if (!known || path === "/") {
+    navigate(state.user.role === "admin" ? "/admin/overview" : state.classId ? "/dashboard" : "/welcome");
+    return;
+  }
+  await dispatch();
+}
+
+/* ---------------- 启动 ---------------- */
+
+onUnauthorized(() => {
+  const wasLoggedIn = !!state.user;
+  clearSession();
+  renderLogin(wasLoggedIn ? "登录已过期，请重新登录。" : null);
+});
+
+startRouter();
+
+(async function boot() {
+  try {
+    const me = await restoreSession();
+    if (me) {
+      await renderApp();
+    } else {
+      renderLogin();
+    }
+  } catch (error) {
+    renderLogin(`服务暂不可用：${error.message}`);
+  }
+})();

@@ -143,6 +143,12 @@ def update_teacher(db: Session, user_id: str, data: UserUpdate) -> User:
     if user.role == "admin":
         raise AppError("ADMIN_ACCOUNT_PROTECTED", "唯一管理员账号不能通过用户管理接口修改", 409)
     changes = data.model_dump(exclude_unset=True)
+    if "username" in changes:
+        username = normalize_username(changes["username"])
+        collision = db.scalar(select(User).where(User.username == username, User.id != user.id))
+        if collision:
+            raise AppError("USERNAME_CONFLICT", "用户名已存在", 409, {"username": username})
+        user.username = username
     if "display_name" in changes:
         value = changes["display_name"]
         user.display_name = value.strip() if value else None
@@ -151,8 +157,29 @@ def update_teacher(db: Session, user_id: str, data: UserUpdate) -> User:
         if not user.is_active:
             db.query(UserSession).filter(UserSession.user_id == user.id, UserSession.revoked_at.is_(None)).update({"revoked_at": now()})
     audit(db, "update", "user", user.id, operator_type="admin")
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise AppError("USERNAME_CONFLICT", "用户名已存在", 409) from exc
     return user
+
+
+def delete_teacher(db: Session, user_id: str) -> dict:
+    user = db.get(User, user_id)
+    if not user:
+        raise AppError("NOT_FOUND", "用户不存在", 404, {"id": user_id})
+    if user.role != "head_teacher":
+        raise AppError("ADMIN_ACCOUNT_PROTECTED", "唯一管理员账号不能删除", 409)
+    username = user.username
+    class_ids = list(db.scalars(select(ClassRoom.id).where(ClassRoom.owner_user_id == user.id, ClassRoom.deleted_at.is_(None))))
+    db.query(UserSession).filter(UserSession.user_id == user.id, UserSession.revoked_at.is_(None)).update({"revoked_at": now()})
+    for cls in db.scalars(select(ClassRoom).where(ClassRoom.owner_user_id == user.id)):
+        cls.owner_user_id = None
+    audit(db, "delete", "user", user.id, operator_type="admin", before={"username": username, "class_ids": class_ids})
+    db.delete(user)
+    db.commit()
+    return {"id": user_id, "username": username, "deleted": True, "unassigned_class_ids": class_ids}
 
 
 def reset_teacher_password(db: Session, user_id: str) -> User:

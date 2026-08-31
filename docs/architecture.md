@@ -20,10 +20,12 @@ OpenClaw 对话式班级引导 ─→ Skill + 受限工具 ──────┘
 
 `app/main.py` 注入请求 ID，统一处理业务错误、参数错误和 SQLite busy/locked。`app/api/v1` 按领域拆分路由；`app/services` 实现业务；`app/analytics` 仅基于数据库事实生成结构化指标和证据；`scripts` 提供初始化、种子、备份、恢复和附件维护。
 
-关键边界：没有任意 SQL/Python/URL 执行接口；proposal 只能选择白名单 operation；预览保存归一化 payload、revision 和有效期，确认后由固定执行器完成写入。班主任请求按唯一班级归属隔离。删除学生使用软删除；附件文件名由 UUID 生成；账户、删除和智能体绑定等关键动作写轻量审计，不保存整份前后快照。
+关键边界：没有任意 SQL/Python/URL 执行接口；proposal 只能选择白名单 operation；预览保存归一化 payload、revision 和有效期，确认后由固定执行器完成写入。班主任请求按唯一班级归属隔离。删除学生使用软删除；班级彻底删除先清理外部 Agent 运行配置，再原子清理班级业务数据并保留轻量审计；附件文件名由 UUID 生成；审计不保存整份前后快照。
 
 OpenClaw 插件是传输与工具边界，Skill 是对话和分析流程边界。插件注册读、附件暂存、interaction analysis、proposal 和提交工具，不暴露创建班级/onboarding mutation；提交钩子只注入可信班级范围，不创建额外审批卡。班级专属 agent 的可信 `agentId` 映射为固定 `class_id`。
 
 `interaction_analyses` 保留渠道、外部消息 ID、附件引用、选定班级、OpenClaw agent、结构化输出、置信度、警告、澄清问题及 proposal IDs，但不保留消息原文。只有 `awaiting_review` 状态会包含经过后端校验的 proposal，仍不表示已写入业务表。
 
 班级 onboarding 只能由网页创建和修改。文件经无历史的 OpenClaw extraction turn 全量替换目标列表，人工修改结构化表格后不再经过模型。最终确认在一个事务中创建班级、从课表归纳的科目、学生、节次、基础课表和 agent binding 记录；随后以可重试的外部流程创建 OpenClaw agent、微信登录与 route binding。低配置部署使用一个 Uvicorn worker。SQLite 使用 WAL、外键和 5 秒 busy timeout。
+
+已有班级的课表和座位文件导入、值日自然语言规则同样遵循“模型只提取预览，网页核对后调用固定领域接口保存”。课表文件应用在单事务中更新识别到的节次并替换基础课表；座位文件只返回已映射真实学生的矩阵，保存时仍走座位快照校验。

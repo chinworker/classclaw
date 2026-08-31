@@ -33,10 +33,13 @@ openclaw config set tools.alsoAllow '["classclaw","classclaw_commit_write","clas
 openclaw config set gateway.auth.mode token
 openclaw config set gateway.auth.token 'OpenClaw Gateway Token'
 openclaw config set gateway.http.endpoints.responses.enabled true
+openclaw config set plugins.entries.classclaw.config.timeoutMs 120000
 openclaw gateway restart
 ```
 
-`/tools/invoke` 用于验证 ClassClaw 插件确实已加载，`/v1/responses` 用于处理网页上传文件。两者都保持在本机或可信内网，不要暴露到公网。
+`/tools/invoke` 用于验证 ClassClaw 插件确实已加载，`/v1/responses` 用于处理网页上传文件。两者都保持在本机或可信内网，不要暴露到公网。`timeoutMs` 是智能体调用 `classclaw_analyze_interaction` 等工具的等待上限，必须不小于后端的 `CLASSCLAW_OPENCLAW_TIMEOUT_SECONDS`，否则分析较慢时工具调用会先超时失败。
+
+JSON 提取默认走自动创建的轻量提取智能体（详见 [专属智能体与微信使用说明](class-agent-onboarding.md) §5.1）：首次分析时后端会通过 admin RPC 创建 `classclaw-extractor`（无工具），清洗规范自动写入 `data/openclaw-agents/_extractor/AGENTS.md`（内容哈希变化时自动覆写，手工修改会被下次版本更新覆盖）。因此 OpenClaw 侧必须启用 `admin-http-rpc`；未启用时后端自动回退主智能体。
 
 ## 2. 配置并启动 ClassClaw 后端
 
@@ -155,6 +158,8 @@ POST  /api/v1/classes/{class_id}/agent-binding/wait
 
 OpenClaw 能可靠读取的任何类型都可以进入流程。对于加密文件、损坏文件或缺少解析器的专有格式，正确行为是保留原附件并请用户提供密码或导出为 PDF、图片、CSV/XLSX、音频或文本，而不是猜测内容。
 
+管理员控制台通过 OpenClaw 原生 `models.list`、`usage.cost`、`logs.tail` 和白名单配置写入接口提供专业运维能力。当前 `admin-http-rpc` 不放行 `sessions.usage`，因此后端从 `CLASSCLAW_OPENCLAW_STATE_DIR` 只读提取各 Agent transcript 的时间、role、duration、usage 和 stopReason 元数据，用于调用次数与响应耗时统计；消息正文被忽略，也不会写入 ClassClaw 数据库或日志。没有有效耗时字段时保留为空，不用零值代替。Gateway Token 始终只由后端读取。
+
 ## 6. 统一分析 API（供其他网页页面或渠道使用）
 
 其他网页模块如果以后增加“随手记”“粘贴通知”“批量导入”等自由输入，不应直接调用业务写接口，而应调用：
@@ -195,3 +200,25 @@ Content-Type: application/json
 - 返回 `needs_clarification`：不是失败。把问题展示给用户，补充信息后重新分析。
 - proposal 无法确认：检查是否过期、revision 是否变化、onboarding 草稿是否在预览后修改；重新生成预览。
 - 微信重复执行：确保传稳定 `external_message_id` 和 `idempotency_key`，并在新澄清轮次使用新的 key。
+- session 越积越多：见下节「Session 治理」。
+
+## 8. Session 治理（一次性分析会话的清理）
+
+ClassClaw 在 OpenClaw 中产生三类 session：
+
+1. **提取会话（一次性，会累积）**：每次后端分析调用都用唯一 `user` 键（`classclaw-onboarding-import-*`、`classclaw-timetable-import-*`、`classclaw-seating-import-*`、`classclaw-duty-rule-*`、`classclaw-event-*`、`classclaw-interaction-*`），在 Responses 端点各生成一个新 session。这是刻意的「无记忆提取」设计：不复用历史可避免跨文件污染，也避免把学生名单等原始文本累积进会话存储。
+2. **聊天会话（长期复用，不要清理）**：微信/网页对话按 `session.dmScope: per-account-channel-peer` 每个会话长期保留，是智能体上下文的来源。
+3. **提醒定时任务**：插件用 `--session isolated --delete-after-run` 创建，执行完自动删除。
+
+提取会话**不应复用**：复用会把原始输入累积进会话历史（违背「不保存消息原文」原则），并让每次调用的上下文随历史增长而变慢。前缀缓存收益不依赖会话复用——静态规范已冻结在 extractor 的 `AGENTS.md`，provider 端前缀缓存跨会话即可命中。
+
+清理依赖 OpenClaw 内建机制（`admin-http-rpc` 白名单不含 `sessions.*`，后端无法代删）：
+
+```bash
+# 预览将被清理的会话
+openclaw sessions cleanup --dry-run
+# 按容量上限立即归档淘汰（超出的最旧会话压缩归档后删除）
+openclaw sessions cleanup --enforce
+```
+
+建议为主智能体与 `classclaw-extractor` 配置容量上限（如 `maxDiskBytes` 调到 `1gb`、`maxEntries` 设数百条），并让空闲提取会话按 `lastInteractionAt` 的空闲/每日重置策略自然退役；已归档和置顶（pinned）的会话不受自动清理影响。需要立即回收磁盘时，用主机 cron 每日执行一次 `openclaw sessions cleanup --enforce`。聊天会话与归档会话不会被上述策略误删。

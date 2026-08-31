@@ -42,6 +42,8 @@ Read [references/use-cases.md](references/use-cases.md) whenever deciding how a 
 - Ask before identity, date, score, attendance status, deletion, or batch scope is ambiguous.
 - Never infer causation from cross-module analytics.
 - If the user reports homework not submitted but explicitly does not want a Homework record, use a `student_event.create`/`student_event.batch` operation with `event_type="homework"` and `subtype="homework_missing"`; do not invent a homework id.
+- Infer student-event subtype, sentiment, and severity from the reported content; do not ask the teacher to classify them. Apply a strict negative standard: unsubmitted work, forgotten materials, lateness, absence, sleeping, noise, disruption, rule-breaking, fighting, and unfinished duties are `negative`, even when mild or common. Use `neutral` only for factual communication or information with no praise, problem, or rule violation.
+- A duty score is 0–5. Match it to exactly one `recent_duty_assignments` record and use `duty.assignment.score`; scoring marks it completed. Ask one short question when the date, duty item, or student does not uniquely identify an assignment.
 - An arrangement may have at most three reminder times. If the user gives no reminder offset, use exactly one default reminder three hours before `start_at`, or before `due_at` when there is no start time. If neither time is known, ask for it.
 - Near-time delivery and the morning briefing are independent. A reminder being sent does not remove the arrangement from that date's `morning_briefing`; always show `today_reminders` in the briefing.
 - All near-time reminders are proactive Agent messages. The backend only stores reminder state; it never sends a user-facing reminder itself.

@@ -7,16 +7,36 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.errors import AppError, not_found
-from app.models.entities import BaseTimetable, ClassPeriod, LessonOverride
+from app.models.entities import BaseTimetable, ClassPeriod, ClassSubject, LessonOverride
 from app.schemas.domain import (
     LessonBatchChangeRequest,
     LessonOverrideCreate,
     LessonSwapRequest,
     PeriodCreate,
+    TimetableImportApply,
     TimetableReplace,
 )
 from app.services.class_student import get_class
 from app.services.common import audit, entity_dict
+
+
+_CN_DIGITS = "零一二三四五六七八九"
+
+
+def default_period_name(period_no: int) -> str:
+    if period_no < 10:
+        number = _CN_DIGITS[period_no]
+    elif period_no < 20:
+        number = "十" + (_CN_DIGITS[period_no % 10] if period_no % 10 else "")
+    elif period_no < 100:
+        number = _CN_DIGITS[period_no // 10] + "十" + (_CN_DIGITS[period_no % 10] if period_no % 10 else "")
+    else:
+        number = str(period_no)
+    return f"第{number}节"
+
+
+def period_display_name(period_no: int, name: str | None = None) -> str:
+    return name.strip() if name and name.strip() else default_period_name(period_no)
 
 
 def lesson_key(lesson_date: date, period_no: int) -> str:
@@ -27,7 +47,9 @@ def lesson_key(lesson_date: date, period_no: int) -> str:
 
 def create_period(db: Session, class_id: str, data: PeriodCreate, *, commit: bool = True) -> ClassPeriod:
     get_class(db, class_id)
-    obj = ClassPeriod(class_id=class_id, **data.model_dump())
+    values = data.model_dump()
+    values["name"] = data.name.strip() if data.name and data.name.strip() else None
+    obj = ClassPeriod(class_id=class_id, **values)
     db.add(obj)
     try:
         db.flush()
@@ -57,10 +79,71 @@ def replace_base_timetable(db: Session, class_id: str, data: TimetableReplace, *
         db.add(obj)
         result.append(obj)
     db.flush()
+    sync_subjects_from_timetable(db, class_id, data.items)
     audit(db, "replace", "base_timetable", class_id, before={"items": before}, after={"items": [entity_dict(x) for x in result]})
     if commit:
         db.commit()
     return result
+
+
+def sync_subjects_from_timetable(db: Session, class_id: str, items: list) -> list[ClassSubject]:
+    """Ensure every course appearing in the timetable is available to subject selectors."""
+    existing = {row.name: row for row in db.scalars(select(ClassSubject).where(ClassSubject.class_id == class_id))}
+    grouped: dict[str, list] = {}
+    for item in items:
+        name = item.subject.strip()
+        if name:
+            grouped.setdefault(name, []).append(item)
+    result: list[ClassSubject] = []
+    for name, lessons in grouped.items():
+        teachers = [lesson.teacher.strip() for lesson in lessons if lesson.teacher and lesson.teacher.strip()]
+        subject = existing.get(name)
+        if subject is None:
+            subject = ClassSubject(
+                class_id=class_id,
+                name=name,
+                teacher=max(set(teachers), key=teachers.count) if teachers else None,
+                weekly_periods=len(lessons),
+                enabled=True,
+            )
+            db.add(subject)
+        else:
+            subject.enabled = True
+            subject.weekly_periods = len(lessons)
+            if not subject.teacher and teachers:
+                subject.teacher = max(set(teachers), key=teachers.count)
+        result.append(subject)
+    db.flush()
+    return result
+
+
+def apply_imported_timetable(db: Session, class_id: str, data: TimetableImportApply) -> dict:
+    """Apply a reviewed file preview in one transaction, updating period labels and replacing the base table."""
+    get_class(db, class_id)
+    seen: set[int] = set()
+    for period in data.periods:
+        if period.period_no in seen:
+            raise AppError("TIMETABLE_CONFLICT", "识别结果中有重复节次")
+        seen.add(period.period_no)
+    existing = {row.period_no: row for row in db.scalars(select(ClassPeriod).where(ClassPeriod.class_id == class_id))}
+    try:
+        for period in data.periods:
+            row = existing.get(period.period_no)
+            if row:
+                row.name = period.name.strip() if period.name and period.name.strip() else None
+                row.sort_order = period.sort_order
+                row.enabled = period.enabled
+            else:
+                values = period.model_dump()
+                values["name"] = period.name.strip() if period.name and period.name.strip() else None
+                db.add(ClassPeriod(class_id=class_id, **values))
+        rows = replace_base_timetable(db, class_id, TimetableReplace(items=data.items), commit=False)
+        subjects = list(db.scalars(select(ClassSubject).where(ClassSubject.class_id == class_id, ClassSubject.enabled.is_(True)).order_by(ClassSubject.name)))
+        db.commit()
+        return {"periods_updated": len(data.periods), "courses_saved": len(rows), "subjects": subjects, "items": rows}
+    except Exception:
+        db.rollback()
+        raise
 
 
 def daily_timetable(db: Session, class_id: str, lesson_date: date) -> list[dict]:
@@ -85,7 +168,7 @@ def daily_timetable(db: Session, class_id: str, lesson_date: date) -> list[dict]
                 "lesson_date": lesson_date,
                 "weekday": lesson_date.isoweekday(),
                 "period_no": base.period_no,
-                "period_name": periods.get(base.period_no).name if periods.get(base.period_no) else f"第{base.period_no}节",
+                "period_name": period_display_name(base.period_no, periods.get(base.period_no).name if periods.get(base.period_no) else None),
                 "subject": None if cancelled else (override.replacement_subject if override and override.replacement_subject is not None else base.subject),
                 "teacher": None if cancelled else (override.replacement_teacher if override and override.replacement_teacher is not None else base.teacher),
                 "room": None if cancelled else (override.replacement_room if override and override.replacement_room is not None else base.room),

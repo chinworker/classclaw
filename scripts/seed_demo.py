@@ -6,13 +6,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from sqlalchemy import select
 
-from app.database import SessionLocal, init_db
+from app.database import init_db, writer_session
 from app.models.entities import ClassPeriod, ClassRoom, Student
 
 
 def seed() -> None:
     init_db()
-    with SessionLocal() as db:
+    with writer_session() as db:
         if db.scalar(select(ClassRoom.id).limit(1)):
             print("数据库已有班级，跳过演示数据")
             return

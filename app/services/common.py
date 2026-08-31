@@ -10,6 +10,7 @@ from app.models.entities import AuditLog
 
 AUDITED_ACTIONS = {
     ("create", "class"),
+    ("hard_delete", "class"),
     ("soft_delete", "student"),
     ("revoke", "student_event"),
     ("create", "user"),

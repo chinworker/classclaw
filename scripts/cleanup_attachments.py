@@ -6,12 +6,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from sqlalchemy import select
 
 from app.config import settings
-from app.database import SessionLocal
+from app.database import reader_session
 from app.models.entities import Attachment, AttachmentLink
 
 
 def list_orphans() -> list[Attachment]:
-    with SessionLocal() as db:
+    with reader_session() as db:
         linked = select(AttachmentLink.attachment_id)
         return list(db.scalars(select(Attachment).where(Attachment.id.not_in(linked))))
 

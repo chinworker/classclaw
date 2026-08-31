@@ -56,7 +56,11 @@ def client(db: Session, monkeypatch):
     async def connected(force: bool = False):
         return {"ready": True, "gateway_live": True, "plugin_ready": True, "gateway_url": "http://openclaw.test", "agent_id": "main"}
 
+    async def extractor_off() -> bool:
+        return False
+
     monkeypatch.setattr(openclaw_bridge, "connection_status", connected)
+    monkeypatch.setattr(openclaw_bridge, "ensure_extractor_agent", extractor_off)
     app.dependency_overrides[get_db] = override
     headers = {"X-ClassClaw-Surface": "web"}
     if settings.api_token:

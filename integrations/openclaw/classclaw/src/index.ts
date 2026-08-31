@@ -15,7 +15,7 @@ const operationTypes = [
   "student.create", "student.update", "seating.update",
   "attendance.set", "homework.create", "homework.status.batch", "student_event.create",
   "student_event.batch", "exam.create", "score.batch", "lesson_override.create", "arrangement.create",
-  "duty.schedule.confirm",
+  "duty.schedule.confirm", "duty.assignment.score",
 ] as const;
 
 const readResources = [

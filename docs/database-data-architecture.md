@@ -18,8 +18,8 @@ ClassClaw 使用 SQLite + SQLAlchemy，当前共有 32 张应用数据表（不�
 | 账户与权限 | `users`, `user_sessions` | 一个管理员；班主任用户名唯一。班主任通过 `classes.owner_user_id` 最多绑定一个班级。Session 只保存 Token 哈希。 |
 | 班级与智能体 | `classes`, `class_subjects`, `class_agent_bindings`, `system_settings` | 班级是业务根。每班最多一条智能体绑定；微信 account 可为空。科目按班级唯一。 |
 | 学生主数据 | `students` | `(class_id, student_no)` 唯一。删除为软删除，历史考勤、事件、成绩仍可追溯。 |
-| 座位 | `seating_snapshots` | 每次修改新增完整快照，不覆盖历史快照。 |
-| 值日 | `duty_rules`, `duty_schedules`, `duty_assignments`, `duty_score_items`, `duty_evaluations`, `duty_evaluation_details` | 规则生成计划，计划生成每日任务；替班保留原任务关系；评分由项目明细汇总。 |
+| 座位 | `seating_snapshots` | 每次修改新增完整命名版本，不覆盖历史；版本可选择、重命名和单独删除。 |
+| 值日 | `duty_rules`, `duty_schedules`, `duty_assignments`, `duty_score_items`, `duty_evaluations`, `duty_evaluation_details` | 规则可增删改查；任务直接使用 0–5 分，评分即完成，过往未评分任务次日补 5 分。 |
 | 作业 | `homework`, `homework_student_statuses` | 作业属于班级；每个学生对每份作业最多一条状态，可重复写入更新。 |
 | 学生事件 | `student_events` | 统一承载作业、考勤、行为、沟通、荣誉及其他事件。撤销为软删除。 |
 | 考勤 | `attendance_records` | `(student_id, attendance_date, period)` 唯一；重复登记同一时段时更新原记录。 |
@@ -30,6 +30,7 @@ ClassClaw 使用 SQLite + SQLAlchemy，当前共有 32 张应用数据表（不�
 | 对话写入 | `interaction_analyses`, `write_proposals` | 分析记录只保留结构化结果和 proposal 关联，不保存聊天原文；proposal 保存归一化 payload、预览、版本、状态与执行结果。 |
 | 网页建班 | `class_onboarding_sessions` | 保存网页建班草稿、版本和状态；最终确认时原子创建班级、学生、科目、节次、课表和智能体绑定记录。 |
 | 轻量审计 | `audit_logs` | 只记录少量关键动作，不保存整份业务消息或前后快照。 |
+| AI 使用量 | `ai_usage_records` | 保存 OpenClaw 报告的 Token 数、模型和调用类型，不保存 prompt 或回复正文。 |
 
 ## 3. 智能体允许的查询操作
 
@@ -98,7 +99,7 @@ ClassClaw 使用 SQLite + SQLAlchemy，当前共有 32 张应用数据表（不�
 
 | 操作 | 用户说法 | 数据效果 |
 |---|---|---|
-| `seating.update` | “把新座位表保存下来。” | 新增一份完整 `seating_snapshots`，旧快照保留。 |
+| `seating.update` | “把新座位表保存下来。” | 新增一份完整 `seating_snapshots`，未命名时按保存时间命名，旧版本保留。 |
 
 交换座位、恢复历史座位在网页有直接接口；智能体当前只能提交完整座位快照。
 
@@ -136,7 +137,7 @@ ClassClaw 使用 SQLite + SQLAlchemy，当前共有 32 张应用数据表（不�
 |---|---|---|
 | `duty.schedule.confirm` | “确认刚才的下周值日排班。” | 只能确认真实、未过期的排班预览；新增计划和每日任务。 |
 
-智能体不得自己构造 `preview_token`。值日规则、临时替班、完成状态、评分项目和评分由网页接口管理。
+智能体不得自己构造 `preview_token`。值日规则和临时替班由网页接口管理；简单的 0–5 分值日评分可由微信对话生成预览，用户确认后写入。
 
 ## 5. 网页或系统专用操作
 
@@ -144,14 +145,14 @@ ClassClaw 使用 SQLite + SQLAlchemy，当前共有 32 张应用数据表（不�
 
 - 账户：登录、退出、改密码；管理员新增/停用班主任、重置密码、分配班级。
 - 建班：onboarding 草稿、文件解析、最终网页复核、智能体创建、可选微信绑定。
-- 班级：修改基本信息、设为当前班级、停用班级。
+- 班级：修改基本信息、设为当前班级、停用班级、彻底删除班级及关联业务数据。
 - 学生：网页直接新增/修改、软删除。
 - 座位：直接保存、交换、从历史快照恢复。
 - 值日：规则校验与保存、排班预览、替班、完成、评分及统计。
 - 作业：网页直接创建和更新状态、查询未交、把未交状态同步为学生事件。
 - 学生事件：网页直接登记、批量登记、查询和软撤销。
 - 考勤：网页直接登记/更正和统计。
-- 考试成绩：网页直接建考试、批量成绩和统计。
+- 考试成绩：网页查询考试列表（含科目）、直接建考试、批量成绩和统计。
 - 课表：节次、基础课表、临时覆盖撤销、互换和批量调课。
 - 安排提醒：完成安排、读取到期提醒、标记提醒成功或失败。
 - 附件：保存附件并关联业务实体。
@@ -159,7 +160,8 @@ ClassClaw 使用 SQLite + SQLAlchemy，当前共有 32 张应用数据表（不�
 
 ## 6. 删除、更新与事务语义
 
-- 软删除：学生和学生事件保留记录并写 `deleted_at`；默认查询不再返回。班级模型预留 `deleted_at`，当前接口采用 `status=inactive` 停用而不是删除。
+- 软删除：学生和学生事件保留记录并写 `deleted_at`；默认查询不再返回。班级停用只改为 `status=inactive` 并保留全部数据。
+- 班级彻底删除：`DELETE /classes/{id}` 先清理 OpenClaw Agent/路由/workspace，再原子删除该班学生、座位、值日、作业、事件、考勤、考试、课表、安排、结构化交互和 onboarding 数据；轻量删除审计保留。删除班级实体后 `owner_user_id` 唯一占位随之释放。
 - 追加快照：座位每次改变都新增快照，不原地改历史。
 - Upsert：考勤、作业学生状态和成绩对其唯一业务键执行新增或更新。
 - 原子批量：聊天中一次确认的多个 proposal 只提交一次事务；其中任何一条失败，全部保持未写入。

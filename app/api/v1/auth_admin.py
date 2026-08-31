@@ -13,7 +13,7 @@ from app.core.security import Principal, require_admin, require_authenticated
 from app.database import Base, get_db
 from app.models.entities import ClassAgentBinding, ClassRoom, User, UserSession
 from app.schemas.auth import LoginRequest, PasswordChange, UserCreate, UserUpdate
-from app.services import accounts
+from app.services import accounts, admin_console
 from app.services import openclaw_provisioning
 from app.utils.time import now
 
@@ -82,6 +82,11 @@ def user_update(request: Request, user_id: str, body: UserUpdate, db: Session = 
     return ok(request, accounts.public_user(user, accounts.user_class_id(db, user.id)), "用户已更新")
 
 
+@admin_router.delete("/users/{user_id}")
+def user_delete(request: Request, user_id: str, db: Session = Depends(get_db)):
+    return ok(request, accounts.delete_teacher(db, user_id), "用户已删除")
+
+
 @admin_router.post("/users/{user_id}/reset-password")
 def user_reset_password(request: Request, user_id: str, db: Session = Depends(get_db)):
     user = accounts.reset_teacher_password(db, user_id)
@@ -115,6 +120,7 @@ def agent_list(request: Request, db: Session = Depends(get_db)):
 
 @admin_router.post("/agents/{class_id}/wechat/start")
 async def agent_wechat_start(request: Request, class_id: str, force: bool = Body(default=True, embed=True), db: Session = Depends(get_db)):
+    admin_console.require_feature(db, "feature.wechat_binding")
     return ok(request, await openclaw_provisioning.start_wechat_binding(db, class_id, force), "智能体配置已刷新，请扫码绑定微信")
 
 
@@ -142,9 +148,10 @@ def database_table(
     request: Request,
     table_name: str,
     offset: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=200),
+    limit: int | None = Query(None, ge=1, le=200),
     db: Session = Depends(get_db),
 ):
+    limit = limit or int(admin_console.setting_value(db, "admin.database_page_size"))
     table = Base.metadata.tables.get(table_name)
     if table is None:
         raise AppError("NOT_FOUND", "数据库表不存在", 404, {"table": table_name})

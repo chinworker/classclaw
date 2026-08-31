@@ -1,56 +1,16 @@
 <!doctype html>
 <html lang="zh-CN">
 <head>
-  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="ClassClaw 网页专属的新班级创建向导">
-  <title>ClassClaw · 新班级向导</title><link rel="stylesheet" href="./styles.css">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="ClassClaw 班主任工作台：班级、学生、座位、课表、值日、作业、考勤、成绩与智能体绑定">
+  <title>ClassClaw · 班主任工作台</title>
+  <link rel="stylesheet" href="./styles.css?v=20260831-admin-pro">
 </head>
 <body>
-  <header class="topbar"><a class="brand" href="./"><span class="brand-mark">C</span><span><strong>ClassClaw</strong><small>班级创建与智能体绑定</small></span></a><div class="connection"><a href="./test.html" class="text-button">API 验收台</a><span id="healthDot" class="dot"></span><span id="healthText">等待连接</span></div></header>
-  <main class="shell">
-    <aside class="rail">
-      <p class="eyebrow">网页专属流程</p><h1>先建立班级，再为它接上一位专属助理。</h1>
-      <p class="lede">新班级只能在这里创建。OpenClaw 负责解析本次上传的文件；你在结构化表格中的修改会被直接保存，不再交给智能体二次改写。</p>
-      <nav id="steps" class="steps">
-        <button type="button" data-step="0" class="active"><b>1</b><span>班级信息<small>确定性基本字段</small></span></button>
-        <button type="button" data-step="1"><b>2</b><span>学生名单<small>上传并核对表格</small></span></button>
-        <button type="button" data-step="2"><b>3</b><span>课表与科目<small>从课表自动归纳</small></span></button>
-        <button type="button" data-step="3"><b>4</b><span>复核与微信<small>创建智能体并扫码</small></span></button>
-      </nav>
-      <section class="session-card"><span>网页创建会话</span><code id="sessionId">尚未创建</code><button id="reloadSession" class="text-button" disabled>刷新草稿</button></section>
-    </aside>
-    <section class="workspace">
-      <section class="setup-card">
-        <div class="setup-title"><div><p class="eyebrow">必需连接</p><h2>先连接 OpenClaw</h2></div><span id="openclawBadge" class="link-badge">未连接</span></div>
-        <div class="setup-fields"><label>ClassClaw API Token<input id="apiToken" type="password" autocomplete="off" placeholder="与 .env 中一致"></label><label>操作人<input id="operator" value="班主任" maxlength="100"></label><button id="connectOpenClaw" class="primary">连接 OpenClaw</button><button id="newSession" class="secondary" disabled>开始新建</button></div>
-        <p id="connectionDetail" class="hint">连接检查会同时验证 Gateway、ClassClaw 插件和创建专属智能体所需的管理接口。</p>
-      </section>
-      <form id="wizard" class="locked" novalidate>
-        <div id="wizardLock" class="wizard-lock"><b>请先连接 OpenClaw</b><span>未连接时，班级创建、文件解析和数据写入都会被后端拒绝。</span></div>
-        <section class="panel active" data-panel="0">
-          <div class="panel-heading"><span>01</span><div><h2>填写班级基本信息</h2><p>这些是一一对应的确定性字段，保存时不会让智能体改写。</p></div></div>
-          <div class="form-grid"><label>班级名称 *<input name="class_name" required placeholder="例如：高一（3）班"><small id="classNameStatus" class="field-status">输入后将检查已有班级和 OpenClaw 智能体</small></label><label>年级 *<input name="grade" required placeholder="例如：高一"></label><label>班主任<input name="head_teacher" placeholder="例如：李老师"></label><label>本班教室<input name="room" placeholder="例如：教学楼 303"></label><label>学期名称<input name="semester_name" placeholder="例如：2026 秋季学期"></label><label>开学日期<input name="semester_start" type="date"></label><label>学期结束<input name="semester_end" type="date"></label></div>
-        </section>
-        <section class="panel" data-panel="1">
-          <div class="panel-heading"><span>02</span><div><h2>上传学生名单</h2><p>每次上传都只解析本次文件，并完整替换上一次名单预览。</p></div></div>
-          <div class="dropzone" data-target="students" tabindex="0" role="button"><input type="file" multiple hidden accept=".xlsx,.xlsm,.docx,.pptx,.csv,.tsv,.pdf,.png,.jpg,.jpeg,.gif,.webp,.heic,.txt,.md,.markdown,.json,.xml,.html,.rtf"><b>拖拽名单文件到这里，或点击选择</b><span>OpenClaw 解析后会在下方生成可编辑表格</span><small>支持 Markdown、Office、CSV/TSV、PDF、图片、JSON/XML、RTF 与普通文本；最多 8 个</small></div>
-          <div class="table-heading"><div><h3>结构化名单预览</h3><p>修改单元格会直接保存为你看到的数据，不经过 OpenClaw。</p></div><button type="button" class="secondary add-row" data-table="students">添加学生</button></div>
-          <div class="table-wrap"><table id="studentsTable"><thead><tr><th>学号 *</th><th>姓名 *</th><th>性别</th><th>电话</th><th>住宿</th><th>小组</th><th>备注</th><th></th></tr></thead><tbody></tbody></table></div><div id="studentsEmpty" class="table-empty">尚未上传名单文件</div>
-        </section>
-        <section class="panel" data-panel="2">
-          <div class="panel-heading"><span>03</span><div><h2>上传课表，自动归纳科目</h2><p>不再单独填写科目和满分。教室留空时使用“本班教室”。</p></div></div>
-          <div class="dropzone" data-target="timetable" tabindex="0" role="button"><input type="file" multiple hidden accept=".xlsx,.xlsm,.docx,.pptx,.csv,.tsv,.pdf,.png,.jpg,.jpeg,.gif,.webp,.heic,.txt,.md,.markdown,.json,.xml,.html,.rtf"><b>拖拽课表或作息文件到这里，或点击选择</b><span>OpenClaw 识别星期、节次、科目、教师；科目由课表自动汇总</span><small>重新上传会完整替换旧课表，不会带入上一次识别内容</small></div>
-          <div class="table-heading"><div><h3>节次预览</h3></div><button type="button" class="secondary add-row" data-table="periods">添加节次</button></div><div class="table-wrap"><table id="periodsTable"><thead><tr><th>节次 *</th><th>名称 *</th><th></th></tr></thead><tbody></tbody></table></div>
-          <div class="table-heading timetable-title"><div><h3>基础课表预览</h3><p>星期使用 1–7；表格格式合规即可直接保存。</p></div><button type="button" class="secondary add-row" data-table="timetable">添加课程</button></div><div class="table-wrap"><table id="timetableTable"><thead><tr><th>星期 *</th><th>节次 *</th><th>科目 *</th><th>教师</th><th>教室</th><th></th></tr></thead><tbody></tbody></table></div><div id="timetableEmpty" class="table-empty">尚未上传课表文件</div>
-        </section>
-        <section class="panel" data-panel="3">
-          <div class="panel-heading"><span>04</span><div><h2>复核、创建并绑定微信</h2><p>先确认数据写入，再创建班级专属智能体并显示微信二维码。</p></div></div>
-          <div id="reviewEmpty" class="empty-state">点击“生成最终预览”，查看服务器校验后的完整摘要。</div>
-          <div id="reviewContent" class="review hidden"><div id="reviewSummary" class="metric-grid"></div><div id="reviewWarnings"></div><div class="confirm-box"><label class="check"><input id="confirmCheck" type="checkbox">我已核对班级、名单、课表和自动归纳的科目。</label><label>输入班级名称再次确认<input id="confirmName" autocomplete="off"></label><button id="commit" type="button" class="danger" disabled>确认并创建班级</button></div></div>
-          <section id="bindingPanel" class="binding-panel hidden"><div><p class="eyebrow">班级已创建</p><h3>专属 OpenClaw 智能体</h3><p id="bindingMessage">正在创建专属智能体…</p></div><div class="binding-actions"><button id="startBinding" type="button" class="primary">绑定微信</button><button id="skipBinding" type="button" class="secondary">暂不绑定微信</button></div><div id="qrArea" class="qr-area hidden"><img id="wechatQr" alt="微信绑定二维码"><p id="qrError" class="qr-error hidden" role="alert"></p><p>请使用要绑定到本班智能体的微信扫码；网页会自动完成确认和消息路由配置。</p></div></section>
-        </section>
-        <footer class="wizard-actions"><button id="previous" type="button" class="secondary" disabled>上一步</button><span id="saveState">尚未保存</span><button id="saveDraft" type="button" class="secondary">保存当前数据</button><button id="next" type="button" class="primary">下一步</button><button id="preview" type="button" class="primary hidden">生成最终预览</button></footer>
-      </form><div id="toast" class="toast" role="alert" aria-live="polite"></div>
-    </section>
-  </main><script type="module" src="./app.js"></script>
-</body></html>
+  <div id="root">
+    <div class="login-page"><div class="login-card"><p class="muted">正在载入 ClassClaw…</p></div></div>
+  </div>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

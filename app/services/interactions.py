@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Any
 
 from sqlalchemy import select
@@ -14,6 +15,7 @@ from app.models.entities import (
     ClassRoom,
     ClassSubject,
     DutySchedule,
+    DutyAssignment,
     Exam,
     Homework,
     InteractionAnalysis,
@@ -58,6 +60,15 @@ def _context(db: Session, class_id: str | None) -> dict[str, Any]:
         homework = list(db.scalars(select(Homework).where(Homework.class_id == class_id).order_by(Homework.assigned_date.desc()).limit(30)))
         exams = list(db.scalars(select(Exam).where(Exam.class_id == class_id).order_by(Exam.exam_date.desc()).limit(30)))
         duty_schedules = list(db.scalars(select(DutySchedule).where(DutySchedule.class_id == class_id).order_by(DutySchedule.start_date.desc()).limit(20)))
+        recent_duty = list(
+            db.scalars(
+                select(DutyAssignment)
+                .join(DutySchedule, DutySchedule.id == DutyAssignment.duty_schedule_id)
+                .where(DutySchedule.class_id == class_id, DutyAssignment.duty_date.between(now().date() - timedelta(days=2), now().date()))
+                .order_by(DutyAssignment.duty_date.desc(), DutyAssignment.item_name)
+                .limit(100)
+            )
+        )
         result["selected_class"] = {"id": cls.id, "name": cls.name, "grade": cls.grade}
         result["students"] = [{"id": row.id, "student_no": row.student_no, "name": row.name} for row in students]
         result["subjects"] = [{"name": row.name, "teacher": row.teacher, "default_full_score": row.default_full_score} for row in subjects]
@@ -65,6 +76,7 @@ def _context(db: Session, class_id: str | None) -> dict[str, Any]:
         result["homework"] = [{"id": row.id, "title": row.title, "subject": row.subject, "assigned_date": row.assigned_date.isoformat(), "status": row.status} for row in homework]
         result["exams"] = [{"id": row.id, "name": row.name, "exam_date": row.exam_date.isoformat(), "status": row.status} for row in exams]
         result["duty_schedules"] = [{"id": row.id, "name": row.name, "start_date": row.start_date.isoformat(), "end_date": row.end_date.isoformat(), "status": row.status} for row in duty_schedules]
+        result["recent_duty_assignments"] = [{"id": row.id, "date": row.duty_date.isoformat(), "item_name": row.item_name, "student_id": row.student_id, "status": row.status, "score": row.score} for row in recent_duty]
     return result
 
 
@@ -101,7 +113,7 @@ async def analyze(db: Session, data: InteractionAnalyzeCreate) -> dict[str, Any]
         status="analyzing",
         requested_by=data.requested_by,
         idempotency_key=idempotency_key,
-        analyzed_by=f"openclaw/{settings.openclaw_agent_id}",
+        analyzed_by=f"openclaw/{openclaw_bridge.extraction_agent_label()}",
     )
     db.add(analysis)
     db.commit()

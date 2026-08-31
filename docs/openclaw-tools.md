@@ -29,6 +29,7 @@ OpenClaw 对话式写入使用以下预览/确认入口；网页中的结构化�
 |---|---|---|---|---|
 | class_list | GET `/classes` | page,page_size,status | 分页班级 | 否 |
 | class_summary | GET `/classes/{id}/summary` | id | 班级概览 | 否 |
+| class_delete | DELETE `/classes/{id}` | id | 彻底删除班级、关联业务数据及 Agent 运行配置 | 网页危险操作二次确认 |
 | student_search | GET `/students` | class_id,q,exact_name | 候选学生；同名标记 ambiguous | 否 |
 | student_create | POST `/students` | class_id,student_no,name,… | 学生 | 否 |
 | student_update | PATCH `/students/{id}` | 可修改字段 | 学生 | 批量时是 |
@@ -37,10 +38,17 @@ OpenClaw 对话式写入使用以下预览/确认入口；网页中的结构化�
 | seat_history_list | GET `/classes/{id}/seating/history` | page,page_size | 快照历史 | 否 |
 | seat_snapshot_get | GET `/seating/{id}` | snapshot id | 完整布局 | 否 |
 | seat_update | POST `/classes/{id}/seating` | rows,cols,layout | 新快照、变化 | 是 |
+| seat_import_preview | POST `/classes/{id}/seating/import-preview` | 1-4 个文件 | 可编辑座位布局预览，不写业务数据 | 否 |
 | seat_swap | POST `/classes/{id}/seating/swap` | student_a_id,student_b_id | 新快照、变化 | 是 |
 | seat_restore | POST `/classes/{id}/seating/restore/{snapshot}` | ids | 新快照 | 是 |
+| seat_rename | PATCH `/seating/{snapshot_id}` | name | 重命名后的版本 | 否 |
+| seat_delete | DELETE `/seating/{snapshot_id}` | id | 删除结果 | 否 |
 | duty_rule_validate | POST `/duty/rules/validate` | rule_json | 归一化规则 | 否 |
 | duty_rule_save | POST `/duty/rules` | class_id,日期,rule_json | 规则 | 否 |
+| duty_rule_update | PATCH `/duty/rules/{id}` | 可修改字段 | 规则 | 否 |
+| duty_rule_delete | DELETE `/duty/rules/{id}` | id | 删除结果 | 否 |
+| duty_rule_list | GET `/duty/rules` | class_id | 已保存规则 | 否 |
+| duty_rule_analyze | POST `/classes/{id}/duty/rules/analyze` | 自然语言、基础规则 | 归一化规则预览 | 否 |
 | duty_schedule_preview | POST `/duty/schedules/preview` | 日期,rule_json | 排班、冲突、工作量、token | 否 |
 | duty_schedule_confirm | POST `/duty/schedules/confirm` | 预览参数、token | 正式计划 | 是 |
 | duty_today | GET `/duty/today` | class_id,day | 当日安排 | 否 |
@@ -50,11 +58,13 @@ OpenClaw 对话式写入使用以下预览/确认入口；网页中的结构化�
 | duty_complete | POST `/duty/assignments/{id}/complete` | id | 完成记录 | 否 |
 | duty_score_create | POST `/duty/evaluations` | schedule,date,item,details | 加权评分 | 否 |
 | duty_statistics | GET `/duty/statistics` | class_id,日期 | 次数和均衡度 | 否 |
+| duty_assignment_score | PUT `/duty/assignments/{id}/score` | 0–5分 | 完成的任务 | 可经聊天预览 |
 | homework_create | POST `/homework` | class_id,title,subject,due_at | 作业 | 否 |
 | homework_update_status | PUT `/homework/{id}/students` | items[] | 个人状态 | 批量时是 |
 | homework_missing_list | GET `/homework/{id}/missing` | id | 未交记录 | 否 |
 | homework_summary | GET `/homework/{id}/summary` | id | 完成率 | 否 |
 | student_event_create | POST `/student-events` | 学生、类型、实际日期、内容 | 事件 | 否 |
+| student_event_analyze | POST `/classes/{id}/student-events/analyze` | 学生、日期、科目、内容 | 智能体分类预览 | 否 |
 | student_event_batch_create | POST `/student-events/batch` | 事件数组 | 事件数组 | 是 |
 | student_event_query | GET `/student-events` | 学生、类型、日期、科目 | 事件 | 否 |
 | student_event_revoke | DELETE `/student-events/{id}` | id | 软撤销事件 | 是 |
@@ -62,12 +72,16 @@ OpenClaw 对话式写入使用以下预览/确认入口；网页中的结构化�
 | attendance_query | GET `/attendance` | 班级/学生/日期/状态 | 例外记录 | 否 |
 | attendance_summary | GET `/attendance/summary` | class_id,start_date,end_date | 统计 | 否 |
 | exam_create | POST `/exams` | 班级、名称、日期、科目满分 | 考试 | 否 |
+| exam_list | GET `/exams` | class_id,status,start_date,end_date | 考试及科目列表 | 否 |
 | score_batch_save | POST `/exams/{id}/scores` | scores[] | 成绩与排名 | 是 |
 | score_query | GET `/exams/{id}/scores` | student_id,subject | 成绩 | 否 |
 | timetable_base_get | GET `/classes/{id}/timetable/base` | class id | 周课表 | 否 |
 | timetable_base_update | PUT `/classes/{id}/timetable/base` | items[] | 新周课表 | 是 |
+| timetable_import_preview | POST `/classes/{id}/timetable/import-preview` | 1-4 个文件 | 节次与课程预览，不写业务数据 | 否 |
+| timetable_import_apply | POST `/classes/{id}/timetable/import-apply` | 已核对 periods、items | 更新节次并替换周课表 | 是 |
 | timetable_daily | GET `/classes/{id}/timetable/daily` | lesson_date | 最终日课表 | 否 |
 | lesson_override_create | POST `/lesson-overrides` | 日期、节次、替代课程、原因 | 覆盖 | 是 |
+| subject_list | GET `/classes/{id}/subjects` | class_id | 课表归纳科目 | 否 |
 | lesson_override_remove | DELETE `/lesson-overrides/{id}` | id | 恢复基础课程 | 是 |
 | lesson_swap_preview | POST `/lesson-swaps/preview` | 日期、两节次 | 变化和冲突 | 否 |
 | lesson_swap_confirm | POST `/lesson-swaps/confirm` | 同预览 | 两条覆盖 | 是 |

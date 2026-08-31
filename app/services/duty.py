@@ -18,7 +18,7 @@ from app.models.entities import (
     DutyScoreItem,
     Student,
 )
-from app.schemas.domain import DutyConfirmRequest, DutyEvaluationCreate, DutyPreviewRequest, DutyRuleCreate
+from app.schemas.domain import DutyConfirmRequest, DutyEvaluationCreate, DutyPreviewRequest, DutyRuleCreate, DutyRuleUpdate
 from app.services.class_student import get_class, get_student
 from app.services.common import audit, entity_dict
 from app.utils.time import now
@@ -63,6 +63,36 @@ def save_rule(db: Session, data: DutyRuleCreate) -> DutyRule:
     audit(db, "create", "duty_rule", obj.id, after=entity_dict(obj))
     db.commit()
     return obj
+
+
+def update_rule(db: Session, rule_id: str, data: DutyRuleUpdate) -> DutyRule:
+    obj = db.get(DutyRule, rule_id)
+    if not obj:
+        raise not_found("值日规则", rule_id)
+    before = entity_dict(obj)
+    values = data.model_dump(exclude_unset=True)
+    if values.get("rule_json") is not None:
+        values["rule_json"] = validate_rule_json(values["rule_json"])["normalized"]
+    effective_from = values.get("effective_from", obj.effective_from)
+    effective_to = values.get("effective_to", obj.effective_to)
+    if effective_from > effective_to:
+        raise AppError("DUTY_RULE_INVALID", "规则结束日期不能早于开始日期")
+    for key, value in values.items():
+        setattr(obj, key, value)
+    audit(db, "update", "duty_rule", obj.id, before=before, after=entity_dict(obj))
+    db.commit()
+    return obj
+
+
+def delete_rule(db: Session, rule_id: str) -> dict:
+    obj = db.get(DutyRule, rule_id)
+    if not obj:
+        raise not_found("值日规则", rule_id)
+    before = entity_dict(obj)
+    db.delete(obj)
+    audit(db, "delete", "duty_rule", rule_id, before=before, after=None)
+    db.commit()
+    return {"deleted_id": rule_id, "deleted_name": before["name"]}
 
 
 def _date_range(start: date, end: date):
@@ -234,6 +264,49 @@ def complete_assignment(db: Session, assignment_id: str) -> DutyAssignment:
     return obj
 
 
+def score_assignment(db: Session, assignment_id: str, score: float, note: str | None = None, *, commit: bool = True) -> DutyAssignment:
+    obj = db.get(DutyAssignment, assignment_id)
+    if not obj:
+        raise not_found("值日安排", assignment_id)
+    if obj.status == "replaced":
+        raise AppError("DUTY_SCORE_INVALID", "已替换的值日安排不能评分")
+    before = entity_dict(obj)
+    obj.score = float(score)
+    obj.status = "completed"
+    obj.completed_at = now()
+    if note is not None:
+        obj.note = note
+    audit(db, "score", "duty_assignment", obj.id, before=before, after=entity_dict(obj))
+    if commit:
+        db.commit()
+    return obj
+
+
+def complete_overdue_assignments(db: Session, class_id: str, as_of: date | None = None) -> int:
+    """Lazily reconcile past unscored duty as full-score completed work."""
+    target = as_of or now().date()
+    rows = list(
+        db.scalars(
+            select(DutyAssignment)
+            .join(DutySchedule, DutySchedule.id == DutyAssignment.duty_schedule_id)
+            .where(
+                DutySchedule.class_id == class_id,
+                DutyAssignment.duty_date < target,
+                DutyAssignment.status == "pending",
+            )
+        )
+    )
+    if not rows:
+        return 0
+    for obj in rows:
+        obj.score = 5.0
+        obj.status = "completed"
+        obj.completed_at = now()
+    audit(db, "auto_score", "duty_assignment", class_id, after={"count": len(rows), "score": 5, "before_date": target.isoformat()})
+    db.commit()
+    return len(rows)
+
+
 def create_evaluation(db: Session, data: DutyEvaluationCreate) -> DutyEvaluation:
     schedule = db.get(DutySchedule, data.duty_schedule_id)
     if not schedule:
@@ -285,6 +358,17 @@ def duty_statistics(db: Session, class_id: str, start_date: date | None, end_dat
         by_student[sid]["total"] += count
         if status == "completed":
             by_student[sid]["completed"] += count
+    score_stmt = (
+        select(DutyAssignment.student_id, func.avg(DutyAssignment.score))
+        .join(DutySchedule, DutySchedule.id == DutyAssignment.duty_schedule_id)
+        .where(DutySchedule.class_id == class_id, DutyAssignment.score.is_not(None))
+    )
+    if start_date:
+        score_stmt = score_stmt.where(DutyAssignment.duty_date >= start_date)
+    if end_date:
+        score_stmt = score_stmt.where(DutyAssignment.duty_date <= end_date)
+    for sid, average in db.execute(score_stmt.group_by(DutyAssignment.student_id)).all():
+        by_student[sid]["average_score"] = round(float(average), 2)
     totals = [row["total"] for row in by_student.values()]
     return {
         "students": [{"student_id": sid, **stats} for sid, stats in by_student.items()],

@@ -85,8 +85,12 @@ Use `student_event.create`; use `student_event.batch` for several students/event
 | “21号获演讲比赛一等奖” | `honor` | `competition_award` | positive/normal |
 | “21号语文作业未交，不建作业” | `homework` | `homework_missing` | negative/attention |
 | “13号连续三天早读迟到，需关注” | `attendance` | `repeated_late` | negative/attention |
+| “8号上课忘带课本” | `behavior` | `forgot_materials` | negative/normal |
+| “12号自习课一直吵闹” | `behavior` | `classroom_noise` | negative/attention |
 
 Do not turn a normal daily attendance record into an event; use `attendance.set`. An event is for narrative context, patterns, communication, honors, or a homework incident not linked to a Homework record.
+
+The teacher supplies the event facts, not the classification. Infer subtype, sentiment, and severity directly. Mild or common rule violations are still negative; do not dilute them to neutral.
 
 ### Seating
 
@@ -130,6 +134,20 @@ Preview:
 
 - “确认刚才的下周值日排班” → `duty.schedule.confirm` only when a valid existing preview payload/token is available.
 - Never invent `preview_token`, a rule, or assignments. If no preview exists, direct the user to generate one in the web app.
+
+### Duty score
+
+- “今天扫地4分” → match exactly one current `recent_duty_assignments` row and use `duty.assignment.score` with score 4.
+- “今天值日3分” when several duty items match → ask which item; do not score every assignment.
+- Score range is 0–5. A successful score marks the task completed. Past unscored work is reconciled by the backend as 5 points on the following day.
+
+Preview:
+
+```text
+值日评分预览
+今天｜扫地｜4分
+回复“确认”就登记完成。
+```
 
 ## Multiple operations
 

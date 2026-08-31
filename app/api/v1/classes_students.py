@@ -8,7 +8,7 @@ from app.core.responses import ok
 from app.core.security import principal_from_request, require_owned_class, require_owned_student
 from app.database import get_db
 from app.schemas.domain import ClassCreate, ClassUpdate, StudentCreate, StudentUpdate
-from app.services import class_student as service
+from app.services import class_student as service, openclaw_provisioning
 
 
 router = APIRouter(tags=["班级与学生"])
@@ -40,6 +40,16 @@ def class_get(request: Request, class_id: str, db: Session = Depends(get_db)):
 def class_update(request: Request, class_id: str, body: ClassUpdate, db: Session = Depends(get_db)):
     require_owned_class(request, class_id)
     return ok(request, service.update_class(db, class_id, body), "班级更新成功")
+
+
+@router.delete("/classes/{class_id}")
+async def class_delete(request: Request, class_id: str, db: Session = Depends(get_db)):
+    require_owned_class(request, class_id)
+    principal = principal_from_request(request)
+    agent_cleanup = await openclaw_provisioning.cleanup_class_agent_resources(db, class_id)
+    result = service.hard_delete_class(db, class_id, operator_id=principal.user_id)
+    result["agent_cleanup"] = agent_cleanup
+    return ok(request, result, "班级及关联业务数据已彻底删除")
 
 
 @router.post("/classes/{class_id}/current")
