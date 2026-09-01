@@ -189,7 +189,14 @@ async def class_onboarding_files(
         attachment = operations_service.save_attachment(db, upload, None, f"班级创建/{target_section}/OpenClaw处理")
         operations_service.link_attachment(db, attachment.id, "class_onboarding_session", session_id)
         attachments.append(attachment)
-    result = await openclaw_bridge.analyze_onboarding_files(db, session_id, target_section, attachments, expected_revision)
+    result = await openclaw_bridge.analyze_onboarding_files(
+        db,
+        session_id,
+        target_section,
+        attachments,
+        expected_revision,
+        cancelled=request.is_disconnected,
+    )
     return ok(request, result, "文件已由 OpenClaw 分析并填入草稿")
 
 

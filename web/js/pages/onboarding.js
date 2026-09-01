@@ -3,8 +3,8 @@
 // 只有最终确认走 /preview + /write-proposals/{id}/confirm；草稿反复编辑用 PATCH + expected_revision。
 
 import { el, clear, toast, debounce } from "../util.js";
-import { api, ApiError } from "../api.js";
-import { state, refreshIdentity, refreshClassInfo } from "../state.js";
+import { api, AI_REQUEST_TIMEOUT_MS } from "../api.js";
+import { state, refreshIdentity, refreshClassInfo, refreshOpenclaw } from "../state.js";
 import { navigate } from "../router.js";
 import {
   field, fieldError, fileDropzone, proposalReview, qrBindingPanel, statusBadge, openclawBlocked, emptyState,
@@ -28,6 +28,12 @@ export async function render(mount, ctx, helpers) {
     classResult: null,    // confirm 后的 result_json
     provisionDone: false,
     qrPanel: null,
+    stepSaved: true,
+    savedSteps: new Set(),
+    maxUnlockedStep: 0,
+    analysisInProgress: false,
+    previewInProgress: false,
+    commitInProgress: false,
   };
 
   // 页面内编辑器实例（跨渲染保留）
@@ -92,12 +98,16 @@ export async function render(mount, ctx, helpers) {
     return {
       class_info: readClassInfo(),
       students: studentRowsHost.current,
-      periods: readPeriodsFromDom(),
+      periods: draft().periods || [],
       base_timetable: ttEditor ? ttEditor.getItems() : (draft().base_timetable || []),
     };
   }
 
-  async function saveDraft(stepKey = null) {
+  async function saveDraft(stepKey = null, { allowDuringAnalysis = false, signal = null } = {}) {
+    if (local.analysisInProgress && !allowDuringAnalysis) {
+      toast("请先完成或取消文件解析", "error");
+      return false;
+    }
     const body = {
       expected_revision: local.session.revision,
       draft_patch: collectDraft(),
@@ -105,18 +115,34 @@ export async function render(mount, ctx, helpers) {
     };
     if (stepKey) body.current_step = stepKey;
     try {
-      local.session = await api(`/class-onboarding/sessions/${local.session.id}`, { method: "PATCH", body });
+      local.session = await api(`/class-onboarding/sessions/${local.session.id}`, { method: "PATCH", body, signal });
+      local.savedSteps.add(local.step);
+      local.stepSaved = true;
+      local.maxUnlockedStep = Math.max(local.maxUnlockedStep, Math.min(local.step + 1, STEPS.length - 1));
+      local.proposal = null;
+      refreshNavigation();
       return true;
     } catch (error) {
+      if (error.code === "REQUEST_CANCELLED") return false;
       if (error.code === "PENDING_CONFIRMATION_REQUIRED") {
         toast("草稿在其他地方被修改过，已重新载入最新版本", "error");
         local.session = await api(`/class-onboarding/sessions/${local.session.id}`);
+        local.savedSteps.add(local.step);
+        local.stepSaved = true;
         renderStep();
         return false;
       }
       toast(error.message, "error");
       return false;
     }
+  }
+
+  function markStepDirty() {
+    if (local.step >= STEPS.length - 1) return;
+    local.savedSteps.delete(local.step);
+    local.stepSaved = false;
+    local.proposal = null;
+    refreshNavigation();
   }
 
   /* ---------- 步骤 1：班级信息 ---------- */
@@ -182,15 +208,16 @@ export async function render(mount, ctx, helpers) {
     ["boarding_status", "住宿"], ["group_no", "小组"], ["notes", "备注"],
   ];
 
-  function appendStudentRow(row = {}) {
+  function appendStudentRow(row = {}, dirty = false) {
     const tr = el("tr");
     for (const [key] of STUDENT_COLS) {
       const input = el("input", { type: "text", value: row[key] ?? "", dataset: { key } });
       tr.append(el("td", {}, input));
     }
-    const del = el("button", { class: "text-button", type: "button", onclick: () => { tr.remove(); } }, "删除");
+    const del = el("button", { class: "text-button", type: "button", onclick: () => { tr.remove(); markStepDirty(); } }, "删除");
     tr.append(el("td", {}, del));
     studentsTbody.append(tr);
+    if (dirty) markStepDirty();
   }
 
   function syncStudentRowsFromDom() {
@@ -213,9 +240,12 @@ export async function render(mount, ctx, helpers) {
     panel.append(fileDropzone({
       hint: "拖拽学生名单文件到这里，或点击选择（最多 8 个）",
       multiple: true,
-      onFiles: (files, { setBusy }) => uploadSection("students", files, setBusy),
+      manualStart: true,
+      busyText: "正在解析学生名单…",
+      onBusyChange: setAnalysisBusy,
+      onFiles: (files, { signal }) => uploadSection("students", files, signal),
     }));
-    const addBtn = el("button", { class: "secondary", type: "button", onclick: () => appendStudentRow() }, "添加学生");
+    const addBtn = el("button", { class: "secondary", type: "button", onclick: () => appendStudentRow({}, true) }, "添加学生");
     panel.append(el("div", { class: "row-gap", style: { justifyContent: "space-between", marginBottom: "8px" } },
       el("b", {}, "结构化名单"), addBtn));
     studentsTbody = el("tbody");
@@ -229,90 +259,88 @@ export async function render(mount, ctx, helpers) {
 
   /* ---------- 步骤 3：课表与节次 ---------- */
 
-  let periodsTbody = null;
-
-  function appendPeriodRow(row = {}) {
-    const noInput = el("input", { type: "number", min: "1", value: row.period_no ?? "", dataset: { key: "period_no" }, style: { width: "80px" } });
-    const nameInput = el("input", { type: "text", value: row.name ?? "", placeholder: "可选", dataset: { key: "name" } });
-    const del = el("button", { class: "text-button", type: "button", onclick: () => { tr.remove(); } }, "删除");
-    const tr = el("tr", {}, el("td", {}, noInput), el("td", {}, nameInput), el("td", {}, del));
-    periodsTbody.append(tr);
-  }
-
-  function readPeriodsFromDom() {
-    if (!periodsTbody || !periodsTbody.isConnected) return draft().periods || [];
-    const rows = [];
-    for (const tr of periodsTbody.querySelectorAll("tr")) {
-      const no = Number(tr.querySelector('[data-key="period_no"]').value);
-      const name = tr.querySelector('[data-key="name"]').value.trim();
-      if (no >= 1) rows.push({ period_no: no, name: name || null, sort_order: no, enabled: true });
-    }
-    return rows;
-  }
-
   function renderTimetable(panel) {
     panel.append(el("p", { class: "muted" }, "上传文件生成课表。识别后可修改。"));
     panel.append(fileDropzone({
       hint: "拖拽课表或作息文件到这里，或点击选择",
       multiple: true,
-      onFiles: (files, { setBusy }) => uploadSection("timetable", files, setBusy),
+      manualStart: true,
+      busyText: "正在解析课表…",
+      onBusyChange: setAnalysisBusy,
+      onFiles: (files, { signal }) => uploadSection("timetable", files, signal),
     }));
-
-    periodsTbody = el("tbody");
-    (draft().periods || []).forEach((row) => appendPeriodRow(row));
-    panel.append(el("div", { class: "row-gap", style: { justifyContent: "space-between", margin: "10px 0 6px" } },
-      el("b", {}, "节次"),
-      el("button", { class: "secondary", type: "button", onclick: () => appendPeriodRow() }, "添加节次")));
-    panel.append(el("div", { class: "table-wrap", style: { maxWidth: "560px" } },
-      el("table", { class: "data-table" },
-        el("thead", {}, el("tr", {}, el("th", {}, "顺序 *"), el("th", {}, "自定义名称"), el("th", {}, ""))),
-        periodsTbody)));
-
     panel.append(el("b", { style: { display: "block", margin: "16px 0 6px" } }, "基础课表矩阵（周一至周五 × 节次）"));
-    const periodsNow = () => readPeriodsFromDom();
     ttEditor = timetableGridEditor({
       periods: draft().periods || [],
       items: draft().base_timetable || [],
       editable: true,
-      defaultRoom: classInputs.room?.value.trim() || null,
+      defaultRoom: classInputs.room?.value.trim() || draft().class_info?.room || null,
+      onChange: markStepDirty,
     });
-    // 节次表格变化时刷新矩阵纵轴
-    periodsTbody.addEventListener("input", () => ttEditor.setPeriods(periodsNow()));
     panel.append(ttEditor.el);
-    panel.append(el("p", { class: "muted", style: { fontSize: "12px" } }, "点击单元格编辑。清空即可删除课程。"));
+    panel.append(el("p", { class: "muted", style: { fontSize: "12px" } },
+      (draft().periods || []).length ? "点击单元格编辑。清空即可删除课程。" : "上传课表后会在这里生成可编辑预览。"));
   }
 
   /* ---------- 文件上传 ---------- */
 
-  async function uploadSection(section, files, setBusy) {
+  function setAnalysisBusy(value) {
+    local.analysisInProgress = value;
+    refreshNavigation();
+  }
+
+  async function uploadSection(section, files, signal) {
     if (files.length > 8) { toast("每次最多上传 8 个文件", "error"); return; }
-    const saved = await saveDraft(section);
+    const saved = await saveDraft(section, { allowDuringAnalysis: true, signal });
     if (!saved) return;
-    setBusy(true, "正在识别本次文件…");
     const body = new FormData();
     body.set("target_section", section);
     body.set("expected_revision", String(local.session.revision));
     files.forEach((file) => body.append("files", file));
     try {
-      const result = await api(`/class-onboarding/sessions/${local.session.id}/files`, { method: "POST", body });
+      const result = await api(`/class-onboarding/sessions/${local.session.id}/files`, {
+        method: "POST",
+        body,
+        timeoutMs: AI_REQUEST_TIMEOUT_MS,
+        signal,
+      });
       local.session = result.session;
+      local.savedSteps.add(local.step);
+      local.stepSaved = true;
+      local.maxUnlockedStep = Math.max(local.maxUnlockedStep, Math.min(local.step + 1, STEPS.length - 1));
       renderStep();
       const warnings = result.analysis?.warnings || [];
       toast(warnings.length ? `解析完成，有 ${warnings.length} 项需核对` : "解析完成，请核对结构化数据", warnings.length ? "error" : "success");
       if (warnings.length) toast(warnings.slice(0, 3).join("；"), "info");
     } catch (error) {
+      if (error.code === "REQUEST_CANCELLED") {
+        toast("已取消解析", "info");
+        return;
+      }
       if (error.code === "PENDING_CONFIRMATION_REQUIRED") {
         local.session = await api(`/class-onboarding/sessions/${local.session.id}`);
         renderStep();
       }
       toast(error.message, "error");
       if (error.code === "OPENCLAW_CONNECTION_REQUIRED" || error.code === "OPENCLAW_PROCESSING_FAILED") {
-        // 在面板中长期可见
         const panel = document.querySelector(".ob-panel");
-        if (panel) panel.prepend(openclawBlocked(state.openclaw, () => helpers.refreshOpenclawDot()));
+        if (panel) {
+          const status = await refreshOpenclaw({ force: true }).catch(() => null);
+          await helpers.refreshOpenclawDot({ force: false });
+          panel.querySelector(".blocked-panel")?.remove();
+          if (!(status?.gateway_live && status?.plugin_ready)) {
+            let blockedPanel;
+            blockedPanel = openclawBlocked(status, async () => {
+              const latest = await refreshOpenclaw({ force: true });
+              await helpers.refreshOpenclawDot({ force: false });
+              if (!(latest.gateway_live && latest.plugin_ready)) throw new Error(latest.error || "文件识别服务仍未恢复");
+              blockedPanel.remove();
+              toast("文件识别服务已恢复，可以重新上传", "success");
+            });
+            panel.prepend(blockedPanel);
+          }
+        }
       }
-    } finally {
-      setBusy(false);
     }
   }
 
@@ -323,6 +351,8 @@ export async function render(mount, ctx, helpers) {
   async function doPreview() {
     const saved = await saveDraft("review");
     if (!saved) return;
+    local.previewInProgress = true;
+    refreshNavigation();
     try {
       local.proposal = await api(`/class-onboarding/sessions/${local.session.id}/preview`, { method: "POST", body: { requested_by: state.user.username } });
       local.session = { ...local.session, status: "awaiting_confirmation" };
@@ -330,6 +360,9 @@ export async function render(mount, ctx, helpers) {
     } catch (error) {
       if (error.code === "CLASS_NAME_CONFLICT") toast(`班级名称冲突：${error.message}`, "error");
       else toast(error.message, "error");
+    } finally {
+      local.previewInProgress = false;
+      refreshNavigation();
     }
   }
 
@@ -340,44 +373,32 @@ export async function render(mount, ctx, helpers) {
       return;
     }
     reviewBox.append(proposalReview(local.proposal));
-    const checkbox = el("input", { type: "checkbox", id: "ob-confirm-check" });
-    const nameInput = el("input", { type: "text", autocomplete: "off", placeholder: "再次输入完整班级名称" });
-    const commitBtn = el("button", { class: "danger", type: "button", disabled: true }, "确认并创建班级");
-    const ready = !!local.proposal.preview_json?.ready;
-    function update() {
-      commitBtn.disabled = !ready || !checkbox.checked || nameInput.value.trim() !== (classInputs.name.value.trim() || draft().class_info?.name || "");
-    }
-    checkbox.addEventListener("change", update);
-    nameInput.addEventListener("input", update);
-    commitBtn.addEventListener("click", async () => {
-      commitBtn.disabled = true;
-      try {
-        const completed = await api(`/write-proposals/${local.proposal.id}/confirm`, {
-          method: "POST",
-          body: { revision: local.proposal.revision, confirmed_by: state.user.username, confirmation_note: "网页端已核对班级、名单与课表" },
-        });
-        local.classResult = completed.result_json;
-        toast("班级已创建", "success");
-        await afterClassCreated();
-      } catch (error) {
-        if (error.code === "PENDING_CONFIRMATION_REQUIRED") {
-          toast("预览已过期或草稿已变化，请重新生成预览", "error");
-          local.proposal = null;
-          renderReview();
-        } else if (error.code === "CLASS_LIMIT_REACHED") {
-          toast(error.message, "error");
-        } else if (error.code === "CLASS_NAME_CONFLICT") {
-          toast(error.message, "error");
-        } else {
-          toast(error.message, "error");
-        }
-        commitBtn.disabled = false;
+  }
+
+  async function doCommit() {
+    if (!local.proposal?.preview_json?.ready || local.commitInProgress) return;
+    local.commitInProgress = true;
+    refreshNavigation();
+    try {
+      const completed = await api(`/write-proposals/${local.proposal.id}/confirm`, {
+        method: "POST",
+        body: { revision: local.proposal.revision, confirmed_by: state.user.username, confirmation_note: "网页端根据最终预览创建班级" },
+      });
+      local.classResult = completed.result_json;
+      toast("班级已创建", "success");
+      await afterClassCreated();
+    } catch (error) {
+      if (error.code === "PENDING_CONFIRMATION_REQUIRED") {
+        toast("预览已过期或草稿已变化，请重新生成预览", "error");
+        local.proposal = null;
+        renderReview();
+      } else {
+        toast(error.message, "error");
       }
-    });
-    reviewBox.append(el("div", { class: "card", style: { marginTop: "14px" } },
-      el("label", { class: "row-gap", style: { alignItems: "center" } }, checkbox, el("span", {}, "我已核对班级、名单、课表和科目。")),
-      field("输入班级名称再次确认", nameInput),
-      commitBtn));
+    } finally {
+      local.commitInProgress = false;
+      refreshNavigation();
+    }
   }
 
   /* ---------- 创建成功后：智能体 + 微信 ---------- */
@@ -442,35 +463,79 @@ export async function render(mount, ctx, helpers) {
     stepsHost = el("div", { class: "wizard-steps", role: "tablist" });
     panelHost = el("div");
     saveStateLine = el("span", { class: "muted", style: { fontSize: "12px" } });
-    const prevBtn = el("button", { class: "secondary", type: "button", onclick: async () => { if (await saveDraft(STEPS[local.step].key)) setStep(local.step - 1); } }, "上一步");
-    const nextBtn = el("button", { class: "primary", type: "button", onclick: async () => { if (await saveDraft(STEPS[local.step].key)) setStep(local.step + 1); } }, "保存并下一步");
+    const prevBtn = el("button", {
+      class: "secondary", type: "button", onclick: async () => {
+        if (local.analysisInProgress) return;
+        if (!local.stepSaved && !(await saveDraft(STEPS[local.step].key))) return;
+        setStep(local.step - 1);
+      },
+    }, "上一步");
+    const nextBtn = el("button", {
+      class: "primary", type: "button", onclick: () => {
+        if (!local.stepSaved) { toast("请先保存当前步骤", "error"); return; }
+        setStep(local.step + 1);
+      },
+    }, "下一步");
     const saveBtn = el("button", { class: "secondary", type: "button", onclick: async () => { if (await saveDraft(STEPS[local.step].key)) toast("草稿已保存", "success"); } }, "保存草稿");
-    const previewBtn = el("button", { class: "primary", type: "button", onclick: doPreview }, "生成最终预览");
-    const footer = el("div", { class: "row-gap", style: { marginTop: "16px" } }, prevBtn, saveBtn, saveStateLine, el("span", { class: "spacer" }), nextBtn, previewBtn);
+    const previewBtn = el("button", { class: "secondary", type: "button", onclick: doPreview }, "生成最终预览");
+    const commitBtn = el("button", { class: "primary", type: "button", onclick: doCommit }, "创建班级");
+    const primaryActions = el("div", { class: "row-gap" }, saveBtn, nextBtn, previewBtn, commitBtn);
+    const footer = el("div", { class: "row-gap", style: { marginTop: "16px" } }, prevBtn, saveStateLine, el("span", { class: "spacer" }), primaryActions);
     mount.append(stepsHost, panelHost, footer);
-    local._footer = { prevBtn, nextBtn, previewBtn };
+    local._footer = { prevBtn, nextBtn, saveBtn, previewBtn, commitBtn, stepButtons: [] };
   }
 
   function setStep(step) {
+    if (local.analysisInProgress) {
+      toast("文件正在解析，请先取消解析", "error");
+      return;
+    }
+    if (step > local.step && (!local.stepSaved || step > local.maxUnlockedStep)) {
+      toast("请先保存当前步骤", "error");
+      return;
+    }
     local.step = Math.max(0, Math.min(STEPS.length - 1, step));
+    if (local.step === STEPS.length - 1) local.savedSteps.add(local.step);
+    local.stepSaved = local.savedSteps.has(local.step);
     renderStep();
   }
 
+  function refreshNavigation() {
+    if (!local._footer) return;
+    const { prevBtn, nextBtn, saveBtn, previewBtn, commitBtn, stepButtons } = local._footer;
+    saveStateLine.textContent = local.stepSaved
+      ? `已保存 · 草稿版本 ${local.session.revision}`
+      : `当前步骤有未保存修改 · 草稿版本 ${local.session.revision}`;
+    prevBtn.disabled = local.step === 0 || local.analysisInProgress;
+    saveBtn.disabled = local.analysisInProgress || local.step === STEPS.length - 1;
+    nextBtn.disabled = local.analysisInProgress || !local.stepSaved;
+    previewBtn.disabled = local.analysisInProgress || local.previewInProgress || local.commitInProgress || !local.stepSaved;
+    commitBtn.disabled = local.analysisInProgress || local.previewInProgress || local.commitInProgress || !local.proposal?.preview_json?.ready;
+    stepButtons.forEach((button, index) => {
+      button.disabled = local.analysisInProgress || (index > local.step && (!local.stepSaved || index > local.maxUnlockedStep));
+    });
+  }
+
   function renderStep() {
-    const { prevBtn, nextBtn, previewBtn } = local._footer;
+    const { nextBtn, saveBtn, previewBtn, commitBtn } = local._footer;
     clear(stepsHost);
+    local._footer.stepButtons = [];
     STEPS.forEach((s, index) => {
       const btn = el("button", {
         class: `wizard-step${index === local.step ? " active" : ""}${index < local.step ? " done" : ""}`,
         type: "button", role: "tab", "aria-selected": index === local.step ? "true" : "false",
-        onclick: () => setStep(index),
+        onclick: async () => {
+          if (index < local.step && !local.stepSaved && !(await saveDraft(STEPS[local.step].key))) return;
+          setStep(index);
+        },
       }, el("b", {}, String(index + 1)), s.label);
+      local._footer.stepButtons.push(btn);
       stepsHost.append(btn);
     });
-    saveStateLine.textContent = `草稿版本 ${local.session.revision} · 会话 ${local.session.id.slice(0, 8)}…`;
-    prevBtn.disabled = local.step === 0;
     nextBtn.classList.toggle("hidden", local.step === STEPS.length - 1);
+    saveBtn.classList.toggle("hidden", local.step === STEPS.length - 1);
     previewBtn.classList.toggle("hidden", local.step !== STEPS.length - 1);
+    commitBtn.classList.toggle("hidden", local.step !== STEPS.length - 1);
 
     const panel = el("div", { class: "card ob-panel" });
     const renderers = [renderClassInfo, renderStudents, renderTimetable, null];
@@ -480,14 +545,23 @@ export async function render(mount, ctx, helpers) {
       if (local.proposal) renderReview(); else renderReview();
     } else {
       renderers[local.step](panel);
+      panel.addEventListener("input", markStepDirty);
+      panel.addEventListener("change", markStepDirty);
     }
     clear(panelHost);
     panelHost.append(panel);
+    refreshNavigation();
   }
 
   renderShell();
   // 恢复到服务器记录的步骤
   const currentStep = local.session.current_step === "seating" ? "review" : local.session.current_step;
   const stepIndex = STEPS.findIndex((s) => s.key === currentStep);
-  setStep(stepIndex >= 0 ? stepIndex : 0);
+  local.step = stepIndex >= 0 ? stepIndex : 0;
+  local.maxUnlockedStep = local.step;
+  if (local.session.revision > 1) {
+    for (let index = 0; index <= local.step; index += 1) local.savedSteps.add(index);
+  }
+  local.stepSaved = local.savedSteps.has(local.step);
+  renderStep();
 }

@@ -60,7 +60,11 @@ async def timetable_import_preview(request: Request, class_id: str, files: list[
         attachment = operations.save_attachment(db, upload, None, "课表文件识别")
         operations.link_attachment(db, attachment.id, "class", class_id)
         attachments.append(attachment)
-    return ok(request, await openclaw_bridge.analyze_timetable_files(db, class_id, attachments), "课表文件已整理，请核对预览后保存")
+    return ok(
+        request,
+        await openclaw_bridge.analyze_timetable_files(db, class_id, attachments, cancelled=request.is_disconnected),
+        "课表文件已整理，请核对预览后保存",
+    )
 
 
 @router.post("/classes/{class_id}/timetable/import-apply")

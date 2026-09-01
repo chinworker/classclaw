@@ -57,6 +57,8 @@ uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1 --no-access-log
 - `CLASSCLAW_OPENCLAW_EXTRACTOR_ENABLED`：独立提取智能体开关，默认 `true`（零配置启用）；`CLASSCLAW_OPENCLAW_EXTRACTOR_AGENT_ID` 默认 `classclaw-extractor`（首次使用时自动创建，无工具、清洗规范写入其工作区 AGENTS.md）；开关设为 `false` 则回退主 agent 与完整内联提示词
 - `CLASSCLAW_OPENCLAW_CLASS_WORKSPACE_ROOT`：班级专属 agent workspace 根目录
 - `CLASSCLAW_OPENCLAW_WECHAT_CHANNEL`：班级微信 channel id，默认 `openclaw-weixin`
+- `CLASSCLAW_OPENCLAW_SESSION_CLEANUP_HOURS`：自动清理 OpenClaw 一次性会话的间隔小时数，默认 `24`，`0` 关闭
+- `CLASSCLAW_OPENCLAW_BIN`：OpenClaw CLI 可执行文件，会话清理使用，默认 `openclaw`
 
 SQLite 连接自动启用 `foreign_keys=ON`、`busy_timeout=5000` 和文件数据库的 WAL 模式（外加 `synchronous=NORMAL`）。写路径经单写者连接串行化（`writer_session`，可重入），读走独立连接池（`reader_session`）；`get_db` 按 HTTP 方法自动选择。所有响应带 `request_id`，数据库锁冲突返回 `DATABASE_BUSY`。
 

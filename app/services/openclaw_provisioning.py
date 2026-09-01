@@ -231,6 +231,131 @@ async def cleanup_class_agent_resources(db: Session, class_id: str) -> dict[str,
     }
 
 
+def _remove_agent_state(agent_id: str) -> bool:
+    root = (settings.openclaw_state_dir / "agents").expanduser().resolve()
+    target = (root / agent_id).resolve()
+    if target == root or root not in target.parents:
+        raise AppError("VALIDATION_ERROR", "智能体状态目录不在 OpenClaw agents 根目录中", 500, {"agent_id": agent_id})
+    if not target.exists():
+        return False
+    shutil.rmtree(target)
+    return True
+
+
+def clear_default_agent_sessions() -> dict[str, Any]:
+    """Clear conversations for the two default agents while preserving their runtime definitions."""
+    root = (settings.openclaw_state_dir / "agents").expanduser().resolve()
+    results = []
+    for agent_id in dict.fromkeys((settings.openclaw_agent_id, settings.openclaw_extractor_agent_id)):
+        if not agent_id:
+            continue
+        agent_root = (root / agent_id).resolve()
+        sessions = (agent_root / "sessions").resolve()
+        if agent_root == root or root not in agent_root.parents or sessions.parent != agent_root:
+            raise AppError("VALIDATION_ERROR", "默认智能体会话目录不安全", 500, {"agent_id": agent_id})
+        removed = sessions.exists()
+        if removed:
+            shutil.rmtree(sessions)
+        results.append({"agent_id": agent_id, "sessions_removed": removed})
+    return {"agents": results}
+
+
+async def cleanup_all_class_agent_resources(db: Session) -> dict[str, Any]:
+    """Remove every class agent while protecting Main and the managed extractor."""
+    bindings = list(db.scalars(select(ClassAgentBinding).order_by(ClassAgentBinding.created_at)))
+    class_ids = {binding.class_id for binding in bindings}
+    protected = {settings.openclaw_agent_id, settings.openclaw_extractor_agent_id}
+    agent_ids = {binding.openclaw_agent_id for binding in bindings if binding.openclaw_agent_id and binding.openclaw_agent_id not in protected}
+    account_ids = {binding.channel_account_id for binding in bindings if binding.channel_account_id}
+    errors: list[str] = []
+    runtime_removed = 0
+
+    if agent_ids or account_ids:
+        try:
+            snapshot = await admin_rpc("config.get")
+            config = snapshot.get("config") or {}
+            agents_config = config.get("agents") if isinstance(config.get("agents"), dict) else {}
+            agent_rows = agents_config.get("list") if isinstance(agents_config.get("list"), list) else []
+            runtime_removed = sum(
+                1 for row in agent_rows
+                if isinstance(row, dict) and str(row.get("id") or row.get("agentId")) in agent_ids
+            )
+            filtered_agents = [
+                row for row in agent_rows
+                if not isinstance(row, dict) or str(row.get("id") or row.get("agentId")) not in agent_ids
+            ]
+            runtime_bindings = config.get("bindings") if isinstance(config.get("bindings"), list) else []
+            filtered_bindings = [
+                row for row in runtime_bindings
+                if not isinstance(row, dict)
+                or not (
+                    row.get("agentId") in agent_ids
+                    or (
+                        (row.get("match") or {}).get("channel") == settings.openclaw_wechat_channel
+                        and (row.get("match") or {}).get("accountId") in account_ids
+                    )
+                )
+            ]
+            plugin = ((config.get("plugins") or {}).get("entries") or {}).get("classclaw") or {}
+            plugin_config = plugin.get("config") if isinstance(plugin.get("config"), dict) else {}
+            agent_classes = plugin_config.get("agentClasses") if isinstance(plugin_config.get("agentClasses"), dict) else {}
+            filtered_agent_classes = {
+                key: value for key, value in agent_classes.items()
+                if key not in agent_ids and value not in class_ids
+            }
+            raw = {
+                "agents": {"list": filtered_agents},
+                "bindings": filtered_bindings,
+                "plugins": {"entries": {"classclaw": {"config": {"agentClasses": filtered_agent_classes}}}},
+            }
+            params: dict[str, Any] = {
+                "raw": json.dumps(raw, ensure_ascii=False),
+                "replacePaths": ["bindings", "agents.list", "plugins.entries.classclaw.config.agentClasses"],
+                "note": "Factory reset ClassClaw class agents",
+                "restartDelayMs": 500,
+            }
+            if snapshot.get("hash"):
+                params["baseHash"] = snapshot["hash"]
+            await admin_rpc("config.patch", params)
+        except Exception as exc:
+            errors.append(f"OpenClaw runtime: {str(exc)[:1000]}")
+
+    removed_workspaces = 0
+    removed_agent_states = 0
+    for binding in bindings:
+        try:
+            removed_workspaces += int(_remove_workspace(binding.workspace_path))
+        except Exception as exc:
+            errors.append(f"workspace {binding.workspace_path}: {str(exc)[:500]}")
+    for agent_id in agent_ids:
+        try:
+            removed_agent_states += int(_remove_agent_state(agent_id))
+        except Exception as exc:
+            errors.append(f"agent state {agent_id}: {str(exc)[:500]}")
+
+    root = settings.openclaw_class_workspace_root.expanduser().resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    for child in root.iterdir():
+        if child.name == "_extractor":
+            continue
+        try:
+            if child.is_dir() and not child.is_symlink():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
+            removed_workspaces += 1
+        except OSError as exc:
+            errors.append(f"orphan workspace {child}: {str(exc)[:500]}")
+    return {
+        "bindings": len(bindings),
+        "runtime_agents_removed": runtime_removed,
+        "workspaces_removed": removed_workspaces,
+        "agent_states_removed": removed_agent_states,
+        "protected_agents": sorted(item for item in protected if item),
+        "errors": errors,
+    }
+
+
 def class_id_for_agent(db: Session, agent_id: str) -> str | None:
     binding = db.scalar(select(ClassAgentBinding).where(ClassAgentBinding.openclaw_agent_id == agent_id))
     return binding.class_id if binding else None
@@ -246,7 +371,8 @@ def _workspace_files(cls: ClassRoom, binding: ClassAgentBinding) -> dict[str, st
     display_name = _identity_name(cls.id)
     agents = f"""# System
 仅服务班级 `{cls.id}`（{cls.name}），禁止访问或修改其他班级。
-自然语言、微信、OCR、语音和附件先调用 `classclaw_analyze_interaction`；不要猜测缺失数据。
+疑似写入意图的自然语言、微信、OCR、语音内容先调用 `classclaw_analyze_interaction`；纯查询用 `classclaw_read`；不要猜测缺失数据。
+附件先用 `classclaw_upload_file` 暂存，再连同 attachment_ids 调用 `classclaw_analyze_interaction`；`classclaw_propose_write` 仅限确定性结构化写入，不得绕过分析。
 聊天写入：先展示简短预览；用户紧接着回复“确认/可以/写入/都确认”等肯定意思后直接提交，不存在审批卡或二次确认。
 一个预览用 `classclaw_commit_write`；同一回复中的多个预览获全部确认时，用 `classclaw_commit_writes` 一次原子提交。
 肯定回复只对应最近一组未决预览；新任务、纠正或澄清会结束旧组，绝不能误提交旧 proposal。
@@ -260,7 +386,7 @@ def _workspace_files(cls: ClassRoom, binding: ClassAgentBinding) -> dict[str, st
     identity_md = f"# Identity\nName: {display_name}\nRole: 班级事务助理\nEmoji: 🏫\n"
     tools = """# Tools
 普通输入：`classclaw_analyze_interaction`；查询：`classclaw_read`。
-附件先 `classclaw_upload_file`。聊天明确确认后单条用 `classclaw_commit_write`、多条用 `classclaw_commit_writes`；无需额外审批。放弃时用 `classclaw_cancel_write`。系统提醒任务先读 `reminder_delivery`，有效且到期时用 `classclaw_mark_reminder_sent` 后主动发一句提醒。
+附件先 `classclaw_upload_file`，再带着 attachment_ids 分析。`classclaw_propose_write` 仅限确定性结构化写入，不得绕过分析。聊天明确确认后单条用 `classclaw_commit_write`、多条用 `classclaw_commit_writes`；无需额外审批。放弃时用 `classclaw_cancel_write`。系统提醒任务先读 `reminder_delivery`，有效且到期时用 `classclaw_mark_reminder_sent` 后主动发一句提醒。
 """
     user = f"# User\n班级：{cls.name}（`{cls.id}`）\n主要用户：班主任\n时区：Asia/Shanghai\n"
     return {

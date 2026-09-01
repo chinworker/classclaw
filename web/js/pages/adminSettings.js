@@ -1,6 +1,7 @@
 import { el, clear, toast } from "../util.js";
 import { api } from "../api.js";
 import { pageHeader, confirmDanger, errorPanel, jsonDetails, skeleton, statusBadge } from "../components.js";
+import { clearSession } from "../state.js";
 
 export async function render(mount) {
   const host = el("div");
@@ -18,8 +19,8 @@ export async function render(mount) {
       }
       host.append(el("div", { class: "card danger-zone" },
         el("div", { class: "setting-row" },
-          el("div", {}, el("h3", {}, "系统初始化"), el("p", { class: "muted" }, "删除全部班级、班级业务数据、待处理草稿、附件和 OpenClaw 班级智能体。账号、系统配置、审计和 Token 统计保留。")),
-          el("button", { class: "danger", type: "button", onclick: initialize }, "初始化班级数据")),
+          el("div", {}, el("h3", {}, "完整系统初始化"), el("p", { class: "muted" }, "删除全部旧数据、账号、会话、配置、日志、统计、附件和班级智能体。只重新生成默认管理员，并保留 Main 与数据提取两个默认智能体。")),
+          el("button", { class: "danger", type: "button", onclick: initialize }, "完整初始化")),
         resultHost));
     } catch (error) { clear(host); host.append(errorPanel(error, { onRetry: load })); }
   }
@@ -43,21 +44,29 @@ export async function render(mount) {
 
   async function initialize() {
     const accepted = await confirmDanger({
-      title: "初始化全部班级数据",
-      lines: ["所有班级及学生、课表、作业、考勤等业务数据将被彻底删除。", "班级附件与 OpenClaw 班级智能体将被清理。", "用户账号、系统配置、审计日志和 Token 统计保留。"],
+      title: "完整初始化系统",
+      lines: [
+        "全部班级、学生、业务记录、草稿和附件将被彻底删除。",
+        "全部用户、登录会话、系统设置、审计日志、Token 和调用统计将被删除。",
+        "全部班级智能体及微信绑定将被删除；只保留 Main 和数据提取两个默认智能体。",
+        "完成后只存在新建的默认管理员，当前登录会立即失效。",
+      ],
       requireText: "INITIALIZE", confirmLabel: "执行初始化",
     });
     if (!accepted) return;
     clear(resultHost);
-    resultHost.append(el("div", { class: "blocked-panel" }, el("b", {}, "初始化执行中"), el("span", {}, "正在逐个清理班级数据库和 OpenClaw 资源，请勿关闭页面。")));
+    resultHost.append(el("div", { class: "blocked-panel" }, el("b", {}, "初始化执行中"), el("span", {}, "正在清空数据库、附件和班级智能体，请勿关闭页面。")));
     try {
       const result = await api("/admin/system/initialize", { method: "POST", body: { confirmation: "INITIALIZE" } });
       clear(resultHost);
       resultHost.append(el("div", { class: `init-result ${result.status}` },
         el("div", { class: "row-gap" }, el("h3", {}, "初始化状态"), statusBadge(result.status === "completed" ? "active" : result.status === "partial" ? "pending" : "failed", result.status.toUpperCase())),
-        el("p", {}, `已删除班级 ${result.deleted_classes} 个；失败 ${result.failed_classes} 个；外部清理错误 ${result.errors.length} 条。`),
-        jsonDetails(result, "查看完整初始化报告")));
-      toast(result.status === "completed" ? "班级数据初始化完成" : "初始化完成，但存在部分清理错误", result.status === "completed" ? "success" : "error");
+        el("p", {}, `已删除数据库记录 ${result.database_rows_deleted} 条、班级 ${result.deleted_classes} 个；外部清理错误 ${result.errors.length} 条。`),
+        el("p", { class: "muted" }, `新默认管理员：${result.default_admin.username}。请使用环境配置中的默认密码重新登录。`),
+        jsonDetails(result, "查看完整初始化报告"),
+        el("button", { class: "primary", type: "button", onclick: () => location.reload() }, "重新登录")));
+      clearSession();
+      toast(result.status === "completed" ? "系统完整初始化完成" : "系统数据已初始化，但存在外部清理错误", result.status === "completed" ? "success" : "error");
     } catch (error) {
       clear(resultHost); resultHost.append(errorPanel(error)); toast(error.message, "error");
     }

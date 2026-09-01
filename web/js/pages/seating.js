@@ -1,7 +1,7 @@
 // 座位表：建班后按需创建；支持命名版本、选择查看、重命名、删除和恢复。
 
 import { el, clear, toast, fmtDateTime } from "../util.js";
-import { api } from "../api.js";
+import { api, AI_REQUEST_TIMEOUT_MS } from "../api.js";
 import { state, refreshStudents } from "../state.js";
 import { pageHeader, errorPanel, skeleton, emptyState, field, fieldError, confirmDanger, openModal, fileDropzone } from "../components.js";
 import { seatMapEditor } from "../seatmap.js";
@@ -59,19 +59,26 @@ export async function render(mount) {
       hint: "上传座位表图片、PDF、Word、Excel 或文本文件",
       accept: ".xlsx,.xlsm,.docx,.pptx,.csv,.pdf,.png,.jpg,.jpeg,.webp,.txt,.md,.json",
       multiple: true,
+      manualStart: true,
       busyText: "正在识别座位，请稍候…",
-      onFiles: async (files, { setBusy }) => {
-        setBusy(true);
+      onFiles: async (files, { signal }) => {
         clear(analysisBox);
         const form = new FormData();
         files.slice(0, 4).forEach((file) => form.append("files", file));
         try {
-          const result = await api(`/classes/${state.classId}/seating/import-preview`, { method: "POST", body: form });
+          const result = await api(`/classes/${state.classId}/seating/import-preview`, {
+            method: "POST",
+            body: form,
+            timeoutMs: AI_REQUEST_TIMEOUT_MS,
+            signal,
+          });
           showEditor(result);
           analysisBox.append(el("div", { class: "issue issue-ok" }, `已识别 ${result.seated_count} 名学生，${result.unseated_count} 名暂未排座。`),
             ...(result.analysis?.warnings || []).map((text) => el("div", { class: "issue issue-warn" }, text)));
-        } catch (error) { analysisBox.append(errorPanel(error)); }
-        finally { setBusy(false); }
+        } catch (error) {
+          if (error.code === "REQUEST_CANCELLED") toast("已取消座位表识别", "info");
+          else analysisBox.append(errorPanel(error));
+        }
       },
     });
     importBox.append(el("p", { class: "muted" }, "文件只生成预览，确认保存后才创建新版本。"), upload, analysisBox);

@@ -120,6 +120,7 @@ async def analyze(db: Session, data: InteractionAnalyzeCreate) -> dict[str, Any]
 
     try:
         structured = await openclaw_bridge.analyze_interaction(
+            db=db,
             analysis_id=analysis.id,
             channel=data.channel,
             raw_text=data.text,

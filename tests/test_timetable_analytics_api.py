@@ -34,6 +34,52 @@ def test_lesson_key_override_swap_and_remove(db, sample):
     assert daily[0]["subject"] == "语文"
 
 
+def test_cross_date_swap_uses_latest_adjusted_lessons(db, sample):
+    cls = sample[0]
+    timetable.create_period(db, cls.id, PeriodCreate(period_no=1))
+    timetable.replace_base_timetable(
+        db,
+        cls.id,
+        TimetableReplace(
+            items=[
+                TimetableItem(weekday=1, period_no=1, subject="语文", teacher="张老师", room="101"),
+                TimetableItem(weekday=2, period_no=1, subject="数学", teacher="李老师", room="102"),
+            ]
+        ),
+    )
+    monday = date(2026, 9, 7)
+    tuesday = date(2026, 9, 8)
+    timetable.create_override(
+        db,
+        LessonOverrideCreate(
+            class_id=cls.id,
+            lesson_date=monday,
+            period_no=1,
+            replacement_subject="英语",
+            replacement_teacher="王老师",
+            replacement_room="201",
+            reason="临时调整",
+        ),
+    )
+    request = LessonSwapRequest(
+        class_id=cls.id,
+        lesson_date_a=monday,
+        lesson_date_b=tuesday,
+        period_a=1,
+        period_b=1,
+        reason="跨日互换",
+    )
+    preview = timetable.swap_preview(db, request)
+    assert preview["changes"][0]["from"] == "英语"
+    assert preview["changes"][0]["to"] == "数学"
+
+    timetable.confirm_swap(db, request)
+    monday_lesson = timetable.daily_timetable(db, cls.id, monday)[0]
+    tuesday_lesson = timetable.daily_timetable(db, cls.id, tuesday)[0]
+    assert (monday_lesson["subject"], monday_lesson["teacher"], monday_lesson["room"]) == ("数学", "李老师", "102")
+    assert (tuesday_lesson["subject"], tuesday_lesson["teacher"], tuesday_lesson["room"]) == ("英语", "王老师", "201")
+
+
 def test_period_custom_name_is_optional_and_has_chinese_fallback(db, sample):
     cls = sample[0]
     first = timetable.create_period(db, cls.id, PeriodCreate(period_no=1))

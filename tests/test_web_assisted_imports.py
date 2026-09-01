@@ -7,12 +7,39 @@ from app.services import openclaw_bridge
 from app.utils.time import today
 
 
+def test_timetable_page_uses_week_adjustments_base_order(client):
+    page = client.get("/app/js/pages/timetablePage.js")
+    assert page.status_code == 200
+    source = page.text
+    weekly_heading = 'el("h3", {}, "本周课表")'
+    adjustment_heading = 'el("h3", {}, "课程调整")'
+    base_heading = 'el("h3", {}, "基础课表")'
+    assert source.index(weekly_heading) < source.index(adjustment_heading) < source.index(base_heading)
+    assert "单课调整" in source
+    assert "课程互换" in source
+    assert "长期调整" in source
+    assert "lesson_date_a" in source and "lesson_date_b" in source
+    assert "读取调整后的最新安排" in source
+    assert "来源始终按基础课表预览" in source
+    assert 'class: "week-range"' in source
+    assert '"上一周"' in source and '"回到本周"' in source and '"下一周"' in source
+    assert "weekOffset * 7" in source
+    assert "getDaily(dateString, true)" in source
+    assert "预览影响" not in source
+    assert "weekdayChecks" not in source
+    batch_source = source[source.index("function buildBatchAdjustment"):]
+    assert batch_source.index('field("星期", weekdayInput)') < batch_source.index('field("节次", periodInput)')
+    assert "replacement_teacher: teacherInput.value.trim() || sourceLesson.teacher" not in source
+    assert "replacement_room: roomInput.value.trim() || sourceLesson.room" not in source
+
+
 def test_timetable_file_preview_and_apply(client, sample, monkeypatch):
     cls, _, _ = sample
 
-    async def analyze(_db, class_id, attachments):
+    async def analyze(_db, class_id, attachments, *, cancelled=None):
         assert class_id == cls.id
         assert len(attachments) == 1
+        assert cancelled is not None
         return {
             "periods": [{"period_no": 1, "name": "第一节", "sort_order": 1, "enabled": True}],
             "items": [{"weekday": 1, "period_no": 1, "subject": "语文", "teacher": "张老师", "room": "101"}],
@@ -43,8 +70,9 @@ def test_timetable_file_preview_and_apply(client, sample, monkeypatch):
 def test_seating_file_preview(client, sample, monkeypatch):
     cls, _, students = sample
 
-    async def analyze(_db, class_id, attachments):
+    async def analyze(_db, class_id, attachments, *, cancelled=None):
         assert class_id == cls.id
+        assert cancelled is not None
         return {
             "rows": 1,
             "cols": 3,
@@ -87,8 +115,9 @@ def test_natural_language_duty_rule_and_list(client, sample, monkeypatch):
     cls, _, _ = sample
     normalized = {"items": [{"name": "扫地", "count": 2}], "workdays": [1, 2, 3, 4, 5], "exclude_students": [], "skip_dates": []}
 
-    async def analyze(_db, class_id, text, base_rule):
+    async def analyze(_db, class_id, text, base_rule, *, cancelled=None):
         assert class_id == cls.id
+        assert cancelled is not None
         assert "周五" in text
         assert base_rule["items"][0]["name"] == "扫地"
         return {"rule_json": normalized, "analysis": {"summary": "已合并", "warnings": [], "confidence": 0.95}}
@@ -148,8 +177,9 @@ def test_duty_score_completes_and_previous_day_defaults_to_five(client, db, samp
 def test_web_student_event_is_classified_before_direct_save(client, sample, monkeypatch):
     cls, _, students = sample
 
-    async def analyze(_db, class_id, student_id, event_date, content, subject):
+    async def analyze(_db, class_id, student_id, event_date, content, subject, *, cancelled=None):
         assert class_id == cls.id and student_id == students[0].id
+        assert cancelled is not None
         assert "忘带" in content
         return {
             "event": {

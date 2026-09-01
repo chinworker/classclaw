@@ -5,8 +5,7 @@ import { pageHeader, dataTable, statusBadge, openModal, confirmDanger, field, er
 export async function render(mount) {
   const host = el("div");
   let users = []; let classes = [];
-  mount.append(pageHeader("班级管理", "管理员可直接维护班级资源和负责人；彻底删除会同时清理业务数据与专属智能体。",
-    el("button", { class: "primary", type: "button", onclick: () => openEdit() }, "新建班级")), host);
+  mount.append(pageHeader("班级管理", "管理员维护已有班级：修改信息、分配负责人和彻底删除。新班级由班主任账号通过创建向导创建。"), host);
 
   async function load() {
     clear(host); host.append(skeleton(5));
@@ -44,7 +43,7 @@ export async function render(mount) {
       el("button", { class: "text-button danger-text", type: "button", onclick: () => remove(cls) }, "彻底删除"));
   }
 
-  function openEdit(cls = null) {
+  function openEdit(cls) {
     const name = el("input", { value: cls?.name || "", maxlength: "100", required: true });
     const grade = el("input", { value: cls?.grade || "", maxlength: "50", required: true, placeholder: "例如 高一" });
     const room = el("input", { value: cls?.room || "", maxlength: "100" });
@@ -52,21 +51,15 @@ export async function render(mount) {
     const semester = el("input", { value: cls?.semester_name || "", maxlength: "100" });
     const status = el("select", {}, el("option", { value: "active", selected: cls?.status !== "inactive" }, "active"), el("option", { value: "inactive", selected: cls?.status === "inactive" }, "inactive"));
     const owner = ownerSelect(cls);
-    const provision = el("input", { type: "checkbox", checked: true });
-    const body = el("div", { class: "form-grid" }, field("名称 *", name), field("年级 *", grade), field("教室", room), field("班主任名称", teacher), field("学期", semester), field("负责人账号", owner), cls ? field("状态", status) : el("label", { class: "field check-field" }, provision, el("span", {}, "立即创建 OpenClaw 智能体")));
+    const body = el("div", { class: "form-grid" }, field("名称 *", name), field("年级 *", grade), field("教室", room), field("班主任名称", teacher), field("学期", semester), field("负责人账号", owner), field("状态", status));
     openModal({
-      title: cls ? `修改 ${cls.name}` : "新建班级", body, wide: true,
+      title: `修改 ${cls.name}`, body, wide: true,
       actions: [{ label: "取消", kind: "secondary" }, { label: "保存", kind: "primary", onClick: async ({ close, setSubmitting }) => {
         if (!name.value.trim() || !grade.value.trim()) { toast("名称和年级不能为空", "error"); return; }
         setSubmitting(true);
         try {
-          if (cls) {
-            await api(`/classes/${cls.id}`, { method: "PATCH", body: { name: name.value.trim(), grade: grade.value.trim(), room: room.value.trim() || null, head_teacher: teacher.value.trim() || null, semester_name: semester.value.trim() || null, status: status.value } });
-            if ((owner.value || null) !== (cls.owner_user_id || null)) await api(`/admin/classes/${cls.id}/owner`, { method: "PATCH", body: { owner_user_id: owner.value || null } });
-          } else {
-            const result = await api("/admin/classes", { method: "POST", body: { name: name.value.trim(), grade: grade.value.trim(), room: room.value.trim() || null, head_teacher: teacher.value.trim() || null, semester_name: semester.value.trim() || null, owner_user_id: owner.value || null, provision_agent: provision.checked } });
-            if (result.agent_error) toast(`班级已创建；智能体创建失败：${result.agent_error}`, "error");
-          }
+          await api(`/classes/${cls.id}`, { method: "PATCH", body: { name: name.value.trim(), grade: grade.value.trim(), room: room.value.trim() || null, head_teacher: teacher.value.trim() || null, semester_name: semester.value.trim() || null, status: status.value } });
+          if ((owner.value || null) !== (cls.owner_user_id || null)) await api(`/admin/classes/${cls.id}/owner`, { method: "PATCH", body: { owner_user_id: owner.value || null } });
           close(); toast("班级配置已保存", "success"); load();
         } catch (error) { toast(error.message, "error"); } finally { setSubmitting(false); }
       } }],

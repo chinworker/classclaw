@@ -1,6 +1,7 @@
 import base64
 import asyncio
 
+import pytest
 from sqlalchemy import func, select
 from types import SimpleNamespace
 
@@ -68,18 +69,27 @@ def test_web_onboarding_wizard_is_served(client):
     response = client.get("/app/")
     assert response.status_code == 200
     assert "ClassClaw · 班主任工作台" in response.text
-    assert 'type="module" src="./app.js"' in response.text
+    assert 'type="module" src="./app.js' in response.text
     onboarding = client.get("/app/js/pages/onboarding.js")
     assert onboarding.status_code == 200
-    assert "确认并创建班级" in onboarding.text
+    assert '"创建班级"' in onboarding.text
+    assert "确认并创建班级" not in onboarding.text
+    assert "我已核对班级、名单、课表和科目" not in onboarding.text
+    assert "commitBtn.disabled" in onboarding.text
     assert "班级专属助手" in onboarding.text
     assert "暂不绑定" in onboarding.text
     assert "/agent-binding/provision" in onboarding.text
     assert "初始座位" not in onboarding.text
     assert "seatMapEditor" not in onboarding.text
-    assert "自定义名称" in onboarding.text
+    assert "自定义名称" not in onboarding.text
+    assert "再次输入完整班级名称" not in onboarding.text
+    assert "manualStart: true" in onboarding.text
+    assert "取消解析" in client.get("/app/js/components.js").text
     components = client.get("/app/js/components.js")
     assert components.status_code == 200
+    assert "export function aiButton" in components.text
+    assert "ai-button-timer" in components.text
+    assert "window.setInterval(updateClock, 100)" in components.text
     assert "/agent-binding/wait" in components.text
     assert "我已扫码，检查绑定" not in components.text
 
@@ -185,9 +195,10 @@ def test_deterministic_api_remains_available_when_openclaw_is_disconnected(clien
 def test_onboarding_file_is_processed_by_openclaw_and_fills_draft(client, monkeypatch):
     started = client.post("/api/v1/class-onboarding/sessions", json={"initial_draft": {"class_info": {"name": "高一三班", "grade": "高一"}}}).json()["data"]
 
-    async def analyze(db, session_id, target_section, attachments, expected_revision):
+    async def analyze(db, session_id, target_section, attachments, expected_revision, *, cancelled=None):
         assert target_section == "students"
         assert attachments[0].original_name == "名单.csv"
+        assert cancelled is not None
         updated = approval_service.update_onboarding(
             db,
             session_id,
@@ -219,7 +230,7 @@ def test_reimport_uses_fresh_openclaw_session_and_replaces_old_rows(db, monkeypa
     })())
     users = []
 
-    async def responses(_prompt, *, user, attachments=None, max_output_tokens=8000):
+    async def responses(_prompt, *, user, attachments=None, max_output_tokens=8000, db=None):
         users.append(user)
         return {"draft_patch": {"students": [{"student_no": "002", "name": "新学生"}]}, "warnings": [], "confidence": 0.99, "summary": "仅本次文件"}
 
@@ -229,6 +240,78 @@ def test_reimport_uses_fresh_openclaw_session_and_replaces_old_rows(db, monkeypa
     assert second["session"].draft_json["students"] == [{"student_no": "002", "name": "新学生"}]
     assert users[0] != users[1]
     assert all(value.startswith("classclaw-onboarding-import-") for value in users)
+
+
+def test_cancelled_onboarding_analysis_does_not_update_draft(db, monkeypatch):
+    onboarding = approval_service.create_onboarding(
+        db,
+        type(
+            "Input",
+            (),
+            {
+                "initial_draft": {
+                    "class_info": {"name": "高一三班", "grade": "高一"},
+                    "students": [{"student_no": "001", "name": "旧学生"}],
+                },
+                "field_evidence": {},
+                "created_by": "teacher",
+                "source_message_id": None,
+            },
+        )(),
+    )
+
+    async def responses(_prompt, *, user, attachments=None, max_output_tokens=8000, db=None):
+        return {
+            "draft_patch": {"students": [{"student_no": "002", "name": "新学生"}]},
+            "warnings": [],
+            "confidence": 0.99,
+            "summary": "已识别",
+        }
+
+    async def cancelled() -> bool:
+        return True
+
+    monkeypatch.setattr(openclaw_bridge, "_responses_json", responses)
+    with pytest.raises(AppError) as captured:
+        asyncio.run(
+            openclaw_bridge.analyze_onboarding_files(
+                db,
+                onboarding.id,
+                "students",
+                [],
+                onboarding.revision,
+                cancelled=cancelled,
+            )
+        )
+
+    assert captured.value.code == "REQUEST_CANCELLED"
+    db.refresh(onboarding)
+    assert onboarding.revision == 1
+    assert onboarding.draft_json["students"] == [{"student_no": "001", "name": "旧学生"}]
+
+
+def test_cancellation_stops_inflight_openclaw_operation():
+    operation_cancelled = False
+
+    async def slow_operation() -> dict:
+        nonlocal operation_cancelled
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            operation_cancelled = True
+            raise
+        return {}
+
+    async def cancelled() -> bool:
+        return True
+
+    async def run() -> None:
+        with pytest.raises(AppError) as captured:
+            await openclaw_bridge._await_unless_cancelled(slow_operation(), cancelled)
+        assert captured.value.code == "REQUEST_CANCELLED"
+
+    asyncio.run(run())
+    assert operation_cancelled is True
 
 
 def test_onboarding_pasted_text_is_rejected_in_file_first_flow(client):
@@ -479,10 +562,10 @@ def test_interaction_ambiguity_never_creates_a_proposal(client, db, monkeypatch)
     assert db.scalar(select(func.count(WriteProposal.id))) == 0
 
 
-def test_interaction_cleaner_prompt_contains_common_database_semantics(monkeypatch):
+def test_interaction_cleaner_prompt_contains_common_database_semantics(db, monkeypatch):
     captured = {}
 
-    async def responses(prompt, *, user, attachments=None, max_output_tokens=8000):
+    async def responses(prompt, *, user, attachments=None, max_output_tokens=8000, db=None):
         captured["prompt"] = prompt
         return {
             "status": "no_action",
@@ -505,6 +588,7 @@ def test_interaction_cleaner_prompt_contains_common_database_semantics(monkeypat
     # Default path: extractor agent is ready, semantics live in its AGENTS.md.
     monkeypatch.setattr(openclaw_bridge, "ensure_extractor_agent", extractor_ready)
     asyncio.run(openclaw_bridge.analyze_interaction(
+        db=db,
         analysis_id="analysis-1",
         channel="wechat",
         raw_text="21号语文作业未交，不需要先新建",
@@ -519,6 +603,7 @@ def test_interaction_cleaner_prompt_contains_common_database_semantics(monkeypat
     # Fallback path: switch off, semantics stay in the inline prompt.
     monkeypatch.setattr(openclaw_bridge, "ensure_extractor_agent", extractor_off)
     result = asyncio.run(openclaw_bridge.analyze_interaction(
+        db=db,
         analysis_id="analysis-1",
         channel="wechat",
         raw_text="21号语文作业未交，不需要先新建",

@@ -49,6 +49,8 @@ class Settings:
         os.getenv("CLASSCLAW_OPENCLAW_STATE_DIR", os.getenv("OPENCLAW_STATE_DIR", str(Path.home() / ".openclaw")))
     )
     openclaw_wechat_channel: str = os.getenv("CLASSCLAW_OPENCLAW_WECHAT_CHANNEL", "openclaw-weixin")
+    openclaw_bin: str = os.getenv("CLASSCLAW_OPENCLAW_BIN", "openclaw")
+    openclaw_session_cleanup_hours: float = float(os.getenv("CLASSCLAW_OPENCLAW_SESSION_CLEANUP_HOURS", "24"))
 
 
 settings = Settings()

@@ -39,7 +39,7 @@ openclaw gateway restart
 
 `/tools/invoke` 用于验证 ClassClaw 插件确实已加载，`/v1/responses` 用于处理网页上传文件。两者都保持在本机或可信内网，不要暴露到公网。`timeoutMs` 是智能体调用 `classclaw_analyze_interaction` 等工具的等待上限，必须不小于后端的 `CLASSCLAW_OPENCLAW_TIMEOUT_SECONDS`，否则分析较慢时工具调用会先超时失败。
 
-JSON 提取默认走自动创建的轻量提取智能体（详见 [专属智能体与微信使用说明](class-agent-onboarding.md) §5.1）：首次分析时后端会通过 admin RPC 创建 `classclaw-extractor`（无工具），清洗规范自动写入 `data/openclaw-agents/_extractor/AGENTS.md`（内容哈希变化时自动覆写，手工修改会被下次版本更新覆盖）。因此 OpenClaw 侧必须启用 `admin-http-rpc`；未启用时后端自动回退主智能体。
+JSON 提取默认走自动创建的轻量提取智能体（详见 [专属智能体与微信使用说明](class-agent-onboarding.md) §5.1）：首次分析时后端会通过 admin RPC 创建 `classclaw-extractor`（无工具），清洗规范自动写入 `data/openclaw-agents/_extractor/AGENTS.md`。管理员在 Agent Studio 保存的文件会记录为自定义内容，后续自动检查不会覆盖；需要跟随 ClassClaw 新默认规则时，可在管理端恢复系统默认。因此 OpenClaw 侧必须启用 `admin-http-rpc`；未启用时后端自动回退主智能体。
 
 ## 2. 配置并启动 ClassClaw 后端
 
@@ -136,6 +136,8 @@ ClassClaw 不直接连接微信；微信连接器属于 OpenClaw。只要微信�
 
 网页端复用同一 API，而不是建立第二套草稿：
 
+网页中所有会调用 OpenClaw 做文件识别、自然语言分析或结构化生成的入口统一使用“AI 按钮”。任务运行时按钮显示跑马灯边框和精确到 0.1 秒的耗时；再次点击可取消请求，取消或完成后立即停止计时。普通数据库查询、保存和确定性分析不使用该样式。
+
 ```text
 POST  /api/v1/class-onboarding/sessions
 GET   /api/v1/class-onboarding/sessions/{session_id}
@@ -221,4 +223,14 @@ openclaw sessions cleanup --dry-run
 openclaw sessions cleanup --enforce
 ```
 
-建议为主智能体与 `classclaw-extractor` 配置容量上限（如 `maxDiskBytes` 调到 `1gb`、`maxEntries` 设数百条），并让空闲提取会话按 `lastInteractionAt` 的空闲/每日重置策略自然退役；已归档和置顶（pinned）的会话不受自动清理影响。需要立即回收磁盘时，用主机 cron 每日执行一次 `openclaw sessions cleanup --enforce`。聊天会话与归档会话不会被上述策略误删。
+建议为主智能体与 `classclaw-extractor` 配置容量上限（如 `maxDiskBytes` 调到 `1gb`、`maxEntries` 设数百条），并让空闲提取会话按 `lastInteractionAt` 的空闲/每日重置策略自然退役；已归档和置顶（pinned）的会话不受自动清理影响。
+
+### 8.1 后端自动清理（已内置）
+
+由于 `admin-http-rpc` 白名单不含 `sessions.*`，后端通过 OpenClaw CLI 触发同一套内建清理机制：
+
+- 启动后每 5 分钟检查一次节流窗口，按 `CLASSCLAW_OPENCLAW_SESSION_CLEANUP_HOURS`（默认 24 小时）自动执行一次 `openclaw sessions cleanup --enforce`；Gateway 不在线时跳过且不计入窗口，`0` 可关闭；
+- 管理员控制台可随时操作：
+  - `GET /api/v1/admin/openclaw/sessions/cleanup`：查看开关、间隔与上次执行结果；
+  - `POST /api/v1/admin/openclaw/sessions/cleanup?enforce=false`：预览（等价 `--dry-run`）；不带参数或 `enforce=true` 立即执行；
+- 清理只影响超出容量/空闲策略的会话，聊天会话与归档会话不会被误删；CLI 二进制由 `CLASSCLAW_OPENCLAW_BIN` 指定（默认 `openclaw`，需与 Gateway 同一主机/用户，能读取 `~/.openclaw` 配置）。

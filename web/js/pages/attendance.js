@@ -31,15 +31,22 @@ export async function render(mount) {
     const dateInput = el("input", { type: "date", value: todayStr() });
     const periodSelect = el("select", {}, PERIODS.map(([v, l]) => el("option", { value: v }, l)));
     const gridHost = el("div");
+    const saveBtn = el("button", { class: "primary", type: "button", disabled: true, style: { marginLeft: "auto" } }, "保存考勤");
     host.append(
       el("div", { class: "filter-bar" },
         field("日期", dateInput), field("时段", periodSelect),
-        el("button", { class: "secondary", type: "button", onclick: loadGrid }, "载入当天记录")),
+        el("button", { class: "secondary", type: "button", onclick: loadGrid }, "载入当天记录"),
+        saveBtn),
       gridHost);
+    [dateInput, periodSelect].forEach((input) => input.addEventListener("change", () => { saveBtn.disabled = true; }));
 
     async function loadGrid() {
       clear(gridHost);
       gridHost.append(skeleton(5));
+      saveBtn.disabled = true;
+      saveBtn.onclick = null;
+      const loadedDate = dateInput.value;
+      const loadedPeriod = periodSelect.value;
       let students, records;
       try {
         [students, records] = await Promise.all([
@@ -85,8 +92,7 @@ export async function render(mount) {
         }
       });
       const saveInfo = el("p", { class: "muted" }, "没有单独登记的学生按出勤计算。保存时只写入例外或对已有记录的更正。");
-      const saveBtn = el("button", { class: "primary", type: "button" }, "保存考勤");
-      saveBtn.addEventListener("click", async () => {
+      saveBtn.onclick = async () => {
         saveBtn.disabled = true;
         let failed = 0;
         const changed = students.filter((s) => selects.get(s.id).status !== "present" || existing.has(s.id));
@@ -96,8 +102,8 @@ export async function render(mount) {
             await api("/attendance", {
               method: "PUT",
               body: {
-                class_id: state.classId, student_id: s.id, attendance_date: dateInput.value,
-                period: periodSelect.value, status: record.status, note: record.note || null,
+                class_id: state.classId, student_id: s.id, attendance_date: loadedDate,
+                period: loadedPeriod, status: record.status, note: record.note || null,
               },
             });
           } catch (error) {
@@ -105,11 +111,12 @@ export async function render(mount) {
             toast(`${s.name} 保存失败：${error.message}`, "error");
           }
         }
-        saveBtn.disabled = false;
+        saveBtn.disabled = dateInput.value !== loadedDate || periodSelect.value !== loadedPeriod;
         if (!failed) toast(changed.length ? `已保存 ${changed.length} 条考勤记录，其余默认出勤` : "全员默认出勤，无需额外保存", "success");
         else toast(`${failed} 条保存失败，其余已保存`, "error");
-      });
-      gridHost.append(el("div", { class: "attendance-summary-strip" }, el("b", {}, `${students.length} 名学生`), el("span", {}, "默认状态：出勤"), allPresentBtn), el("div", { class: "table-wrap" }, table), saveInfo, saveBtn);
+      };
+      saveBtn.disabled = dateInput.value !== loadedDate || periodSelect.value !== loadedPeriod;
+      gridHost.append(el("div", { class: "attendance-summary-strip" }, el("b", {}, `${students.length} 名学生`), el("span", {}, "默认状态：出勤"), allPresentBtn), el("div", { class: "table-wrap" }, table), saveInfo);
     }
     await loadGrid();
   }

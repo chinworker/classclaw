@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import json
 import asyncio
+import json
+import shutil
 import time
 from collections import Counter, defaultdict
 from datetime import timedelta
@@ -13,24 +14,31 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.core.errors import AppError
+from app.database import Base
 from app.models.entities import (
     AiUsageRecord,
     Attachment,
-    AttachmentLink,
     AuditLog,
     ClassAgentBinding,
     ClassRoom,
     InteractionAnalysis,
-    ClassOnboardingSession,
     Student,
     SystemSetting,
     User,
     UserSession,
     WriteProposal,
 )
-from app.schemas.admin import AdminClassCreate, OpenClawAgentUpdate, OpenClawGlobalUpdate
-from app.schemas.domain import ClassCreate
-from app.services import accounts, approval, class_student, logs as log_service, openclaw_provisioning, openclaw_usage
+from app.schemas.admin import OpenClawAgentUpdate, OpenClawGlobalUpdate
+from app.services import (
+    accounts,
+    approval,
+    class_student,
+    logs as log_service,
+    openclaw_bridge,
+    openclaw_provisioning,
+    openclaw_usage,
+    openclaw_workspaces,
+)
 from app.services.common import audit
 from app.utils.time import now
 
@@ -244,15 +252,128 @@ def _model_fields(value: Any) -> tuple[str | None, list[str]]:
     return None, []
 
 
-async def openclaw_agent_settings(db: Session, class_id: str) -> dict[str, Any]:
-    binding = openclaw_provisioning.get_binding(db, class_id)
-    if not binding.openclaw_agent_id:
-        raise AppError("OPENCLAW_AGENT_NOT_CREATED", "该班级的 OpenClaw 智能体尚未创建", 409)
+def _runtime_workspace(row: dict[str, Any] | None) -> str | None:
+    if not row:
+        return None
+    value = row.get("workspace") or row.get("workspacePath")
+    return str(value) if value else None
+
+
+def _system_agent_descriptors(config: dict[str, Any]) -> list[dict[str, Any]]:
+    defaults = (config.get("agents") or {}).get("defaults") or {}
+    main_id = settings.openclaw_agent_id
+    extractor_id = settings.openclaw_extractor_agent_id
+    main_row = _agent_runtime_row(config, main_id)
+    extractor_row = _agent_runtime_row(config, extractor_id) if extractor_id else None
+    main_workspace = _runtime_workspace(main_row) or defaults.get("workspace")
+    extractor_workspace = _runtime_workspace(extractor_row) or str((settings.openclaw_class_workspace_root / "_extractor").resolve())
+    return [
+        {
+            "identifier": "main",
+            "kind": "main",
+            "label": "Main 智能体",
+            "description": "OpenClaw 默认智能体，负责非班级专属任务和系统级对话。",
+            "agent_id": main_id,
+            "workspace_path": str(main_workspace) if main_workspace else None,
+            "present": main_row is not None,
+            "enabled": True,
+            "resettable": False,
+            "status": "active" if main_row else "unavailable",
+        },
+        {
+            "identifier": "extractor",
+            "kind": "extractor",
+            "label": "数据提取智能体",
+            "description": "用于网页上传解析和结构化信息提取，不开放班级工具。",
+            "agent_id": extractor_id,
+            "workspace_path": extractor_workspace,
+            "present": extractor_row is not None,
+            "enabled": settings.openclaw_extractor_enabled,
+            "resettable": True,
+            "status": "disabled" if not settings.openclaw_extractor_enabled else "active" if extractor_row else "unavailable",
+        },
+    ]
+
+
+def _class_agent_descriptors(db: Session, config: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = db.execute(
+        select(ClassAgentBinding, ClassRoom, User)
+        .join(ClassRoom, ClassRoom.id == ClassAgentBinding.class_id)
+        .outerjoin(User, User.id == ClassRoom.owner_user_id)
+        .where(ClassRoom.deleted_at.is_(None))
+        .order_by(ClassRoom.name)
+    ).all()
+    return [
+        {
+            "identifier": cls.id,
+            "kind": "class",
+            "label": cls.name,
+            "description": "班级专属智能体，拥有独立提示词、工具和可选微信绑定。",
+            "agent_id": binding.openclaw_agent_id,
+            "workspace_path": binding.workspace_path,
+            "present": bool(binding.openclaw_agent_id and _agent_runtime_row(config, binding.openclaw_agent_id)),
+            "enabled": True,
+            "resettable": True,
+            "status": "unavailable" if binding.openclaw_agent_id and not _agent_runtime_row(config, binding.openclaw_agent_id) else binding.status,
+            "class": {"id": cls.id, "name": cls.name, "status": cls.status},
+            "owner": accounts.public_user(owner, cls.id) if owner else None,
+            "binding": binding,
+        }
+        for binding, cls, owner in rows
+    ]
+
+
+async def openclaw_agent_catalog(db: Session) -> list[dict[str, Any]]:
+    snapshot = await openclaw_provisioning.admin_rpc("config.get")
+    config = snapshot.get("config") or {}
+    return [*_system_agent_descriptors(config), *_class_agent_descriptors(db, config)]
+
+
+def _resolve_agent(db: Session, identifier: str, config: dict[str, Any]) -> dict[str, Any]:
+    descriptors = [*_system_agent_descriptors(config), *_class_agent_descriptors(db, config)]
+    descriptor = next(
+        (item for item in descriptors if identifier in {item["identifier"], item.get("agent_id")}),
+        None,
+    )
+    if not descriptor:
+        raise AppError("OPENCLAW_AGENT_NOT_FOUND", "未找到可管理的 OpenClaw 智能体", 404, {"identifier": identifier})
+    if not descriptor.get("agent_id"):
+        raise AppError("OPENCLAW_AGENT_NOT_CREATED", "该智能体尚未创建", 409, {"identifier": identifier})
+    return descriptor
+
+
+def _workspace_defaults(descriptor: dict[str, Any]) -> dict[str, str] | None:
+    if descriptor["kind"] == "extractor":
+        return openclaw_bridge.extractor_workspace_defaults()
+    return None
+
+
+def _workspace_snapshot(db: Session, descriptor: dict[str, Any]) -> dict[str, Any]:
+    if descriptor["kind"] == "class":
+        result = openclaw_provisioning.workspace_files(db, descriptor["class"]["id"])
+        for item in result["files"]:
+            item["resettable"] = True
+            item["exists"] = True
+        result["available"] = True
+        result["resettable"] = True
+        return result
+    workspace_path = descriptor.get("workspace_path")
+    if not workspace_path:
+        return {"workspace": None, "files": [], "available": False, "resettable": False}
+    result = openclaw_workspaces.snapshot(workspace_path, defaults=_workspace_defaults(descriptor))
+    result["available"] = True
+    result["resettable"] = descriptor["resettable"]
+    return result
+
+
+async def openclaw_agent_settings(db: Session, identifier: str) -> dict[str, Any]:
     snapshot, models_payload = await asyncio.gather(
         openclaw_provisioning.admin_rpc("config.get"),
         openclaw_provisioning.admin_rpc("models.list"),
     )
-    row = _agent_runtime_row(snapshot.get("config") or {}, binding.openclaw_agent_id)
+    config = snapshot.get("config") or {}
+    descriptor = _resolve_agent(db, identifier, config)
+    row = _agent_runtime_row(config, descriptor["agent_id"])
     if not row:
         raise AppError("OPENCLAW_AGENT_NOT_FOUND", "OpenClaw 配置中找不到该智能体", 409)
     primary, fallbacks = _model_fields(row.get("model"))
@@ -276,8 +397,12 @@ async def openclaw_agent_settings(db: Session, class_id: str) -> dict[str, Any]:
         "tools": row.get("tools") or {},
     }
     return {
-        "binding": binding, "runtime": safe_runtime, "models": _safe_models(models_payload),
-        "workspace": openclaw_provisioning.workspace_files(db, class_id), "config_hash": snapshot.get("hash"),
+        "agent": descriptor,
+        "binding": descriptor.get("binding"),
+        "runtime": safe_runtime,
+        "models": _safe_models(models_payload),
+        "workspace": _workspace_snapshot(db, descriptor),
+        "config_hash": snapshot.get("hash"),
     }
 
 
@@ -307,24 +432,24 @@ async def update_openclaw_config(data: OpenClawGlobalUpdate) -> dict[str, Any]:
     return {"updated": changes, "restart_requested": True}
 
 
-async def update_openclaw_agent(db: Session, class_id: str, data: OpenClawAgentUpdate) -> dict[str, Any]:
-    binding = openclaw_provisioning.get_binding(db, class_id)
-    if not binding.openclaw_agent_id:
-        raise AppError("OPENCLAW_AGENT_NOT_CREATED", "该班级的 OpenClaw 智能体尚未创建", 409)
+async def update_openclaw_agent(db: Session, identifier: str, data: OpenClawAgentUpdate) -> dict[str, Any]:
     changes = data.model_dump(exclude_unset=True)
+    initial_snapshot = await openclaw_provisioning.admin_rpc("config.get")
+    descriptor = _resolve_agent(db, identifier, initial_snapshot.get("config") or {})
+    agent_id = descriptor["agent_id"]
     if data.display_name is not None:
-        await openclaw_provisioning.admin_rpc("agents.update", {
-            "agentId": binding.openclaw_agent_id, "name": data.display_name.strip(),
-            "workspace": binding.workspace_path, "emoji": "🏫",
-        })
+        params = {"agentId": agent_id, "name": data.display_name.strip()}
+        if descriptor.get("workspace_path"):
+            params["workspace"] = descriptor["workspace_path"]
+        await openclaw_provisioning.admin_rpc("agents.update", params)
     runtime_fields = set(changes) - {"display_name"}
     if runtime_fields:
-        snapshot = await openclaw_provisioning.admin_rpc("config.get")
+        snapshot = await openclaw_provisioning.admin_rpc("config.get") if data.display_name is not None else initial_snapshot
         config = snapshot.get("config") or {}
         rows = list((config.get("agents") or {}).get("list") or [])
         found = False
         for index, row in enumerate(rows):
-            if not isinstance(row, dict) or str(row.get("id") or row.get("agentId")) != binding.openclaw_agent_id:
+            if not isinstance(row, dict) or str(row.get("id") or row.get("agentId")) != agent_id:
                 continue
             updated = dict(row)
             if "model" in changes or "model_fallbacks" in changes:
@@ -374,14 +499,58 @@ async def update_openclaw_agent(db: Session, class_id: str, data: OpenClawAgentU
             raise AppError("OPENCLAW_AGENT_NOT_FOUND", "OpenClaw 配置中找不到该智能体", 409)
         params: dict[str, Any] = {
             "raw": json.dumps({"agents": {"list": rows}}, ensure_ascii=False), "replacePaths": ["agents.list"],
-            "note": f"Update ClassClaw agent {binding.openclaw_agent_id}", "restartDelayMs": 500,
+            "note": f"Update managed OpenClaw agent {agent_id}", "restartDelayMs": 500,
         }
         if snapshot.get("hash"):
             params["baseHash"] = snapshot["hash"]
         await openclaw_provisioning.admin_rpc("config.patch", params)
-    audit(db, "update_openclaw_agent", "class_agent_binding", binding.id, operator_type="admin", after=changes)
+    target_type = "class_agent_binding" if descriptor["kind"] == "class" else "openclaw_agent"
+    binding = descriptor.get("binding")
+    target_id = binding.id if binding else agent_id
+    audit(db, "update_openclaw_agent", target_type, target_id, operator_type="admin", after=changes)
     db.commit()
-    return {"binding": binding, "updated": changes, "restart_requested": bool(runtime_fields)}
+    return {"agent": descriptor, "binding": descriptor.get("binding"), "updated": changes, "restart_requested": bool(runtime_fields)}
+
+
+async def update_openclaw_workspace(
+    db: Session,
+    identifier: str,
+    filename: str,
+    content: str,
+    expected_sha256: str | None,
+) -> dict[str, Any]:
+    snapshot = await openclaw_provisioning.admin_rpc("config.get")
+    descriptor = _resolve_agent(db, identifier, snapshot.get("config") or {})
+    if descriptor["kind"] == "class":
+        return openclaw_provisioning.update_workspace_file(
+            db, descriptor["class"]["id"], filename, content, expected_sha256,
+        )
+    if not descriptor.get("workspace_path"):
+        raise AppError("OPENCLAW_WORKSPACE_UNAVAILABLE", "该智能体未配置工作区", 409)
+    return openclaw_workspaces.update_file(
+        db,
+        agent_id=descriptor["agent_id"],
+        workspace_path=descriptor["workspace_path"],
+        filename=filename,
+        content=content,
+        expected_sha256=expected_sha256,
+    )
+
+
+async def reset_openclaw_workspace(db: Session, identifier: str, filename: str) -> dict[str, Any]:
+    snapshot = await openclaw_provisioning.admin_rpc("config.get")
+    descriptor = _resolve_agent(db, identifier, snapshot.get("config") or {})
+    if descriptor["kind"] == "class":
+        return openclaw_provisioning.reset_workspace_file(db, descriptor["class"]["id"], filename)
+    if not descriptor.get("workspace_path"):
+        raise AppError("OPENCLAW_WORKSPACE_UNAVAILABLE", "该智能体未配置工作区", 409)
+    return openclaw_workspaces.reset_file(
+        db,
+        agent_id=descriptor["agent_id"],
+        workspace_path=descriptor["workspace_path"],
+        filename=filename,
+        defaults=_workspace_defaults(descriptor),
+    )
 
 
 async def openclaw_agent_usage(db: Session, days: int) -> list[dict[str, Any]]:
@@ -390,20 +559,17 @@ async def openclaw_agent_usage(db: Session, days: int) -> list[dict[str, Any]]:
     cached = _agent_usage_cache.get(days)
     if cached and time.monotonic() - cached[0] < 30:
         return cached[1]
-    rows = db.execute(
-        select(ClassAgentBinding, ClassRoom)
-        .join(ClassRoom, ClassRoom.id == ClassAgentBinding.class_id)
-        .where(ClassRoom.deleted_at.is_(None))
-        .order_by(ClassRoom.name)
-    ).all()
+    snapshot = await openclaw_provisioning.admin_rpc("config.get")
+    config = snapshot.get("config") or {}
+    descriptors = [*_system_agent_descriptors(config), *_class_agent_descriptors(db, config)]
     end_date = now().date()
     start_date = end_date - timedelta(days=days - 1)
-    agent_ids = [binding.openclaw_agent_id for binding, _cls in rows if binding.openclaw_agent_id]
+    agent_ids = list(dict.fromkeys(item["agent_id"] for item in descriptors if item.get("agent_id") and item.get("present")))
     scan_task = asyncio.create_task(asyncio.to_thread(openclaw_usage.scan_agents, agent_ids, start_date, end_date))
     tasks = [
-        openclaw_provisioning.admin_rpc("usage.cost", {"days": days, "agentId": binding.openclaw_agent_id})
-        if binding.openclaw_agent_id else None
-        for binding, _cls in rows
+        openclaw_provisioning.admin_rpc("usage.cost", {"days": days, "agentId": item["agent_id"]})
+        if item.get("agent_id") and item.get("present") else None
+        for item in descriptors
     ]
     pending = [task for task in tasks if task is not None]
     results = await asyncio.gather(*pending, return_exceptions=True) if pending else []
@@ -413,10 +579,10 @@ async def openclaw_agent_usage(db: Session, days: int) -> list[dict[str, Any]]:
         scanned = {agent_id: {"available": False, "error": str(exc)[:500], "calls": 0, "messages": {}, "latency": None, "daily": []} for agent_id in agent_ids}
     result_iter = iter(results)
     output = []
-    for (binding, cls), task in zip(rows, tasks, strict=True):
+    for descriptor, task in zip(descriptors, tasks, strict=True):
         value = next(result_iter) if task is not None else None
         payload = {} if isinstance(value, Exception) else (value or {})
-        metrics = scanned.get(binding.openclaw_agent_id or "", {"available": False, "calls": 0, "messages": {}, "latency": None, "daily": []})
+        metrics = scanned.get(descriptor.get("agent_id") or "", {"available": False, "calls": 0, "messages": {}, "latency": None, "daily": []})
         warnings = []
         if isinstance(value, Exception):
             warnings.append(f"Token/费用统计不可用：{str(value)[:300]}")
@@ -424,9 +590,11 @@ async def openclaw_agent_usage(db: Session, days: int) -> list[dict[str, Any]]:
             warnings.append(f"调用/延迟统计不可用：{metrics.get('error') or 'OpenClaw 会话目录不可用'}")
         if metrics.get("truncated"):
             warnings.append("会话记录超过扫描上限，调用与延迟数据只包含最近记录")
+        cls = descriptor.get("class") or {}
         output.append({
-            "class_id": cls.id, "class_name": cls.name, "agent_id": binding.openclaw_agent_id,
-            "status": binding.status, "totals": payload.get("totals") or {},
+            "identifier": descriptor["identifier"], "kind": descriptor["kind"], "label": descriptor["label"],
+            "class_id": cls.get("id"), "class_name": cls.get("name"), "agent_id": descriptor.get("agent_id"),
+            "status": descriptor["status"], "totals": payload.get("totals") or {},
             "calls": metrics.get("calls") or 0, "messages": metrics.get("messages") or {},
             "latency": metrics.get("latency"), "daily": metrics.get("daily") or [],
             "metrics_source": metrics.get("source"),
@@ -447,26 +615,6 @@ async def logs_view(*, source: str, limit: int, level: str | None, query: str | 
     raise AppError("VALIDATION_ERROR", "日志来源必须是 classclaw 或 openclaw", 422)
 
 
-def create_admin_class(db: Session, data: AdminClassCreate) -> ClassRoom:
-    conflicts = approval.class_name_conflicts(db, data.name)
-    if conflicts:
-        raise AppError("CLASS_NAME_CONFLICT", "班级名称已存在", 409, {"conflicts": conflicts})
-    if data.owner_user_id:
-        user = db.get(User, data.owner_user_id)
-        if not user or user.role != "head_teacher" or not user.is_active:
-            raise AppError("NOT_FOUND", "可用的班主任账号不存在", 404)
-        if accounts.user_class_id(db, user.id):
-            raise AppError("CLASS_LIMIT_REACHED", "该班主任账号已有班级", 409)
-    cls = class_student.create_class(db, ClassCreate(**data.model_dump(exclude={"owner_user_id", "provision_agent"})), commit=False)
-    cls.owner_user_id = data.owner_user_id
-    if data.owner_user_id and not cls.head_teacher:
-        user = db.get(User, data.owner_user_id)
-        cls.head_teacher = user.display_name if user else None
-    db.commit()
-    openclaw_provisioning.ensure_binding(db, cls)
-    return cls
-
-
 def update_class_owner(db: Session, class_id: str, owner_user_id: str | None) -> ClassRoom:
     cls = class_student.get_class(db, class_id, include_inactive=True)
     if owner_user_id:
@@ -483,68 +631,116 @@ def update_class_owner(db: Session, class_id: str, owner_user_id: str | None) ->
     return cls
 
 
-async def initialize_class_data(db: Session, *, operator_id: str | None) -> dict[str, Any]:
-    """Delete every class and class-scoped transient record while preserving accounts and system settings."""
-    classes = list(db.scalars(select(ClassRoom).where(ClassRoom.deleted_at.is_(None)).order_by(ClassRoom.created_at)))
-    class_results: list[dict[str, Any]] = []
-    cleanup_errors: list[str] = []
-    deleted_classes = 0
-    for cls in classes:
-        agent_cleanup: dict[str, Any] | None = None
-        agent_error: str | None = None
-        try:
-            agent_cleanup = await openclaw_provisioning.cleanup_class_agent_resources(db, cls.id)
-        except Exception as exc:
-            agent_error = str(exc)[:1000]
-            cleanup_errors.append(f"{cls.name}: {agent_error}")
-        try:
-            deleted = class_student.hard_delete_class(db, cls.id, operator_id=operator_id)
-            deleted_classes += 1
-            class_results.append({"class_id": cls.id, "class_name": cls.name, "deleted": True, "agent_cleanup": agent_cleanup, "agent_error": agent_error, "deleted_counts": deleted.get("deleted_counts", {})})
-        except Exception as exc:
-            db.rollback()
-            cleanup_errors.append(f"{cls.name} database: {str(exc)[:1000]}")
-            class_results.append({"class_id": cls.id, "class_name": cls.name, "deleted": False, "agent_cleanup": agent_cleanup, "agent_error": agent_error, "database_error": str(exc)[:1000]})
+def _reset_directory(path: Path) -> dict[str, Any]:
+    root = path.expanduser().resolve()
+    if root == Path(root.anchor) or root == Path.home().resolve() or len(root.parts) < 3:
+        raise AppError("UNSAFE_RESET_PATH", "初始化目录范围不安全，已停止文件清理", 500, {"path": str(root)})
+    files = sum(1 for item in root.rglob("*") if item.is_file()) if root.exists() else 0
+    if root.exists():
+        shutil.rmtree(root)
+    root.mkdir(parents=True, exist_ok=True)
+    return {"path": str(root), "files_deleted": files}
 
-    remaining_attachments = list(db.scalars(select(Attachment)))
-    attachment_paths = [row.stored_path for row in remaining_attachments]
-    transient_counts = {
-        "write_proposals": _count(db, WriteProposal),
-        "interaction_analyses": _count(db, InteractionAnalysis),
-        "onboarding_sessions": _count(db, ClassOnboardingSession),
-        "attachment_links": _count(db, AttachmentLink),
-        "attachments": len(remaining_attachments),
+
+async def initialize_system(db: Session) -> dict[str, Any]:
+    """Factory-reset all ClassClaw data and recreate only the required defaults."""
+    errors: list[str] = []
+
+    try:
+        extractor_workspace = openclaw_bridge.reset_extractor_workspace()
+    except Exception as exc:
+        extractor_workspace = None
+        errors.append(f"extractor workspace: {str(exc)[:1000]}")
+    try:
+        extractor_ready = await openclaw_bridge.ensure_extractor_agent(force=True)
+        if not extractor_ready:
+            errors.append("extractor agent: OpenClaw 数据提取智能体未能恢复")
+    except Exception as exc:
+        extractor_ready = False
+        errors.append(f"extractor agent: {str(exc)[:1000]}")
+
+    try:
+        agent_cleanup = await openclaw_provisioning.cleanup_all_class_agent_resources(db)
+        errors.extend(agent_cleanup["errors"])
+    except Exception as exc:
+        agent_cleanup = {"bindings": None, "protected_agents": [settings.openclaw_agent_id, settings.openclaw_extractor_agent_id], "errors": [str(exc)[:1000]]}
+        errors.append(f"class agents: {str(exc)[:1000]}")
+    try:
+        default_sessions = openclaw_provisioning.clear_default_agent_sessions()
+    except Exception as exc:
+        default_sessions = None
+        errors.append(f"default agent sessions: {str(exc)[:1000]}")
+
+    try:
+        attachments = _reset_directory(settings.attachment_dir)
+    except Exception as exc:
+        attachments = None
+        errors.append(f"attachments: {str(exc)[:1000]}")
+
+    try:
+        settings.log_file.parent.mkdir(parents=True, exist_ok=True)
+        settings.log_file.open("w", encoding="utf-8").close()
+        log_reset = {"path": str(settings.log_file), "cleared": True}
+    except OSError as exc:
+        log_reset = {"path": str(settings.log_file), "cleared": False}
+        errors.append(f"logs: {str(exc)[:1000]}")
+
+    if errors:
+        raise AppError(
+            "SYSTEM_INITIALIZATION_INCOMPLETE",
+            "外部资源未能全部重置，数据库尚未清空；请恢复 OpenClaw 或文件权限后重试",
+            503,
+            {
+                "errors": errors,
+                "agent_cleanup": agent_cleanup,
+                "attachments": attachments,
+                "logs": log_reset,
+                "database_preserved_for_retry": True,
+            },
+        )
+
+    deleted_counts = {
+        table.name: int(db.scalar(select(func.count()).select_from(table)) or 0)
+        for table in Base.metadata.sorted_tables
     }
-    db.execute(delete(WriteProposal))
-    db.execute(delete(InteractionAnalysis))
-    db.execute(delete(ClassOnboardingSession))
-    db.execute(delete(AttachmentLink))
-    db.execute(delete(Attachment))
-    audit(db, "initialize_class_data", "system", "class-data", operator_type="admin", operator_id=operator_id, after={"deleted_classes": deleted_classes, "transient_counts": transient_counts, "cleanup_error_count": len(cleanup_errors)})
-    db.commit()
+    try:
+        for table in reversed(Base.metadata.sorted_tables):
+            db.execute(delete(table))
+        db.commit()
+        db.expunge_all()
+    except Exception as exc:
+        db.rollback()
+        raise AppError("SYSTEM_INITIALIZATION_FAILED", "数据库完整初始化失败，已回滚数据库删除", 500, {"error": str(exc)[:1000]}) from exc
 
-    file_errors: list[str] = []
-    attachment_root = settings.attachment_dir.resolve()
-    for stored_path in attachment_paths:
-        path = (settings.attachment_dir.parent / stored_path).resolve()
-        if path == attachment_root or attachment_root not in path.parents:
-            file_errors.append(f"unsafe path: {stored_path}")
-            continue
-        try:
-            if path.exists():
-                path.unlink()
-        except OSError as exc:
-            file_errors.append(f"{stored_path}: {exc}")
-    errors = [*cleanup_errors, *file_errors]
-    failed_classes = len(classes) - deleted_classes
-    status = "completed" if not errors and failed_classes == 0 else "partial" if deleted_classes or transient_counts else "failed"
+    default_admin = accounts.ensure_default_admin(db)
+    _agent_usage_cache.clear()
+    openclaw_bridge.reset_runtime_caches()
     return {
-        "status": status,
-        "deleted_classes": deleted_classes,
-        "failed_classes": failed_classes,
-        "preserved": ["users", "user_sessions", "system_settings", "audit_logs", "ai_usage_records"],
-        "transient_deleted": transient_counts,
-        "class_results": class_results,
+        "status": "completed",
+        "database_rows_deleted": sum(deleted_counts.values()),
+        "deleted_counts": deleted_counts,
+        "deleted_classes": deleted_counts.get("classes", 0),
+        "failed_classes": 0,
+        "attachments": attachments,
+        "agent_cleanup": agent_cleanup,
+        "default_agents": [
+            {"agent_id": settings.openclaw_agent_id, "kind": "main", "preserved": True},
+            {
+                "agent_id": settings.openclaw_extractor_agent_id,
+                "kind": "extractor",
+                "preserved": True,
+                "ready": extractor_ready,
+                "workspace": extractor_workspace,
+            },
+        ],
+        "default_agent_sessions": default_sessions,
+        "default_admin": {
+            "id": default_admin.id,
+            "username": default_admin.username,
+            "must_change_password": default_admin.must_change_password,
+        },
+        "logs": log_reset,
+        "preserved": ["database_schema", "environment_configuration", "openclaw_main_agent", "openclaw_extractor_agent"],
         "errors": errors,
         "finished_at": now(),
     }

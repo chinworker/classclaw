@@ -4,13 +4,6 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
-from app.schemas.domain import ClassCreate
-
-
-class AdminClassCreate(ClassCreate):
-    owner_user_id: str | None = None
-    provision_agent: bool = True
-
 
 class AdminClassOwnerUpdate(BaseModel):
     owner_user_id: str | None = None

@@ -9,7 +9,7 @@ from fastapi import Request
 from sqlalchemy.orm import Session, sessionmaker
 
 import app.database as database
-from app.database import build_engine, get_db, reader_session, writer_session
+from app.database import build_engine, get_db, reader_session, request_writer_session, writer_session
 
 
 def _memory_sessionmaker() -> sessionmaker:
@@ -50,6 +50,19 @@ def test_reader_sessions_are_independent(monkeypatch):
             assert first is not second
 
 
+def test_request_writer_can_close_on_another_thread(monkeypatch):
+    monkeypatch.setattr(database, "_write_sessionmaker", _memory_sessionmaker())
+    generator = request_writer_session()
+
+    thread = threading.Thread(target=lambda: generator.__enter__())
+    thread.start()
+    thread.join()
+
+    generator.__exit__(None, None, None)
+    assert database._write_lock.acquire(timeout=0.1)
+    database._write_lock.release()
+
+
 def test_get_db_routes_by_http_method(monkeypatch):
     used: list[str] = []
 
@@ -64,7 +77,7 @@ def test_get_db_routes_by_http_method(monkeypatch):
         yield "writer"
 
     monkeypatch.setattr(database, "reader_session", fake_reader)
-    monkeypatch.setattr(database, "writer_session", fake_writer)
+    monkeypatch.setattr(database, "request_writer_session", fake_writer)
     assert next(get_db(Request({"type": "http", "method": "GET"}))) == "reader"
     assert next(get_db(Request({"type": "http", "method": "POST"}))) == "writer"
     assert next(get_db(Request({"type": "http", "method": "DELETE"}))) == "writer"

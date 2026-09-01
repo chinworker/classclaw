@@ -147,10 +147,15 @@ export async function render(mount, ctx) {
     const neg = data.frequent_negative_behaviors || [];
     const pos = data.frequent_positive_behaviors || [];
     if (neg.length || pos.length) {
+      const behaviorColumn = (title, rows) => el("div", { style: { flex: 1, minWidth: "220px" } },
+        el("b", {}, title),
+        ...(rows.length
+          ? rows.map(([name, count]) => el("p", { class: "muted" }, `${name} × ${count}`))
+          : [el("p", { class: "muted" }, "无")]));
       host.append(el("div", { class: "card" }, el("h3", {}, "高频行为"),
         el("div", { class: "row-gap", style: { alignItems: "flex-start" } },
-          el("div", { style: { flex: 1, minWidth: "220px" } }, el("b", {}, "负向"), ...(neg.length ? neg.map(([name, count]) => el("p", { class: "muted" }, `${name} × ${count}`)) : [el("p", { class: "muted" }, "无")])),
-          el("div", { style: { flex: 1, minWidth: "220px" } }, el("b", {}, "正向"), ...(pos.length ? pos.map(([name, count]) => el("p", { class: "muted" }, `${name} × ${count}`)) : [el("p", { class: "muted" }, "无")]))))));
+          behaviorColumn("负向", neg),
+          behaviorColumn("正向", pos))));
     }
     renderAttentionStudents(data.attention_students || [], "本周期关注学生");
   }

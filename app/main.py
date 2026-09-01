@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import uuid
 import time
 from contextlib import asynccontextmanager
@@ -16,7 +17,7 @@ from app.config import settings
 from app.core.errors import AppError
 from app.core.logging import configure_logging, get_logger
 from app.database import init_db, writer_session
-from app.services import accounts
+from app.services import accounts, openclaw_bridge
 from app.services.http_client import close_http_client
 
 
@@ -27,9 +28,18 @@ async def lifespan(_app: FastAPI):
     init_db()
     with writer_session() as db:
         accounts.ensure_default_admin(db)
+    cleanup_task = None
+    if settings.openclaw_session_cleanup_hours > 0:
+        cleanup_task = asyncio.create_task(openclaw_bridge.session_cleanup_loop())
     try:
         yield
     finally:
+        if cleanup_task:
+            cleanup_task.cancel()
+            try:
+                await cleanup_task
+            except asyncio.CancelledError:
+                pass
         await close_http_client()
 
 

@@ -44,10 +44,10 @@ export async function render(mount) {
           el("div", { class: "card" }, el("h3", {}, "按调用类型"), dataTable({ columns: [{ key: "name", label: "类型", render: (r) => el("code", {}, r.name) }, { key: "requests", label: "请求" }, { key: "tokens", label: "Token", render: (r) => num(r.tokens) }], rows: data.by_operation })),
           el("div", { class: "card" }, el("h3", {}, "按模型"), dataTable({ columns: [{ key: "name", label: "模型", render: (r) => el("code", {}, r.name) }, { key: "requests", label: "请求" }, { key: "tokens", label: "Token", render: (r) => num(r.tokens) }], rows: data.by_model }))),
         agentResult.value ? el("div", { class: "card" },
-          el("div", { class: "row-gap admin-section-title" }, el("div", {}, el("h3", {}, "按班级智能体"), el("p", { class: "muted" }, "基于 OpenClaw 会话记录统计模型调用、回复和响应耗时；结果缓存 30 秒。"))),
+          el("div", { class: "row-gap admin-section-title" }, el("div", {}, el("h3", {}, "按智能体"), el("p", { class: "muted" }, "包含 Main、数据提取和班级智能体；基于 OpenClaw 会话记录统计调用、回复和响应耗时，结果缓存 30 秒。"))),
           dataTable({
             columns: [
-              { key: "class_name", label: "班级 / Agent", render: (r) => el("div", {}, el("b", {}, r.class_name), el("code", {}, r.agent_id || "NOT CREATED"), (r.warnings || []).map((warning) => el("div", { class: "field-error" }, warning))) },
+              { key: "label", label: "智能体", render: (r) => el("div", {}, el("b", {}, r.label || r.class_name || r.agent_id), el("span", { class: "tag tag-muted" }, (r.kind || "class").toUpperCase()), el("code", {}, r.agent_id || "NOT CREATED"), (r.warnings || []).map((warning) => el("div", { class: "field-error" }, warning))) },
               { key: "calls", label: "调用次数", render: (r) => num(r.calls) },
               { key: "assistant", label: "Agent 回复", render: (r) => num(r.messages?.assistant) },
               { key: "avg_latency", label: "平均延迟", render: (r) => duration(r.latency?.avgMs) },
@@ -82,7 +82,7 @@ export async function render(mount) {
         { key: "samples", label: "样本", render: (r) => num(r.latency?.count) },
       ], rows: [...(row.daily || [])].reverse(),
     });
-    openDrawer({ title: `调用与延迟 · ${row.class_name}`, wide: true, body: el("div", {}, summary,
+    openDrawer({ title: `调用与延迟 · ${row.label || row.class_name || row.agent_id}`, wide: true, body: el("div", {}, summary,
       el("p", { class: "muted" }, "响应耗时优先使用 OpenClaw 记录的模型 durationMs；缺失时按用户消息到 Agent 回复记录的时间差计算。无有效样本时显示为“—”。"), daily) });
   }
   await load();

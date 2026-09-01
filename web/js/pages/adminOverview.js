@@ -37,7 +37,7 @@ export async function render(mount) {
           metricCard("附件", bytes(storage.attachment_bytes), `${storage.attachment_count} 个文件`)),
         el("div", { class: "admin-quick-grid" },
           quick("用户与权限", "创建、停用、重置班主任账号。", "/admin/users"),
-          quick("班级资源", "新建、重命名、分配和彻底删除班级。", "/admin/classes"),
+          quick("班级资源", "重命名、分配负责人和彻底删除班级；新建由班主任账号走创建向导。", "/admin/classes"),
           quick("OpenClaw", "全局运行参数、智能体和微信路由。", "/admin/openclaw"),
           quick("使用量", "请求、写入、登录与 Token 消耗。", "/admin/usage")),
         el("div", { class: "card" }, el("h3", {}, "最近审计"), dataTable({

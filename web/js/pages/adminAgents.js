@@ -1,16 +1,16 @@
-import { el, clear, toast, fmtDateTime } from "../util.js";
+import { el, clear, toast } from "../util.js";
 import { api } from "../api.js";
 import { pageHeader, statusBadge, errorPanel, skeleton, emptyState, qrBindingPanel, openDrawer, openModal, field, confirmDanger } from "../components.js";
 
 export async function render(mount) {
   const globalHost = el("div", { class: "card" });
   const agentsHost = el("div");
-  mount.append(pageHeader("OpenClaw", "管理 Gateway 安全摘要、全局运行参数、班级智能体及微信路由。浏览器永远不会获得 Gateway Token 原文。",
+  mount.append(pageHeader("OpenClaw", "统一管理 Main、数据提取和班级智能体，以及 Gateway 全局参数。浏览器不会获得 Gateway Token 原文。",
     el("button", { class: "secondary", type: "button", onclick: load }, "刷新")), globalHost, agentsHost);
 
   async function load() {
     clear(globalHost); clear(agentsHost); globalHost.append(skeleton(4)); agentsHost.append(skeleton(5));
-    const [configResult, rowsResult] = await Promise.allSettled([api("/admin/openclaw/config"), api("/admin/agents")]);
+    const [configResult, rowsResult] = await Promise.allSettled([api("/admin/openclaw/config"), api("/admin/openclaw/agents/catalog")]);
     clear(globalHost); clear(agentsHost);
     if (configResult.status === "fulfilled") renderGlobal(configResult.value);
     else globalHost.append(errorPanel(configResult.reason, { onRetry: load }));
@@ -46,26 +46,31 @@ export async function render(mount) {
   function kv(label, value) { return el("div", { class: "admin-kv" }, el("span", {}, label), el("code", {}, value ?? "—")); }
 
   function renderAgents(rows) {
-    agentsHost.append(el("div", { class: "page-header", style: { marginTop: "8px" } }, el("div", {}, el("h2", {}, "班级智能体"), el("p", { class: "page-desc" }, "每个班级独立 workspace、模型参数和微信路由。"))));
-    if (!rows.length) { agentsHost.append(emptyState("尚无班级智能体", "在班级管理中新建班级后会生成绑定记录。")); return; }
+    agentsHost.append(el("div", { class: "page-header", style: { marginTop: "8px" } }, el("div", {}, el("h2", {}, "智能体配置"), el("p", { class: "page-desc" }, "系统智能体和班级智能体均可独立配置模型、思考强度、提示词与身份文件。"))));
+    if (!rows.length) { agentsHost.append(emptyState("尚无可管理智能体", "请检查 OpenClaw 配置和班级绑定。")); return; }
     agentsHost.append(el("div", { class: "admin-agent-grid" }, rows.map(agentCard)));
   }
 
-  function agentCard({ binding, class: cls, owner }) {
+  function agentCard(agent) {
+    const binding = agent.binding; const cls = agent.class; const isClass = agent.kind === "class";
+    const ownerLabel = isClass ? (agent.owner?.username || "未分配班主任") : agent.description;
     return el("div", { class: "card admin-agent-card" },
-      el("div", { class: "row-gap", style: { justifyContent: "space-between" } }, el("div", {}, el("b", {}, cls?.name || binding.class_id), el("div", { class: "muted" }, owner?.username || "unassigned")), statusBadge(binding.status)),
-      el("div", { class: "admin-config-grid compact" }, kv("Agent ID", binding.openclaw_agent_id || "NOT CREATED"), kv("Channel Account", binding.channel_account_id || "NOT BOUND"), kv("Resource Name", binding.agent_name), kv("Updated", fmtDateTime(binding.updated_at))),
-      binding.last_error ? el("pre", { class: "admin-error-log" }, binding.last_error) : null,
+      el("div", { class: "row-gap", style: { justifyContent: "space-between" } }, el("div", {}, el("b", {}, agent.label), el("div", { class: "muted" }, ownerLabel)), statusBadge(agent.status)),
+      el("div", { class: "admin-config-grid compact" },
+        kv("类型", agent.kind.toUpperCase()), kv("Agent ID", agent.agent_id || "NOT CREATED"),
+        kv("Workspace", agent.workspace_path || "NOT CONFIGURED"),
+        isClass ? kv("微信账号", binding?.channel_account_id || "NOT BOUND") : kv("启用状态", agent.enabled ? "enabled" : "disabled")),
+      binding?.last_error ? el("pre", { class: "admin-error-log" }, binding.last_error) : null,
       el("div", { class: "row-gap" },
-        el("button", { class: "secondary", type: "button", onclick: () => editAgent(binding, cls) }, "配置"),
-        el("button", { class: "secondary", type: "button", onclick: () => openQr(cls.id) }, "微信二维码"),
-        el("button", { class: "text-button", type: "button", onclick: () => openDrawer({ title: `Runtime · ${cls.name}`, body: el("div", {}, kv("Workspace", binding.workspace_path), kv("Class ID", cls.id), kv("Binding ID", binding.id)) }) }, "运行详情")));
+        el("button", { class: "secondary", type: "button", disabled: !agent.present, onclick: () => editAgent(agent) }, "配置"),
+        isClass ? el("button", { class: "secondary", type: "button", onclick: () => openQr(cls.id) }, "微信二维码") : null,
+        el("button", { class: "text-button", type: "button", onclick: () => openDrawer({ title: `Runtime · ${agent.label}`, body: el("div", {}, kv("Workspace", agent.workspace_path), kv("Identifier", agent.identifier), isClass ? kv("Binding ID", binding.id) : null) }) }, "运行详情")));
   }
 
-  async function editAgent(binding, cls) {
-    if (!binding.openclaw_agent_id) { toast("请先在班级管理中创建智能体", "error"); return; }
+  async function editAgent(agent) {
+    if (!agent.agent_id || !agent.present) { toast("OpenClaw 中尚未创建该智能体", "error"); return; }
     let settings;
-    try { settings = await api(`/admin/openclaw/agents/${cls.id}/settings`); }
+    try { settings = await api(`/admin/openclaw/agents/${encodeURIComponent(agent.identifier)}/settings`); }
     catch (error) { toast(error.message, "error"); return; }
     const runtimePane = el("div", { class: "agent-config-pane" });
     const filesPane = el("div", { class: "agent-config-pane hidden" });
@@ -76,12 +81,12 @@ export async function render(mount) {
       runtimeTab.classList.toggle("active", runtime); filesTab.classList.toggle("active", !runtime);
     };
     runtimeTab.onclick = () => setTab(true); filesTab.onclick = () => setTab(false);
-    buildRuntimePane(runtimePane, settings, cls);
-    buildFilesPane(filesPane, settings.workspace.files, cls);
+    buildRuntimePane(runtimePane, settings, agent.identifier);
+    buildFilesPane(filesPane, settings.workspace, agent.identifier, agent.kind);
     openModal({
-      title: `Agent Studio · ${cls.name}`,
+      title: `Agent Studio · ${agent.label}`,
       body: el("div", {},
-        el("div", { class: "agent-config-summary" }, kv("Agent ID", binding.openclaw_agent_id), kv("Workspace", settings.workspace.workspace), kv("Config Hash", settings.config_hash || "—")),
+        el("div", { class: "agent-config-summary" }, kv("Agent ID", agent.agent_id), kv("Workspace", settings.workspace.workspace || "NOT CONFIGURED"), kv("Config Hash", settings.config_hash || "—")),
         el("div", { class: "tabs agent-config-tabs" }, runtimeTab, filesTab), runtimePane, filesPane),
       wide: true, actions: [{ label: "关闭", kind: "secondary" }],
     });
@@ -92,7 +97,7 @@ export async function render(mount) {
       values.map((value) => el("option", { value, selected: String(current) === String(value) }, String(value))));
   }
 
-  function buildRuntimePane(pane, settings, cls) {
+  function buildRuntimePane(pane, settings, identifier) {
     const current = settings.runtime; const models = settings.models.filter((item) => item.available !== false);
     const name = el("input", { value: current.display_name || "", maxlength: "100" });
     const providerValues = [...new Set(models.map((item) => item.provider).filter(Boolean))].sort();
@@ -145,7 +150,7 @@ export async function render(mount) {
         model_params: Object.keys(params).length ? params : null,
       };
       save.disabled = true;
-      try { await api(`/admin/openclaw/agents/${cls.id}`, { method: "PATCH", body }); toast("Runtime 配置已提交，Gateway 将重启", "success"); setTimeout(load, 1400); }
+      try { await api(`/admin/openclaw/agents/${encodeURIComponent(identifier)}`, { method: "PATCH", body }); toast("Runtime 配置已提交，Gateway 将重启", "success"); setTimeout(load, 1400); }
       catch (error) { toast(error.message, "error"); } finally { save.disabled = false; }
     };
     pane.append(
@@ -158,7 +163,12 @@ export async function render(mount) {
       el("div", { class: "row-gap", style: { justifyContent: "flex-end" } }, save));
   }
 
-  function buildFilesPane(pane, files, cls) {
+  function buildFilesPane(pane, workspace, identifier, kind) {
+    const files = workspace.files || [];
+    if (!workspace.available || !files.length) {
+      pane.append(emptyState("工作区不可用", "请先在 OpenClaw 中为该智能体配置 workspace。"));
+      return;
+    }
     let current = files[0];
     const select = el("select", {}, files.map((item) => el("option", { value: item.name }, `${item.label} · ${item.name}`)));
     const meta = el("div", { class: "agent-file-meta" });
@@ -169,29 +179,32 @@ export async function render(mount) {
       current = files.find((item) => item.name === select.value) || files[0];
       editor.value = current.content; clear(meta);
       meta.append(el("span", { class: `tag ${current.customized ? "tag-warn" : "tag-muted"}` }, current.customized ? "CUSTOMIZED" : "DEFAULT"), el("code", {}, `${current.characters} chars`), el("code", {}, current.sha256));
+      reset.disabled = !current.resettable;
+      reset.title = current.resettable ? "恢复 ClassClaw 默认内容" : "该文件没有 ClassClaw 管理的默认内容";
     };
     select.onchange = renderFile;
     save.onclick = async () => {
       save.disabled = true;
       try {
-        const result = await api(`/admin/openclaw/agents/${cls.id}/workspace/${encodeURIComponent(current.name)}`, { method: "PUT", body: { content: editor.value, expected_sha256: current.sha256 } });
+        const result = await api(`/admin/openclaw/agents/${encodeURIComponent(identifier)}/workspace/${encodeURIComponent(current.name)}`, { method: "PUT", body: { content: editor.value, expected_sha256: current.sha256 } });
         current.content = editor.value; current.sha256 = result.sha256; current.characters = result.characters; current.customized = true;
         renderFile(); toast(`${current.name} 已保存`, "success");
       } catch (error) { toast(error.message, "error"); } finally { save.disabled = false; }
     };
     reset.onclick = async () => {
+      if (!current.resettable) return;
       const accepted = await confirmDanger({
         title: `恢复 ${current.name}`, lines: ["当前自定义内容会被系统默认内容覆盖。", "此操作会记录到审计日志。"], confirmLabel: "恢复默认",
       });
       if (!accepted) return;
       reset.disabled = true;
       try {
-        const result = await api(`/admin/openclaw/agents/${cls.id}/workspace/${encodeURIComponent(current.name)}/reset`, { method: "POST", body: {} });
+        const result = await api(`/admin/openclaw/agents/${encodeURIComponent(identifier)}/workspace/${encodeURIComponent(current.name)}/reset`, { method: "POST", body: {} });
         Object.assign(current, result); renderFile(); toast(`${current.name} 已恢复默认`, "success");
       } catch (error) { toast(error.message, "error"); } finally { reset.disabled = false; }
     };
     pane.append(el("div", { class: "agent-file-toolbar" }, field("Workspace file", select), meta),
-      el("p", { class: "muted" }, "AGENTS.md 是核心系统行为提示；SOUL.md 与 IDENTITY.md 控制人格和身份。保存后从后续 Agent turn 生效。"),
+      el("p", { class: "muted" }, kind === "extractor" ? "数据提取智能体的 AGENTS.md 决定结构化解析规则，修改后请验证文件解析结果。" : "AGENTS.md 是核心系统行为提示；SOUL.md 与 IDENTITY.md 控制人格和身份。保存后从后续 Agent turn 生效。"),
       editor, el("div", { class: "row-gap", style: { justifyContent: "space-between", marginTop: "10px" } }, reset, save));
     renderFile();
   }

@@ -62,7 +62,10 @@ write_engine = build_engine(single_connection=True)
 _read_sessionmaker = sessionmaker(bind=read_engine, autoflush=False, expire_on_commit=False, class_=Session)
 _write_sessionmaker = sessionmaker(bind=write_engine, autoflush=False, expire_on_commit=False, class_=Session)
 
-_write_lock = threading.RLock()
+# A plain lock may be released by a different worker thread. FastAPI enters and
+# exits synchronous generator dependencies through its thread pool and does not
+# guarantee thread affinity between those two calls.
+_write_lock = threading.Lock()
 _writer_stack = threading.local()
 
 _READ_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
@@ -70,6 +73,7 @@ _READ_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 @contextmanager
 def writer_session() -> Generator[Session, None, None]:
+    """Open a re-entrant writer session for synchronous non-request work."""
     stack = getattr(_writer_stack, "stack", None)
     if stack:
         yield stack[-1]
@@ -82,6 +86,20 @@ def writer_session() -> Generator[Session, None, None]:
         finally:
             _writer_stack.stack = []
             session.close()
+
+
+@contextmanager
+def request_writer_session() -> Generator[Session, None, None]:
+    """Open a single-writer request session without thread-local state."""
+    _write_lock.acquire()
+    session: Session | None = None
+    try:
+        session = _write_sessionmaker()
+        yield session
+    finally:
+        if session is not None:
+            session.close()
+        _write_lock.release()
 
 
 @contextmanager
@@ -98,7 +116,7 @@ def get_db(request: Request) -> Generator[Session, None, None]:
         with reader_session() as db:
             yield db
     else:
-        with writer_session() as db:
+        with request_writer_session() as db:
             yield db
 
 

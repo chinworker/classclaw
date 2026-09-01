@@ -113,7 +113,7 @@ python scripts/cleanup_attachments.py   # 默认只报告无引用附件，不�
 - 轻量提取 agent 默认启用（`CLASSCLAW_OPENCLAW_EXTRACTOR_ENABLED=true`，无需设置）：JSON 提取走自动创建的 `classclaw-extractor`（无工具、清洗规范在其工作区 AGENTS.md），创建失败自动回退主智能体与完整内联提示词；`CLASSCLAW_OPENCLAW_EXTRACTOR_ENABLED=false` 可关闭。
 - 后端通过 Gateway `/tools/invoke` 验证插件可用（`classclaw_health`），用 `/v1/responses` 处理网页上传文件；连接失败时后端会阻止业务 API。
 - 微信二维码 provider discovery 兼容层位于 `integrations/openclaw/openclaw-weixin-compat`。
-- 提取会话（后端分析调用）是一次性设计：唯一 `user` 键、无记忆、不复用（避免原文累积与污染），治理用 OpenClaw session 容量上限与 `openclaw sessions cleanup`；聊天会话长期复用，不要清理。详见 `docs/openclaw-integration.md` §8。
+- 提取会话（后端分析调用）是一次性设计：唯一 `user` 键、无记忆、不复用（避免原文累积与污染），治理用 OpenClaw session 容量上限与 `openclaw sessions cleanup`（后端按 `CLASSCLAW_OPENCLAW_SESSION_CLEANUP_HOURS` 定时经 CLI 触发，另有 `/api/v1/admin/openclaw/sessions/cleanup` 手动端点）；聊天会话长期复用，不要清理。详见 `docs/openclaw-integration.md` §8。
 - 安装与详细命令见 `docs/openclaw-integration.md` 和插件 README。
 
 ## 主要文档索引

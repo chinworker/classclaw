@@ -24,7 +24,7 @@ export function openModal({ title, body, actions = [], wide = false, onClose = n
   const previousFocus = document.activeElement;
 
   function close() {
-    if (closed || submitting) return;
+    if (closed) return;
     closed = true;
     overlay.remove();
     document.removeEventListener("keydown", onKey, true);
@@ -174,6 +174,7 @@ const STATUS_LABELS = {
   present: ["出勤", "ok"], absent: ["缺勤", "error"], leave: ["请假", "warn"],
   pending_agent: ["待创建智能体", "warn"], agent_created: ["智能体已创建", "info"], awaiting_qr: ["待扫码", "warn"],
   linked: ["已绑定微信", "ok"], failed: ["失败", "error"],
+  unavailable: ["运行时不存在", "error"], disabled: ["已禁用", "muted"],
   replaced: ["已替换", "muted"],
   positive: ["正向", "ok"], neutral: ["中性", "muted"], negative: ["负向", "error"],
   normal: ["普通", "muted"], attention: ["关注", "warn"], serious: ["严重", "error"],
@@ -231,28 +232,165 @@ export function fieldError(message) {
   return el("small", { class: "field-error", role: "alert" }, message);
 }
 
+/* ---------------- AI Button ---------------- */
+
+export function aiButton({
+  label,
+  runningLabel = "取消任务",
+  cancellingLabel = "正在取消…",
+  kind = "secondary",
+  disabled = false,
+  onRun,
+  onBusyChange = null,
+}) {
+  const labelNode = el("span", { class: "ai-button-label" }, label);
+  const timerNode = el("span", { class: "ai-button-timer hidden" }, "0.0s");
+  const button = el("button", { class: `${kind} ai-button`, type: "button", disabled }, labelNode, timerNode);
+  const wrapper = el("span", { class: "ai-button-wrap" }, button);
+  let activeController = null;
+  let timerId = null;
+  let startedAt = 0;
+  let idleDisabled = disabled;
+
+  function stopClock() {
+    if (timerId !== null) window.clearInterval(timerId);
+    timerId = null;
+  }
+
+  function updateClock() {
+    timerNode.textContent = `${((performance.now() - startedAt) / 1000).toFixed(1)}s`;
+  }
+
+  function setRunning(value) {
+    wrapper.classList.toggle("running", value);
+    wrapper.classList.remove("cancelling");
+    timerNode.classList.toggle("hidden", !value);
+    if (value) {
+      startedAt = performance.now();
+      updateClock();
+      timerId = window.setInterval(updateClock, 100);
+      labelNode.textContent = runningLabel;
+      button.disabled = false;
+    } else {
+      stopClock();
+      labelNode.textContent = label;
+      timerNode.textContent = "0.0s";
+      button.disabled = idleDisabled;
+    }
+    onBusyChange?.(value);
+  }
+
+  function cancelActive() {
+    if (!activeController) return;
+    activeController.abort();
+    stopClock();
+    wrapper.classList.remove("running");
+    wrapper.classList.add("cancelling");
+    timerNode.classList.add("hidden");
+    labelNode.textContent = cancellingLabel;
+    button.disabled = true;
+  }
+
+  async function handleClick(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (activeController) {
+      cancelActive();
+      return;
+    }
+    const controller = new AbortController();
+    activeController = controller;
+    setRunning(true);
+    try {
+      await onRun({ signal: controller.signal, button });
+    } finally {
+      if (activeController === controller) {
+        activeController = null;
+        setRunning(false);
+      }
+    }
+  }
+
+  button.addEventListener("click", handleClick);
+  return {
+    el: wrapper,
+    button,
+    cancel: cancelActive,
+    setDisabled(value) {
+      idleDisabled = !!value;
+      if (!activeController) button.disabled = idleDisabled;
+    },
+    get running() { return !!activeController; },
+  };
+}
+
 /* ---------------- FileDropzone ---------------- */
 
-export function fileDropzone({ hint = "拖拽文件到这里，或点击选择", accept = null, multiple = false, onFiles, busyText = "正在上传…" }) {
+export function fileDropzone({
+  hint = "拖拽文件到这里，或点击选择",
+  accept = null,
+  multiple = false,
+  onFiles,
+  busyText = "正在上传…",
+  manualStart = false,
+  onBusyChange = null,
+}) {
   const input = el("input", { type: "file", hidden: true });
   if (accept) input.setAttribute("accept", accept);
   if (multiple) input.setAttribute("multiple", "");
-  const zone = el("div", { class: "dropzone", tabindex: "0", role: "button", "aria-label": hint },
+  const zone = el("div", { class: "dropzone", tabindex: "0", role: manualStart ? "group" : "button", "aria-label": hint },
     el("b", {}, hint), el("span", { class: "muted" }, "文件会安全上传并进行识别"));
   const progress = el("div", { class: "drop-progress hidden" });
-  zone.append(input, progress);
-  const fire = (files) => { if (files?.length) onFiles([...files], { zone, setBusy }); };
-  function setBusy(busy, text = busyText) {
-    zone.classList.toggle("busy", busy);
-    progress.classList.toggle("hidden", !busy);
-    progress.textContent = busy ? text : "";
+  const selectedLine = el("span", { class: "drop-selected muted hidden" });
+  let selectedFiles = [];
+  let busy = false;
+  let action = null;
+
+  function setBusy(value, text = busyText) {
+    const changed = busy !== value;
+    busy = value;
+    zone.classList.toggle("busy", value);
+    progress.classList.toggle("hidden", !value);
+    progress.textContent = value ? text : "";
+    if (changed) onBusyChange?.(value);
   }
-  zone.addEventListener("click", () => input.click());
-  zone.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); input.click(); } });
+
+  function fire(files) {
+    if (!files?.length || busy) return;
+    selectedFiles = [...files];
+    if (!manualStart) {
+      onFiles(selectedFiles, { zone, setBusy, signal: null });
+      return;
+    }
+    selectedLine.textContent = `已选择 ${selectedFiles.length} 个文件`;
+    selectedLine.classList.remove("hidden");
+    action.setDisabled(false);
+  }
+
+  if (manualStart) {
+    action = aiButton({
+      label: "开始解析",
+      runningLabel: "取消解析",
+      disabled: true,
+      onBusyChange: (value) => setBusy(value, busyText),
+      onRun: ({ signal }) => onFiles([...selectedFiles], { zone, setBusy, signal }),
+    });
+    action.el.addEventListener("click", (event) => event.stopPropagation());
+  }
+  zone.append(input, selectedLine, progress);
+  if (action) zone.append(action.el);
+  zone.addEventListener("click", () => { if (!busy) input.click(); });
+  zone.addEventListener("keydown", (e) => {
+    if (!busy && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); input.click(); }
+  });
   input.addEventListener("change", () => { fire(input.files); input.value = ""; });
-  zone.addEventListener("dragover", (e) => { e.preventDefault(); zone.classList.add("dragging"); });
+  zone.addEventListener("dragover", (e) => { e.preventDefault(); if (!busy) zone.classList.add("dragging"); });
   zone.addEventListener("dragleave", () => zone.classList.remove("dragging"));
-  zone.addEventListener("drop", (e) => { e.preventDefault(); zone.classList.remove("dragging"); fire(e.dataTransfer.files); });
+  zone.addEventListener("drop", (e) => {
+    e.preventDefault();
+    zone.classList.remove("dragging");
+    if (!busy) fire(e.dataTransfer.files);
+  });
   return zone;
 }
 
@@ -364,8 +502,28 @@ const MISSING_LABELS = { name: "班级名称", grade: "年级", students: "学�
 /* ---------------- OpenClaw 阻止态 ---------------- */
 
 export function openclawBlocked(status, onRetry) {
+  const fileReady = !!(status?.gateway_live && status?.plugin_ready);
+  const bindingReady = !!(status?.gateway_live && status?.admin_rpc_ready);
+  const title = fileReady || bindingReady ? "部分智能功能暂时不可用" : "智能服务暂时不可用";
+  let message = "智能服务暂时不能使用，其他班级工作不受影响。";
+  if (!fileReady && !bindingReady) message = "文件识别和微信绑定暂时不能使用，其他班级工作不受影响。";
+  else if (!fileReady) message = "文件识别暂时不能使用，其他班级工作不受影响。";
+  else if (!bindingReady) message = "微信绑定暂时不能设置，已绑定的班级助手和其他班级工作不受影响。";
+  const retryButton = el("button", { class: "secondary", type: "button" }, "重新检查");
+  retryButton.addEventListener("click", async () => {
+    retryButton.disabled = true;
+    retryButton.textContent = "检查中…";
+    try {
+      await onRetry?.();
+    } catch (error) {
+      toast(error.message || "状态检查失败", "error");
+    } finally {
+      retryButton.disabled = false;
+      retryButton.textContent = "重新检查";
+    }
+  });
   return el("div", { class: "blocked-panel", role: "alert" },
-    el("b", {}, "智能服务暂时不可用"),
-    el("p", {}, "文件识别和微信助手暂时不能使用，其他班级工作不受影响。"),
-    el("button", { class: "secondary", type: "button", onclick: onRetry }, "重新检查"));
+    el("b", {}, title),
+    el("p", {}, message),
+    retryButton);
 }

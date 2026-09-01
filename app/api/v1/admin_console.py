@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Body, Depends, Query, Request
+from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.orm import Session
 
+from app.core.errors import AppError
 from app.core.responses import ok
 from app.core.security import Principal, require_admin
 from app.database import get_db
-from app.schemas.admin import AdminClassCreate, AdminClassOwnerUpdate, AdminInitializeRequest, AdminSettingUpdate, OpenClawAgentUpdate, OpenClawGlobalUpdate, OpenClawWorkspaceFileUpdate
+from app.schemas.admin import AdminClassOwnerUpdate, AdminInitializeRequest, AdminSettingUpdate, OpenClawAgentUpdate, OpenClawGlobalUpdate, OpenClawWorkspaceFileUpdate
 from app.services import admin_console, openclaw_bridge, openclaw_provisioning
 
 
@@ -41,16 +42,13 @@ def settings_update(request: Request, key: str, body: AdminSettingUpdate, princi
 
 
 @router.post("/classes", status_code=201)
-async def class_create(request: Request, body: AdminClassCreate, db: Session = Depends(get_db)):
-    cls = admin_console.create_admin_class(db, body)
-    binding = openclaw_provisioning.get_binding(db, cls.id)
-    agent_error = None
-    if body.provision_agent:
-        try:
-            binding = await openclaw_provisioning.provision_class_agent(db, cls.id)
-        except Exception as exc:
-            agent_error = str(exc)[:1000]
-    return ok(request, {"class": cls, "binding": binding, "agent_error": agent_error}, "班级已创建", 201)
+def class_create(request: Request):
+    raise AppError(
+        "WEB_ONBOARDING_REQUIRED",
+        "新班级只能由班主任账号通过创建向导创建，以同时完成资料复核、专属智能体创建和微信绑定；管理员可在班级创建后分配负责人",
+        403,
+        {"onboarding_url": "/app/#/onboarding"},
+    )
 
 
 @router.patch("/classes/{class_id}/owner")
@@ -68,24 +66,41 @@ async def openclaw_config_update(request: Request, body: OpenClawGlobalUpdate):
     return ok(request, await admin_console.update_openclaw_config(body), "OpenClaw 配置已提交")
 
 
-@router.patch("/openclaw/agents/{class_id}")
-async def openclaw_agent_update(request: Request, class_id: str, body: OpenClawAgentUpdate, db: Session = Depends(get_db)):
-    return ok(request, await admin_console.update_openclaw_agent(db, class_id, body), "智能体配置已更新")
+@router.get("/openclaw/agents/catalog")
+async def openclaw_agent_catalog(request: Request, db: Session = Depends(get_db)):
+    return ok(request, await admin_console.openclaw_agent_catalog(db))
 
 
-@router.get("/openclaw/agents/{class_id}/settings")
-async def openclaw_agent_settings(request: Request, class_id: str, db: Session = Depends(get_db)):
-    return ok(request, await admin_console.openclaw_agent_settings(db, class_id))
+@router.patch("/openclaw/agents/{identifier}")
+async def openclaw_agent_update(request: Request, identifier: str, body: OpenClawAgentUpdate, db: Session = Depends(get_db)):
+    return ok(request, await admin_console.update_openclaw_agent(db, identifier, body), "智能体配置已更新")
 
 
-@router.put("/openclaw/agents/{class_id}/workspace/{filename}")
-def openclaw_agent_workspace_update(request: Request, class_id: str, filename: str, body: OpenClawWorkspaceFileUpdate, db: Session = Depends(get_db)):
-    return ok(request, openclaw_provisioning.update_workspace_file(db, class_id, filename, body.content, body.expected_sha256), "智能体工作区文件已保存")
+@router.get("/openclaw/agents/{identifier}/settings")
+async def openclaw_agent_settings(request: Request, identifier: str, db: Session = Depends(get_db)):
+    return ok(request, await admin_console.openclaw_agent_settings(db, identifier))
 
 
-@router.post("/openclaw/agents/{class_id}/workspace/{filename}/reset")
-def openclaw_agent_workspace_reset(request: Request, class_id: str, filename: str, db: Session = Depends(get_db)):
-    return ok(request, openclaw_provisioning.reset_workspace_file(db, class_id, filename), "智能体工作区文件已恢复默认")
+@router.put("/openclaw/agents/{identifier}/workspace/{filename}")
+async def openclaw_agent_workspace_update(request: Request, identifier: str, filename: str, body: OpenClawWorkspaceFileUpdate, db: Session = Depends(get_db)):
+    result = await admin_console.update_openclaw_workspace(db, identifier, filename, body.content, body.expected_sha256)
+    return ok(request, result, "智能体工作区文件已保存")
+
+
+@router.post("/openclaw/agents/{identifier}/workspace/{filename}/reset")
+async def openclaw_agent_workspace_reset(request: Request, identifier: str, filename: str, db: Session = Depends(get_db)):
+    return ok(request, await admin_console.reset_openclaw_workspace(db, identifier, filename), "智能体工作区文件已恢复默认")
+
+
+@router.get("/openclaw/sessions/cleanup")
+def openclaw_sessions_cleanup_status(request: Request):
+    return ok(request, openclaw_bridge.session_cleanup_status())
+
+
+@router.post("/openclaw/sessions/cleanup")
+async def openclaw_sessions_cleanup(request: Request, enforce: bool = Query(True)):
+    result = await openclaw_bridge.run_session_cleanup(enforce=enforce)
+    return ok(request, result, "Session 清理已执行" if result["ok"] else "Session 清理未完全成功，详见 output")
 
 
 @router.get("/logs")
@@ -101,7 +116,6 @@ async def logs_tail(
 
 
 @router.post("/system/initialize")
-async def system_initialize(request: Request, body: AdminInitializeRequest, principal: Principal = Depends(require_admin), db: Session = Depends(get_db)):
-    result = await admin_console.initialize_class_data(db, operator_id=principal.user_id)
-    message = "班级数据初始化完成" if result["status"] == "completed" else "班级数据已初始化，但部分外部资源清理失败"
-    return ok(request, result, message)
+async def system_initialize(request: Request, body: AdminInitializeRequest, db: Session = Depends(get_db)):
+    result = await admin_console.initialize_system(db)
+    return ok(request, result, "系统完整初始化完成")

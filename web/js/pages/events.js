@@ -1,10 +1,10 @@
 // 日常表现（学生事件）：查询视图 + 单条/批量登记（直接调领域接口）。
 
 import { el, clear, toast, todayStr, addDaysStr, fmtDate } from "../util.js";
-import { api } from "../api.js";
+import { api, AI_REQUEST_TIMEOUT_MS } from "../api.js";
 import { state, refreshStudents, refreshSubjects } from "../state.js";
 import {
-  pageHeader, dataTable, statusBadge, openModal, field, fieldError, errorPanel, skeleton, emptyState,
+  pageHeader, dataTable, statusBadge, openModal, field, fieldError, errorPanel, skeleton, emptyState, aiButton,
 } from "../components.js";
 
 const EVENT_TYPES = [["", "全部类型"], ["homework", "作业"], ["attendance", "考勤"], ["behavior", "行为"], ["communication", "沟通"], ["honor", "荣誉"], ["other", "其他"]];
@@ -84,7 +84,6 @@ export async function render(mount) {
     const contentInput = el("textarea", { rows: "4", placeholder: "直接描述发生了什么，例如：上课忘带课本、主动帮助同学" });
     const errorLine = el("div");
     const analysisBox = el("div");
-    const analyzeBtn = el("button", { class: "secondary", type: "button" }, "让智能体判断");
     const saveBtn = el("button", { class: "primary", type: "button", disabled: true }, "确认登记");
     let analyzedEvent = null;
     let modal;
@@ -93,29 +92,36 @@ export async function render(mount) {
     subjectInput.addEventListener("change", invalidateAnalysis);
     studentSel.addEventListener("change", invalidateAnalysis);
     dateInput.addEventListener("change", invalidateAnalysis);
-    analyzeBtn.addEventListener("click", async () => {
-      clear(errorLine);
-      if (!contentInput.value.trim()) { errorLine.append(fieldError("请先填写事件内容")); return; }
-      if (!dateInput.value) { errorLine.append(fieldError("日期必填")); return; }
-      analyzeBtn.disabled = true;
-      analysisBox.replaceChildren(el("p", { class: "muted" }, "正在判断类型、子类、倾向和程度…"));
-      try {
-        const result = await api(`/classes/${state.classId}/student-events/analyze`, {
-          method: "POST",
-          body: { student_id: studentSel.value, event_date: dateInput.value, content: contentInput.value.trim(), subject: subjectInput.value || null },
-        });
-        analyzedEvent = result.event;
-        const typeLabel = (EVENT_TYPES.find(([value]) => value === analyzedEvent.event_type) || [])[1] || analyzedEvent.event_type;
-        const sentimentLabel = { positive: "正向", neutral: "中性", negative: "负向" }[analyzedEvent.sentiment];
-        const severityLabel = { normal: "普通", attention: "关注", serious: "严重" }[analyzedEvent.severity];
-        analysisBox.replaceChildren(el("div", { class: "event-analysis-preview" },
-          el("b", {}, "智能体判断"),
-          el("span", {}, `${typeLabel} · ${analyzedEvent.subtype}`),
-          el("span", {}, `${sentimentLabel} · ${severityLabel}${analyzedEvent.subject ? ` · ${analyzedEvent.subject}` : ""}`),
-          result.summary ? el("small", { class: "muted" }, result.summary) : null));
-        saveBtn.disabled = false;
-      } catch (error) { analysisBox.replaceChildren(errorPanel(error)); }
-      finally { analyzeBtn.disabled = false; }
+    const analyzeAction = aiButton({
+      label: "让智能体判断",
+      runningLabel: "取消判断",
+      onRun: async ({ signal }) => {
+        clear(errorLine);
+        if (!contentInput.value.trim()) { errorLine.append(fieldError("请先填写事件内容")); return; }
+        if (!dateInput.value) { errorLine.append(fieldError("日期必填")); return; }
+        analysisBox.replaceChildren(el("p", { class: "muted" }, "正在判断类型、子类、倾向和程度…"));
+        try {
+          const result = await api(`/classes/${state.classId}/student-events/analyze`, {
+            method: "POST",
+            body: { student_id: studentSel.value, event_date: dateInput.value, content: contentInput.value.trim(), subject: subjectInput.value || null },
+            timeoutMs: AI_REQUEST_TIMEOUT_MS,
+            signal,
+          });
+          analyzedEvent = result.event;
+          const typeLabel = (EVENT_TYPES.find(([value]) => value === analyzedEvent.event_type) || [])[1] || analyzedEvent.event_type;
+          const sentimentLabel = { positive: "正向", neutral: "中性", negative: "负向" }[analyzedEvent.sentiment];
+          const severityLabel = { normal: "普通", attention: "关注", serious: "严重" }[analyzedEvent.severity];
+          analysisBox.replaceChildren(el("div", { class: "event-analysis-preview" },
+            el("b", {}, "智能体判断"),
+            el("span", {}, `${typeLabel} · ${analyzedEvent.subtype}`),
+            el("span", {}, `${sentimentLabel} · ${severityLabel}${analyzedEvent.subject ? ` · ${analyzedEvent.subject}` : ""}`),
+            result.summary ? el("small", { class: "muted" }, result.summary) : null));
+          saveBtn.disabled = false;
+        } catch (error) {
+          if (error.code === "REQUEST_CANCELLED") analysisBox.replaceChildren(el("p", { class: "muted" }, "已取消判断"));
+          else analysisBox.replaceChildren(errorPanel(error));
+        }
+      },
     });
     saveBtn.addEventListener("click", async () => {
       if (!analyzedEvent) return;
@@ -134,7 +140,7 @@ export async function render(mount) {
           field("学生 *", studentSel), field("日期 *", dateInput), field("科目", subjectInput)),
         field("内容 *", contentInput),
         el("p", { class: "muted", style: { fontSize: "12px" } }, "子类、倾向和程度由智能体严格判断。未交、忘带、迟到、吵闹、睡觉等均按负向处理。"),
-        el("div", { class: "row-gap" }, analyzeBtn, saveBtn), analysisBox,
+        el("div", { class: "row-gap" }, analyzeAction.el, saveBtn), analysisBox,
         errorLine),
       actions: [{ label: "关闭", kind: "secondary" }],
     });

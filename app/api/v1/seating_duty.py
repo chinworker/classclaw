@@ -70,7 +70,11 @@ async def seat_import_preview(request: Request, class_id: str, files: list[Uploa
         attachment = operations.save_attachment(db, upload, None, "座位表文件识别")
         operations.link_attachment(db, attachment.id, "class", class_id)
         attachments.append(attachment)
-    return ok(request, await openclaw_bridge.analyze_seating_files(db, class_id, attachments), "座位表文件已整理，请核对预览后保存")
+    return ok(
+        request,
+        await openclaw_bridge.analyze_seating_files(db, class_id, attachments, cancelled=request.is_disconnected),
+        "座位表文件已整理，请核对预览后保存",
+    )
 
 
 @router.post("/classes/{class_id}/seating/swap", status_code=201)
@@ -122,7 +126,11 @@ def duty_rule_delete(request: Request, rule_id: str, db: Session = Depends(get_d
 async def duty_rule_analyze(request: Request, class_id: str, body: DutyRuleAnalyzeRequest, db: Session = Depends(get_db)):
     require_owned_class(request, class_id)
     admin_console.require_feature(db, "feature.file_analysis")
-    return ok(request, await openclaw_bridge.analyze_duty_rule(db, class_id, body.text, body.base_rule), "补充规则已整理，请核对后保存")
+    return ok(
+        request,
+        await openclaw_bridge.analyze_duty_rule(db, class_id, body.text, body.base_rule, cancelled=request.is_disconnected),
+        "补充规则已整理，请核对后保存",
+    )
 
 
 @router.post("/duty/schedules/preview")

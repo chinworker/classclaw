@@ -259,10 +259,23 @@ class LessonOverrideCreate(BaseModel):
 
 class LessonSwapRequest(BaseModel):
     class_id: str
-    lesson_date: date
+    lesson_date: date | None = None
+    lesson_date_a: date | None = None
+    lesson_date_b: date | None = None
     period_a: int
     period_b: int
     reason: str
+
+    @model_validator(mode="after")
+    def normalize_dates(self):
+        if self.lesson_date:
+            self.lesson_date_a = self.lesson_date_a or self.lesson_date
+            self.lesson_date_b = self.lesson_date_b or self.lesson_date
+        if not self.lesson_date_a or not self.lesson_date_b:
+            raise ValueError("课程互换需要填写两节课的日期")
+        if self.lesson_date_a == self.lesson_date_b and self.period_a == self.period_b:
+            raise ValueError("不能互换同一节课")
+        return self
 
 
 class LessonBatchChangeRequest(BaseModel):

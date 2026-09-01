@@ -77,7 +77,15 @@ async def student_event_analyze(request: Request, class_id: str, body: StudentEv
     require_owned_class(request, class_id)
     require_owned_student(request, db, body.student_id)
     admin_console.require_feature(db, "feature.event_ai")
-    result = await openclaw_bridge.analyze_student_event(db, class_id, body.student_id, body.event_date, body.content, body.subject)
+    result = await openclaw_bridge.analyze_student_event(
+        db,
+        class_id,
+        body.student_id,
+        body.event_date,
+        body.content,
+        body.subject,
+        cancelled=request.is_disconnected,
+    )
     return ok(request, result, "事件已分析，请核对后登记")
 
 

@@ -83,7 +83,7 @@ OpenClaw 对话式写入使用以下预览/确认入口；网页中的结构化�
 | lesson_override_create | POST `/lesson-overrides` | 日期、节次、替代课程、原因 | 覆盖 | 是 |
 | subject_list | GET `/classes/{id}/subjects` | class_id | 课表归纳科目 | 否 |
 | lesson_override_remove | DELETE `/lesson-overrides/{id}` | id | 恢复基础课程 | 是 |
-| lesson_swap_preview | POST `/lesson-swaps/preview` | 日期、两节次 | 变化和冲突 | 否 |
+| lesson_swap_preview | POST `/lesson-swaps/preview` | 两个日期、两个节次（兼容同日 `lesson_date`） | 按最新课表生成的变化和冲突 | 否 |
 | lesson_swap_confirm | POST `/lesson-swaps/confirm` | 同预览 | 两条覆盖 | 是 |
 | lesson_batch_change_preview | POST `/lesson-batch-changes/preview` | 日期范围、星期、节次、替代课 | 影响日期 | 否 |
 | lesson_batch_change_confirm | POST `/lesson-batch-changes/confirm` | 同预览 | 多条覆盖 | 是 |

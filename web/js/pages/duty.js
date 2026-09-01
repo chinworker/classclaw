@@ -1,9 +1,9 @@
 // 值日管理：规则、排班预览与确认、今日/本周、评分与统计——全部直接调领域接口。
 
 import { el, clear, toast, todayStr, addDaysStr, fmtDate, WEEKDAY_NAMES, weekdayOf } from "../util.js";
-import { api } from "../api.js";
+import { api, AI_REQUEST_TIMEOUT_MS } from "../api.js";
 import { state, refreshStudents } from "../state.js";
-import { pageHeader, field, errorPanel, skeleton, dataTable, statusBadge, openModal, confirmDanger } from "../components.js";
+import { pageHeader, field, errorPanel, skeleton, dataTable, statusBadge, openModal, confirmDanger, aiButton } from "../components.js";
 
 export async function render(mount) {
   let savedRules = [];
@@ -45,7 +45,6 @@ export async function render(mount) {
       return { input, node: el("label", { class: "chip", style: { cursor: "pointer" } }, input, ` ${WEEKDAY_NAMES[d]}`), day: d };
     });
     const naturalArea = el("textarea", { rows: "5", placeholder: "如：周五扫地 4 人；王小明周三不值日。" }, editingRule?.original_text || "");
-    const analyzeBtn = el("button", { class: "secondary", type: "button" }, "分析补充规则");
     const analysisBox = el("div");
     const validateInfo = el("div");
     const saveBtn = el("button", { class: "primary", type: "button" }, editingRule ? "保存修改" : "新增规则");
@@ -68,23 +67,30 @@ export async function render(mount) {
     }
 
     naturalArea.addEventListener("input", () => { analyzedRule = null; clear(analysisBox); });
-    analyzeBtn.addEventListener("click", async () => {
-      if (!naturalArea.value.trim()) { toast("请先写下补充规则", "error"); return; }
-      analyzeBtn.disabled = true;
-      clear(analysisBox);
-      analysisBox.append(el("p", { class: "muted" }, "正在整理规则…"));
-      try {
-        const result = await api(`/classes/${state.classId}/duty/rules/analyze`, {
-          method: "POST",
-          body: { text: naturalArea.value.trim(), base_rule: buildRuleJson() },
-        });
-        analyzedRule = result.rule_json;
-        analysisBox.replaceChildren(
-          el("div", { class: "issue issue-ok" }, describeRule(analyzedRule)),
-          ...(result.analysis?.warnings || []).map((text) => el("div", { class: "issue issue-warn" }, text)),
-        );
-      } catch (error) { analysisBox.replaceChildren(errorPanel(error)); }
-      finally { analyzeBtn.disabled = false; }
+    const analyzeAction = aiButton({
+      label: "分析补充规则",
+      runningLabel: "取消分析",
+      onRun: async ({ signal }) => {
+        if (!naturalArea.value.trim()) { toast("请先写下补充规则", "error"); return; }
+        clear(analysisBox);
+        analysisBox.append(el("p", { class: "muted" }, "正在整理规则…"));
+        try {
+          const result = await api(`/classes/${state.classId}/duty/rules/analyze`, {
+            method: "POST",
+            body: { text: naturalArea.value.trim(), base_rule: buildRuleJson() },
+            timeoutMs: AI_REQUEST_TIMEOUT_MS,
+            signal,
+          });
+          analyzedRule = result.rule_json;
+          analysisBox.replaceChildren(
+            el("div", { class: "issue issue-ok" }, describeRule(analyzedRule)),
+            ...(result.analysis?.warnings || []).map((text) => el("div", { class: "issue issue-warn" }, text)),
+          );
+        } catch (error) {
+          if (error.code === "REQUEST_CANCELLED") analysisBox.replaceChildren(el("p", { class: "muted" }, "已取消分析"));
+          else analysisBox.replaceChildren(errorPanel(error));
+        }
+      },
     });
 
     saveBtn.addEventListener("click", async () => {
@@ -122,7 +128,7 @@ export async function render(mount) {
       el("b", { style: { display: "block", margin: "14px 0 4px" } }, "补充说明（可选）"),
       el("p", { class: "muted" }, "复杂要求直接用平常说话的方式写，系统会先整理成预览供你核对。"),
       naturalArea,
-      el("div", { style: { marginTop: "8px" } }, analyzeBtn), analysisBox,
+      el("div", { style: { marginTop: "8px" } }, analyzeAction.el), analysisBox,
       el("div", { style: { marginTop: "12px" } }, saveBtn), validateInfo));
 
     const listCard = el("div", { class: "card" }, el("h3", {}, `已保存规则（${savedRules.length}）`));

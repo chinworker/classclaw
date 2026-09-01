@@ -86,14 +86,14 @@ const routes = [
   { path: "/homework", title: "作业", loader: () => import("./js/pages/homework.js"), requiresClass: true },
   { path: "/attendance", title: "考勤", loader: () => import("./js/pages/attendance.js"), requiresClass: true },
   { path: "/exams", title: "成绩与考试", loader: () => import("./js/pages/exams.js"), requiresClass: true },
-  { path: "/timetable", title: "课表与调课", loader: () => import("./js/pages/timetablePage.js"), requiresClass: true },
+  { path: "/timetable", title: "课表与调课", loader: () => import("./js/pages/timetablePage.js?v=20260901-week-navigation"), requiresClass: true },
   { path: "/duty", title: "值日管理", loader: () => import("./js/pages/duty.js"), requiresClass: true },
   { path: "/arrangements", title: "日常安排", loader: () => import("./js/pages/arrangements.js"), requiresClass: true },
   { path: "/attachments", title: "附件", loader: () => import("./js/pages/attachments.js"), requiresClass: true },
   { path: "/class-settings", title: "班级设置", loader: () => import("./js/pages/classSettings.js"), requiresClass: true },
-  { path: "/analytics/students", title: "学生分析", loader: () => import("./js/pages/analytics.js"), requiresClass: true, section: "students" },
-  { path: "/analytics/class", title: "班级分析", loader: () => import("./js/pages/analytics.js"), requiresClass: true, section: "class" },
-  { path: "/analytics/attention", title: "重点关注", loader: () => import("./js/pages/analytics.js"), requiresClass: true, section: "attention" },
+  { path: "/analytics/students", title: "学生分析", loader: () => import("./js/pages/analytics.js?v=20260901-analytics-fix"), requiresClass: true, section: "students" },
+  { path: "/analytics/class", title: "班级分析", loader: () => import("./js/pages/analytics.js?v=20260901-analytics-fix"), requiresClass: true, section: "class" },
+  { path: "/analytics/attention", title: "重点关注", loader: () => import("./js/pages/analytics.js?v=20260901-analytics-fix"), requiresClass: true, section: "attention" },
   { path: "/workflow", title: "待确认记录", loader: () => import("./js/pages/workflow.js") },
   { path: "/agent", title: "班级助手与微信", loader: () => import("./js/pages/agent.js") },
   { path: "/admin/overview", title: "运行概览", loader: () => import("./js/pages/adminOverview.js"), adminOnly: true },
@@ -108,8 +108,8 @@ const routes = [
   { path: "/admin/settings", title: "功能与常量", loader: () => import("./js/pages/adminSettings.js"), adminOnly: true },
   { path: "/account", title: "账户设置", loader: () => import("./js/pages/account.js") },
   { path: "/welcome", title: "创建班级", loader: () => import("./js/pages/welcome.js"), bare: true },
-  { path: "/onboarding", title: "班级创建向导", loader: () => import("./js/pages/onboarding.js") },
-  { path: "/onboarding/:id", title: "班级创建向导", loader: () => import("./js/pages/onboarding.js") },
+  { path: "/onboarding", title: "班级创建向导", loader: () => import("./js/pages/onboarding.js?v=20260901-onboarding-actions") },
+  { path: "/onboarding/:id", title: "班级创建向导", loader: () => import("./js/pages/onboarding.js?v=20260901-onboarding-actions") },
 ];
 defineRoutes(routes);
 
@@ -232,10 +232,10 @@ function closeSidebar() {
   shell?.backdrop?.remove();
 }
 
-async function refreshOpenclawDot() {
+async function refreshOpenclawDot({ force = false } = {}) {
   if (!shell?.statusDot) return;
   try {
-    const status = state.openclaw?.ready !== undefined && !state.openclawDirty ? state.openclaw : await refreshOpenclaw();
+    const status = await refreshOpenclaw({ force });
     shell.statusDot.className = `status-dot ${status.ready ? "ok" : "bad"}`;
     shell.statusDot.title = status.ready ? "OpenClaw 已连接" : `OpenClaw 未就绪：${status.error || ""}`;
   } catch {

@@ -199,24 +199,36 @@ def create_override(db: Session, data: LessonOverrideCreate, *, commit: bool = T
     get_class(db, data.class_id)
     base = _base_lesson(db, data.class_id, data.lesson_date, data.period_no)
     key = lesson_key(data.lesson_date, data.period_no)
-    if db.scalar(select(LessonOverride).where(LessonOverride.class_id == data.class_id, LessonOverride.lesson_key == key)):
-        raise AppError("TIMETABLE_CONFLICT", "该课程已有临时覆盖", 409, {"lesson_key": key})
-    obj = LessonOverride(
-        class_id=data.class_id,
-        lesson_key=key,
-        lesson_date=data.lesson_date,
-        period_no=data.period_no,
-        original_subject=base.subject,
-        original_teacher=base.teacher,
-        replacement_subject=data.replacement_subject,
-        replacement_teacher=data.replacement_teacher,
-        replacement_room=data.replacement_room,
-        status=data.status,
-        reason=data.reason,
-    )
-    db.add(obj)
+    obj = db.scalar(select(LessonOverride).where(LessonOverride.class_id == data.class_id, LessonOverride.lesson_key == key))
+    if obj:
+        before = entity_dict(obj)
+        obj.original_subject = base.subject
+        obj.original_teacher = base.teacher
+        obj.replacement_subject = data.replacement_subject
+        obj.replacement_teacher = data.replacement_teacher
+        obj.replacement_room = data.replacement_room
+        obj.status = data.status
+        obj.reason = data.reason
+        action = "update"
+    else:
+        obj = LessonOverride(
+            class_id=data.class_id,
+            lesson_key=key,
+            lesson_date=data.lesson_date,
+            period_no=data.period_no,
+            original_subject=base.subject,
+            original_teacher=base.teacher,
+            replacement_subject=data.replacement_subject,
+            replacement_teacher=data.replacement_teacher,
+            replacement_room=data.replacement_room,
+            status=data.status,
+            reason=data.reason,
+        )
+        db.add(obj)
+        before = None
+        action = "create"
     db.flush()
-    audit(db, "create", "lesson_override", obj.id, after=entity_dict(obj))
+    audit(db, action, "lesson_override", obj.id, before=before, after=entity_dict(obj))
     if commit:
         db.commit()
     return obj
@@ -233,39 +245,56 @@ def remove_override(db: Session, override_id: str) -> dict:
     return {"removed_id": override_id, "restored_to_base": True}
 
 
+def _effective_lesson(db: Session, class_id: str, lesson_date: date, period_no: int) -> dict:
+    base = _base_lesson(db, class_id, lesson_date, period_no)
+    key = lesson_key(lesson_date, period_no)
+    override = db.scalar(select(LessonOverride).where(LessonOverride.class_id == class_id, LessonOverride.lesson_key == key))
+    cancelled = bool(override and override.status == "cancelled")
+    return {
+        "lesson_key": key,
+        "lesson_date": lesson_date,
+        "period_no": period_no,
+        "subject": None if cancelled else (override.replacement_subject if override and override.replacement_subject is not None else base.subject),
+        "teacher": None if cancelled else (override.replacement_teacher if override and override.replacement_teacher is not None else base.teacher),
+        "room": None if cancelled else (override.replacement_room if override and override.replacement_room is not None else base.room),
+        "is_changed": bool(override),
+        "is_cancelled": cancelled,
+    }
+
+
 def swap_preview(db: Session, data: LessonSwapRequest) -> dict:
-    if data.period_a == data.period_b:
-        raise AppError("TIMETABLE_CONFLICT", "互换节次不能相同")
-    a = _base_lesson(db, data.class_id, data.lesson_date, data.period_a)
-    b = _base_lesson(db, data.class_id, data.lesson_date, data.period_b)
-    keys = [lesson_key(data.lesson_date, data.period_a), lesson_key(data.lesson_date, data.period_b)]
-    conflicts = list(db.scalars(select(LessonOverride.lesson_key).where(LessonOverride.class_id == data.class_id, LessonOverride.lesson_key.in_(keys))))
+    date_a = data.lesson_date_a or data.lesson_date
+    date_b = data.lesson_date_b or data.lesson_date
+    assert date_a is not None and date_b is not None
+    a = _effective_lesson(db, data.class_id, date_a, data.period_a)
+    b = _effective_lesson(db, data.class_id, date_b, data.period_b)
+    if a["is_cancelled"] or b["is_cancelled"]:
+        raise AppError("TIMETABLE_CONFLICT", "已取消的课程不能参与互换，请先恢复或重新调整")
     return {
         "changes": [
-            {"lesson_key": keys[0], "from": a.subject, "to": b.subject},
-            {"lesson_key": keys[1], "from": b.subject, "to": a.subject},
+            {"lesson_key": a["lesson_key"], "from": a["subject"], "to": b["subject"]},
+            {"lesson_key": b["lesson_key"], "from": b["subject"], "to": a["subject"]},
         ],
-        "conflicts": conflicts,
+        "lessons": {"a": a, "b": b},
+        "conflicts": [],
         "writes_performed": 0,
     }
 
 
 def confirm_swap(db: Session, data: LessonSwapRequest) -> list[LessonOverride]:
     preview = swap_preview(db, data)
-    if preview["conflicts"]:
-        raise AppError("TIMETABLE_CONFLICT", "互换涉及已有覆盖", details={"lesson_keys": preview["conflicts"]})
-    a = _base_lesson(db, data.class_id, data.lesson_date, data.period_a)
-    b = _base_lesson(db, data.class_id, data.lesson_date, data.period_b)
+    a = preview["lessons"]["a"]
+    b = preview["lessons"]["b"]
     try:
         first = create_override(
             db,
             LessonOverrideCreate(
                 class_id=data.class_id,
-                lesson_date=data.lesson_date,
+                lesson_date=a["lesson_date"],
                 period_no=data.period_a,
-                replacement_subject=b.subject,
-                replacement_teacher=b.teacher,
-                replacement_room=b.room,
+                replacement_subject=b["subject"],
+                replacement_teacher=b["teacher"],
+                replacement_room=b["room"],
                 reason=data.reason,
             ),
             commit=False,
@@ -274,11 +303,11 @@ def confirm_swap(db: Session, data: LessonSwapRequest) -> list[LessonOverride]:
             db,
             LessonOverrideCreate(
                 class_id=data.class_id,
-                lesson_date=data.lesson_date,
+                lesson_date=b["lesson_date"],
                 period_no=data.period_b,
-                replacement_subject=a.subject,
-                replacement_teacher=a.teacher,
-                replacement_room=a.room,
+                replacement_subject=a["subject"],
+                replacement_teacher=a["teacher"],
+                replacement_room=a["room"],
                 reason=data.reason,
             ),
             commit=False,
