@@ -341,11 +341,6 @@ class OnboardingAnalyzeText(BaseModel):
     text: str = Field(min_length=1, max_length=100_000)
 
 
-class DutyRuleAnalyzeRequest(BaseModel):
-    text: str = Field(min_length=1, max_length=10_000)
-    base_rule: dict[str, Any] = Field(default_factory=dict)
-
-
 class StudentEventAnalyzeRequest(BaseModel):
     student_id: str
     event_date: date

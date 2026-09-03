@@ -6,16 +6,26 @@ from fastapi import APIRouter, Body, Depends, File, Query, Request, UploadFile
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.errors import AppError, not_found
+from app.core.errors import AppError
 from app.core.responses import ok
 from app.core.security import require_owned_class, require_owned_record, require_owned_student
 from app.database import get_db
 from app.models.entities import DutyAssignment, DutyRule, DutySchedule, DutyScoreItem, SeatingSnapshot
-from app.schemas.domain import DutyAssignmentScore, DutyConfirmRequest, DutyEvaluationCreate, DutyPreviewRequest, DutyReplaceRequest, DutyRuleAnalyzeRequest, DutyRuleCreate, DutyRuleUpdate, SeatingCreate, SeatingRename, SeatingSwap
-from app.services import admin_console, duty, openclaw_bridge, operations, seating
+from app.schemas.domain import (
+    DutyAssignmentScore,
+    DutyConfirmRequest,
+    DutyEvaluationCreate,
+    DutyPreviewRequest,
+    DutyReplaceRequest,
+    DutyRuleCreate,
+    DutyRuleUpdate,
+    SeatingCreate,
+    SeatingRename,
+    SeatingSwap,
+)
+from app.services import admin_console, ai_tasks, duty, openclaw_bridge, operations, seating
 from app.services.common import audit, entity_dict
 from app.utils.time import today
-
 
 router = APIRouter(tags=["座位与值日"])
 
@@ -62,19 +72,18 @@ def seat_update(request: Request, class_id: str, body: SeatingCreate, db: Sessio
 @router.post("/classes/{class_id}/seating/import-preview")
 async def seat_import_preview(request: Request, class_id: str, files: list[UploadFile] = File(...), db: Session = Depends(get_db)):
     require_owned_class(request, class_id)
-    admin_console.require_feature(db, "feature.file_analysis")
+    admin_console.require_feature("feature.file_analysis")
     if not files or len(files) > 4:
         raise AppError("VALIDATION_ERROR", "每次请上传 1 至 4 个座位表文件", 422)
-    attachments = []
-    for upload in files:
-        attachment = operations.save_attachment(db, upload, None, "座位表文件识别")
-        operations.link_attachment(db, attachment.id, "class", class_id)
-        attachments.append(attachment)
-    return ok(
-        request,
-        await openclaw_bridge.analyze_seating_files(db, class_id, attachments, cancelled=request.is_disconnected),
-        "座位表文件已整理，请核对预览后保存",
-    )
+    async with ai_tasks.track(request) as cancelled:
+        attachments = []
+        for upload in files:
+            attachment = operations.save_attachment(db, upload, None, "座位表文件识别")
+            operations.link_attachment(db, attachment.id, "class", class_id)
+            attachments.append(attachment)
+        result = await openclaw_bridge.analyze_seating_files(db, class_id, attachments, cancelled=cancelled)
+        message = "座位表文件已整理，请核对预览后保存" if result["analysis"]["accepted"] else "AI 认为座位表数据不够可靠，未采用本次结果"
+        return ok(request, result, message)
 
 
 @router.post("/classes/{class_id}/seating/swap", status_code=201)
@@ -120,17 +129,6 @@ def duty_rule_update(request: Request, rule_id: str, body: DutyRuleUpdate, db: S
 def duty_rule_delete(request: Request, rule_id: str, db: Session = Depends(get_db)):
     require_owned_record(request, db, DutyRule, rule_id)
     return ok(request, duty.delete_rule(db, rule_id), "值日规则已删除")
-
-
-@router.post("/classes/{class_id}/duty/rules/analyze")
-async def duty_rule_analyze(request: Request, class_id: str, body: DutyRuleAnalyzeRequest, db: Session = Depends(get_db)):
-    require_owned_class(request, class_id)
-    admin_console.require_feature(db, "feature.file_analysis")
-    return ok(
-        request,
-        await openclaw_bridge.analyze_duty_rule(db, class_id, body.text, body.base_rule, cancelled=request.is_disconnected),
-        "补充规则已整理，请核对后保存",
-    )
 
 
 @router.post("/duty/schedules/preview")

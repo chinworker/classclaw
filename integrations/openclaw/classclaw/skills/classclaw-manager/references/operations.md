@@ -32,7 +32,8 @@ Evidence items use:
   "attachment_id": "attachment-uuid",
   "location": "成绩表.xlsx / Sheet1 / row 8",
   "summary": "张三数学 92 分",
-  "confidence": 0.98
+  "confidence": 0.98,
+  "reasons": ["学生、日期、时段和考勤状态均已明确且唯一匹配"]
 }
 ```
 

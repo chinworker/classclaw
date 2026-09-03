@@ -1,9 +1,9 @@
 // 成绩与考试：查询/创建考试、批量录入成绩、统计。
 
-import { el, clear, toast, todayStr, fmtDate } from "../util.js";
+import { el, clear, toast, todayStr, fmtDate, fmtDateTime, pct } from "../util.js";
 import { api } from "../api.js";
 import { state, refreshStudents, refreshSubjects } from "../state.js";
-import { pageHeader, dataTable, openModal, field, fieldError, errorPanel, skeleton, emptyState, statusBadge } from "../components.js";
+import { pageHeader, dataTable, openModal, field, fieldError, errorPanel, skeleton, emptyState, statusBadge, metricCard, confirmDanger } from "../components.js";
 import { listExams } from "../featureGaps.js";
 
 export async function render(mount) {
@@ -39,7 +39,8 @@ export async function render(mount) {
           { key: "subjects", label: "科目", render: (e2) => (e2.subjects || []).map((s) => `${s.subject}（满分 ${s.full_score}）`).join("、") },
           { key: "actions", label: "操作", render: (e2) => el("div", { class: "row-gap" },
             el("button", { class: "text-button", type: "button", onclick: () => openScores(e2) }, "录入/查看成绩"),
-            el("button", { class: "text-button", type: "button", onclick: () => openStatistics(e2) }, "统计")) },
+            el("button", { class: "text-button", type: "button", onclick: () => openStatistics(e2) }, "统计"),
+            el("button", { class: "text-button", type: "button", style: { color: "var(--danger)" }, onclick: () => removeExam(e2) }, "删除")) },
         ],
         rows: exams,
       }));
@@ -101,9 +102,29 @@ export async function render(mount) {
     });
   }
 
+  async function removeExam(exam) {
+    const confirmed = await confirmDanger({
+      title: "删除考试",
+      lines: [
+        `将永久删除考试「${exam.name}」及其全部科目、成绩与统计缓存。`,
+        "删除后无法恢复，如需保留成绩请先导出。",
+      ],
+      requireText: exam.name,
+      confirmLabel: "确认删除",
+    });
+    if (!confirmed) return;
+    try {
+      await api(`/exams/${exam.id}`, { method: "DELETE" });
+      toast("考试已删除", "success");
+      load();
+    } catch (error) {
+      toast(error.message, "error");
+    }
+  }
+
   async function openScores(exam, preloaded = null) {
     const body = el("div", {}, skeleton(5));
-    openModal({ title: `成绩录入 · ${exam.name}`, wide: true, body, actions: [{ label: "关闭", kind: "secondary" }] });
+    const modal = openModal({ title: `成绩录入 · ${exam.name}`, wide: true, headClose: false, body, actions: [{ label: "关闭", kind: "secondary" }] });
     try {
       const [students, scores] = await Promise.all([
         refreshStudents(),
@@ -153,11 +174,61 @@ export async function render(mount) {
           errorLine.append(fieldError(`保存失败（未写入任何成绩）：${error.message}`));
         } finally { saveBtn.disabled = false; }
       });
-      body.append(el("div", { class: "table-wrap" }, table), saveInfo, saveBtn, errorLine);
+      body.append(el("div", { class: "table-wrap" }, table), saveInfo, errorLine);
+      modal.foot.prepend(saveBtn);
     } catch (error) {
       clear(body);
       body.append(errorPanel(error));
     }
+  }
+
+  function chartSectionTitle(text) {
+    return el("h3", { style: { marginTop: "16px" } }, text);
+  }
+
+  function barRow(label, value, tone) {
+    const width = Math.max(0, Math.min(100, (value ?? 0) * 100));
+    return el("div", { class: "chart-bar-row" },
+      el("span", { class: "chart-bar-label" }, label),
+      el("div", { class: "chart-bar-track" }, el("div", { class: `chart-bar-fill tone-${tone}`, style: { width: `${width}%` } })),
+      el("span", { class: "chart-bar-value" }, pct(value)));
+  }
+
+  function subjectCompareChart(subjects) {
+    const box = el("div", { class: "chart-box" });
+    for (const s of subjects) {
+      box.append(
+        el("div", { class: "chart-subject-title" }, `${s.subject}（满分 ${s.full_score}）`),
+        barRow("平均得分率", s.full_score ? s.average / s.full_score : null, "primary"),
+        barRow("及格率", s.pass_rate, "ok"),
+        barRow("优秀率", s.excellent_rate, "warn"));
+    }
+    return box;
+  }
+
+  const DISTRIBUTION_TONES = ["danger", "warn", "info", "soft", "ok"];
+
+  function distributionChart(subjects) {
+    const box = el("div", { class: "chart-box" });
+    box.append(el("div", { class: "chart-legend" },
+      ["<60% 不及格", "60–70% 及格", "70–80% 中等", "80–90% 良好", "≥90% 优秀"].map((label, index) =>
+        el("span", {}, el("i", { class: `chart-legend-dot seg-${DISTRIBUTION_TONES[index]}` }), label))));
+    for (const s of subjects) {
+      const dist = s.distribution || [];
+      const total = dist.reduce((acc, band) => acc + (band.count || 0), 0);
+      const stack = el("div", { class: "chart-stack" });
+      dist.forEach((band, index) => {
+        if (!band.count) return;
+        stack.append(el("div", {
+          class: `chart-stack-seg seg-${DISTRIBUTION_TONES[index]}`,
+          style: { width: `${(band.count / total) * 100}%` },
+          title: `${band.label}：${band.count} 人`,
+        }, String(band.count)));
+      });
+      if (!total) stack.append(el("span", { class: "chart-stack-empty" }, "暂无成绩"));
+      box.append(el("div", { class: "chart-subject-title" }, `${s.subject}（${total} 人）`), stack);
+    }
+    return box;
   }
 
   async function openStatistics(exam) {
@@ -166,18 +237,59 @@ export async function render(mount) {
     try {
       const stats = await api(`/exams/${exam.id}/statistics`);
       clear(body);
-      const rows = stats.subjects || stats.items || (Array.isArray(stats) ? stats : []);
+      const subjects = Array.isArray(stats.subjects)
+        ? stats.subjects
+        : Object.entries(stats.subjects || {}).map(([name, m]) => ({ subject: name, ...m }));
+      const totals = stats.totals || [];
+      const summary = stats.summary || {};
+
+      body.append(el("div", { class: "metric-grid" },
+        metricCard("参考学生", summary.student_count ?? "—"),
+        metricCard("考试科目", summary.subject_count ?? "—"),
+        metricCard("成绩条数", summary.score_count ?? "—")));
+      if (summary.single_subject) {
+        body.append(el("p", { class: "muted" }, "单科考试：总分排名即该科目排名，得分率按本科目满分计算。"));
+      }
+
+      if (subjects.length) {
+        body.append(chartSectionTitle("科目对比"), subjectCompareChart(subjects));
+        body.append(chartSectionTitle("分数段分布（按满分比例）"), distributionChart(subjects));
+      }
+
+      body.append(chartSectionTitle("总分排名"));
+      body.append(dataTable({
+        columns: [
+          { key: "rank", label: "名次", width: "64px" },
+          { key: "student_name", label: "学生", render: (r) => `${r.student_name ?? "—"}（${r.student_no ?? "—"}）` },
+          { key: "total_score", label: "总分 / 满分", render: (r) => `${r.total_score} / ${r.total_full}` },
+          { key: "rate", label: "得分率", render: (r) => pct(r.rate) },
+          { key: "subjects", label: "各科成绩", render: (r) => Object.entries(r.subjects || {}).map(([k, v]) => `${k} ${v}`).join("、") || "—" },
+        ],
+        rows: totals,
+        empty: { title: "暂无成绩", hint: "先录入成绩后生成排名。" },
+      }));
+
+      body.append(chartSectionTitle("科目明细"));
       body.append(dataTable({
         columns: [
           { key: "subject", label: "科目" },
-          { key: "average", label: "平均分", render: (r) => r.average ?? r.avg ?? "—" },
-          { key: "max", label: "最高", render: (r) => r.max ?? r.highest ?? "—" },
-          { key: "min", label: "最低", render: (r) => r.min ?? r.lowest ?? "—" },
-          { key: "pass_rate", label: "及格率", render: (r) => r.pass_rate !== null && r.pass_rate !== undefined ? `${Math.round(r.pass_rate * 1000) / 10}%` : "—" },
+          { key: "count", label: "人数" },
+          { key: "average", label: "平均分", render: (r) => `${r.average} / ${r.full_score}` },
+          { key: "median", label: "中位数" },
+          { key: "std_dev", label: "标准差" },
+          { key: "highest", label: "最高" },
+          { key: "lowest", label: "最低" },
+          { key: "pass_rate", label: "及格率", render: (r) => pct(r.pass_rate) },
+          { key: "excellent_rate", label: "优秀率", render: (r) => pct(r.excellent_rate) },
         ],
-        rows,
+        rows: subjects,
         empty: { title: "暂无统计数据", hint: "先录入成绩。" },
       }));
+
+      if (stats.generated_at) {
+        body.append(el("p", { class: "muted chart-meta" },
+          `分析由程序基于库内数据确定性实时计算${stats.cache_hit ? "（命中缓存）" : "（本次新生成，已留缓存）"} · 生成于 ${fmtDateTime(stats.generated_at)}`));
+      }
       if (stats.warnings?.length) body.append(...stats.warnings.map((w) => el("p", { class: "field-error" }, w)));
     } catch (error) {
       clear(body);

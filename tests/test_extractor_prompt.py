@@ -5,7 +5,8 @@ import json
 from dataclasses import replace
 
 from app.config import settings
-from app.services import openclaw_bridge as bridge, openclaw_provisioning
+from app.services import openclaw_bridge as bridge
+from app.services import openclaw_provisioning
 
 
 def test_extractor_enabled_by_default():
@@ -95,12 +96,50 @@ def test_extractor_workspace_keeps_admin_customization(monkeypatch, tmp_path):
     (workspace / "AGENTS.md").write_text("# Admin custom\n", encoding="utf-8")
     (workspace / ".classclaw-admin-customized.json").write_text(json.dumps(["AGENTS.md"]), encoding="utf-8")
 
+    calls: list[tuple[str, dict]] = []
+
     async def fake_rpc(method: str, params: dict | None = None):
-        assert method == "agents.list"
-        return [{"id": "classclaw-extractor"}]
+        calls.append((method, params or {}))
+        if method == "agents.list":
+            return [{"id": "classclaw-extractor"}]
+        if method == "config.get":
+            return {
+                "hash": "extractor-config-v1",
+                "config": {
+                    "agents": {
+                        "defaults": {"model": {"primary": "provider/fast-model"}},
+                        "list": [{"id": "classclaw-extractor", "workspace": str(workspace)}],
+                    }
+                },
+            }
+        if method == "config.patch":
+            return {"ok": True}
+        raise AssertionError(method)
 
     monkeypatch.setattr(openclaw_provisioning, "admin_rpc", fake_rpc)
     assert asyncio.run(bridge.ensure_extractor_agent()) is True
     assert (workspace / "AGENTS.md").read_text(encoding="utf-8") == "# Admin custom\n"
     assert (workspace / "SOUL.md").is_file()
     assert (workspace / "IDENTITY.md").is_file()
+    patch = next(params for method, params in calls if method == "config.patch")
+    runtime = json.loads(patch["raw"])["agents"]["list"][0]
+    assert runtime["model"] == {"primary": "provider/fast-model"}
+    assert runtime["thinkingDefault"] == "off"
+    assert runtime["reasoningDefault"] == "off"
+    assert runtime["fastModeDefault"] is True
+    assert runtime["memorySearch"] == {"enabled": False}
+    assert runtime["skills"] == []
+    assert runtime["tools"] == {"profile": "minimal", "deny": ["session_status"]}
+    assert patch["baseHash"] == "extractor-config-v1"
+
+
+def test_extractor_runtime_is_independent_and_toolless(monkeypatch, tmp_path):
+    test_settings = replace(settings, openclaw_class_workspace_root=tmp_path, openclaw_extractor_agent_id="classclaw-extractor")
+    monkeypatch.setattr(bridge, "settings", test_settings)
+    runtime = bridge.extractor_runtime_defaults()
+    assert runtime["id"] == "classclaw-extractor"
+    assert runtime["workspace"] == str((tmp_path / "_extractor").resolve())
+    assert runtime["tools"]["profile"] == "minimal"
+    assert runtime["tools"]["deny"] == ["session_status"]
+    assert runtime["thinkingDefault"] == "off"
+    assert runtime["fastModeDefault"] is True

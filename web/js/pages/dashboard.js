@@ -1,10 +1,10 @@
 // 今日仪表盘：全部数字来自真实接口，无演示数据。
 
-import { el, clear, toast, todayStr, fmtDateTime, pct, WEEKDAY_NAMES, weekdayOf, periodLabel } from "../util.js";
+import { el, clear, todayStr, fmtDateTime, WEEKDAY_NAMES, weekdayOf, periodLabel } from "../util.js";
 import { api } from "../api.js";
-import { state, refreshClassInfo } from "../state.js";
+import { state } from "../state.js";
 import { navigate } from "../router.js";
-import { metricCard, statusBadge, emptyState, skeleton, errorPanel } from "../components.js";
+import { metricCard, statusBadge, skeleton, errorPanel } from "../components.js";
 
 export async function render(mount, ctx, helpers) {
   clear(mount);
@@ -13,12 +13,11 @@ export async function render(mount, ctx, helpers) {
   const today = todayStr();
 
   const safe = (p) => p.catch((error) => ({ __error: error }));
-  const [summary, daily, dutyToday, arrangements, briefing] = await Promise.all([
+  const [summary, daily, dutyToday, arrangements] = await Promise.all([
     safe(api(`/classes/${classId}/summary`)),
     safe(api(`/classes/${classId}/timetable/daily?lesson_date=${today}`)),
     safe(api(`/duty/today?class_id=${classId}&day=${today}`)),
     safe(api(`/arrangements?class_id=${classId}`)),
-    safe(api(`/briefings/morning?class_id=${classId}&date=${today}`)),
   ]);
   clear(mount);
 
@@ -78,21 +77,6 @@ export async function render(mount, ctx, helpers) {
   }
   arrangeCard.append(el("button", { class: "text-button", type: "button", onclick: () => navigate("/arrangements") }, "全部安排 →"));
   grid.append(arrangeCard);
-
-  // 关注学生与数据质量
-  const briefCard = el("div", { class: "card", style: { margin: 0 } }, el("h3", {}, "关注与数据质量"));
-  if (briefing.__error) briefCard.append(errorPanel(briefing.__error));
-  else {
-    const attention = briefing.attention_students || [];
-    briefCard.append(attention.length
-      ? el("div", {}, el("b", {}, `近 14 天关注学生（${attention.length}）`), ...attention.slice(0, 5).map((s) => el("p", { class: "muted", style: { fontSize: "13px" } }, `${s.student?.name || s.student_name || ""}：${(s.reasons || s.attention_items || []).map((r) => r.message || r).join("；")}`)))
-      : el("p", { class: "muted" }, "近期没有触发关注规则的学生"));
-    const quality = briefing.data_quality;
-    if (quality?.missing_dimensions?.length) briefCard.append(el("p", { class: "muted", style: { fontSize: "13px" } }, `数据缺口：${quality.missing_dimensions.join("、")}`));
-    (quality?.warnings || []).forEach((w) => briefCard.append(el("p", { class: "field-error", style: { fontSize: "13px" } }, w)));
-  }
-  briefCard.append(el("button", { class: "text-button", type: "button", onclick: () => navigate("/briefing") }, "查看每日早报 →"));
-  grid.append(briefCard);
 
   mount.append(grid);
 }

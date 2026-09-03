@@ -6,16 +6,15 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.config import settings
 from app.core.errors import AppError, not_found
 from app.models.entities import (
     Attachment,
-    ClassPeriod,
     ClassOnboardingSession,
+    ClassPeriod,
     ClassRoom,
     ClassSubject,
-    DutySchedule,
     DutyAssignment,
+    DutySchedule,
     Exam,
     Homework,
     InteractionAnalysis,
@@ -24,6 +23,7 @@ from app.models.entities import (
 )
 from app.schemas.domain import InteractionAnalyzeCreate, WriteProposalCreate
 from app.services import approval, openclaw_bridge
+from app.services.ai_confidence import evaluate_ai_output
 from app.utils.time import now
 
 
@@ -127,16 +127,35 @@ async def analyze(db: Session, data: InteractionAnalyzeCreate) -> dict[str, Any]
             attachments=attachments,
             context=_context(db, data.class_id),
         )
+        overall = evaluate_ai_output(structured)
+        structured["accepted"] = overall["accepted"]
+        structured["confidence"] = overall["confidence"]
+        structured["threshold"] = overall["threshold"]
+        structured["reasons"] = overall["reasons"]
         warnings = [str(item)[:1000] for item in (structured.get("warnings") or [])]
         questions = [str(item)[:1000] for item in (structured.get("questions") or [])]
+        rejected_reasons: list[str] = []
         proposal_ids: list[str] = []
-        operations = structured.get("operations") or []
+        operations = (structured.get("operations") or []) if structured.get("status") == "ready" and overall["accepted"] else []
+        if structured.get("status") == "needs_clarification" or (structured.get("status") == "ready" and not overall["accepted"]):
+            rejected_reasons.extend(overall["reasons"])
+            structured["status"] = "needs_clarification"
         if len(operations) > 10:
             warnings.append("单次最多生成 10 个写入预览，其余操作未处理")
             operations = operations[:10]
+        accepted_operations: list[dict[str, Any]] = []
         for index, operation in enumerate(operations):
             if not isinstance(operation, dict) or not isinstance(operation.get("payload"), dict):
-                warnings.append(f"第 {index + 1} 个操作格式无效")
+                rejected_reasons.append(f"第 {index + 1} 项数据格式无效")
+                continue
+            operation_decision = evaluate_ai_output(operation, default_summary=f"第 {index + 1} 项数据")
+            operation["accepted"] = operation_decision["accepted"]
+            operation["confidence"] = operation_decision["confidence"]
+            operation["threshold"] = operation_decision["threshold"]
+            operation["reasons"] = operation_decision["reasons"]
+            if not operation_decision["accepted"]:
+                label = str(operation.get("summary") or f"第 {index + 1} 项数据")[:200]
+                rejected_reasons.extend(f"{label}：{reason}" for reason in operation_decision["reasons"])
                 continue
             operation_type = str(operation.get("operation_type") or "")
             try:
@@ -150,21 +169,26 @@ async def analyze(db: Session, data: InteractionAnalyzeCreate) -> dict[str, Any]
                     ),
                 )
                 proposal_ids.append(proposal.id)
+                accepted_operations.append(operation)
             except AppError as exc:
-                warnings.append(f"操作 {index + 1} 未通过后端校验：{exc.message}")
-                questions.append(f"请补充或更正操作 {index + 1} 的字段后重新分析")
+                rejected_reasons.append(f"{operation_decision['summary']}：{exc.message}")
+
+        rejected_reasons = list(dict.fromkeys(rejected_reasons))
+        if rejected_reasons and not questions:
+            questions.append("请根据以上问题补充或更正数据后重新发送")
+        structured["operations"] = accepted_operations
+        structured["rejected_reasons"] = rejected_reasons
 
         analysis.structured_json = structured
         analysis.proposal_ids_json = proposal_ids
         analysis.intent = str(structured.get("intent") or "")[:100] or None
         analysis.summary = str(structured.get("summary") or "")[:2000] or None
-        value = structured.get("confidence")
-        analysis.confidence = max(0.0, min(1.0, float(value))) if isinstance(value, (int, float)) else None
+        analysis.confidence = overall["confidence"]
         analysis.questions_json = list(dict.fromkeys(questions))
         analysis.warnings_json = list(dict.fromkeys(warnings))
         if proposal_ids:
             analysis.status = "awaiting_review"
-        elif structured.get("status") == "no_action":
+        elif structured.get("status") == "no_action" and not rejected_reasons:
             analysis.status = "no_action"
         else:
             analysis.status = "needs_clarification"

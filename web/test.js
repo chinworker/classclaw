@@ -1,7 +1,16 @@
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 const API = "/api/v1";
+const uiConfig = { wechat: { qr_binding_timeout_seconds: 300, qr_initial_poll_ms: 1500, qr_poll_ms: 2000, qr_retry_ms: 3500 } };
 const state = { token: sessionStorage.getItem("classclaw-user-token") || "", me: null, users: [], classes: [], agents: [], tables: [], agentPollTimer: null, agentPollInFlight: false, agentPollDeadline: 0, agentPollClassId: null };
+
+async function loadUiConfig() {
+  try {
+    const response = await fetch(`${API}/app-config`, { headers: { "X-ClassClaw-Surface": "web" }, cache: "no-store" });
+    const payload = await response.json();
+    if (response.ok && payload.success !== false) Object.assign(uiConfig.wechat, payload.data?.wechat || {});
+  } catch { /* 验收台在后端离线时继续显示默认参数 */ }
+}
 
 const capabilities = [
   ["账户与权限", "管理员/班主任、唯一用户名、密码哈希、会话、停用和重置；班主任一账号一班级。", "/auth/* · /admin/users/*"],
@@ -11,7 +20,7 @@ const capabilities = [
   ["教学业务", "作业与未交状态、日常表现、考勤、考试成绩、排名和统计。", "/homework/* · /attendance/* · /exams/*"],
   ["课表与调课", "节次、基础/每日课表、临时覆盖、互换和批量长期调整。", "/classes/*/timetable · /lesson-*"],
   ["安排与留痕", "安排、提醒、附件和关键操作轻量审计。", "/arrangements/* · /attachments/* · /audit-logs"],
-  ["分析与早报", "学生/班级综合分析、周期比较、关注学生、交叉分析、数据质量和每日早报。", "/analytics/* · /briefings/morning"],
+  ["数据分析", "学生/班级综合分析、周期比较、关注学生、交叉分析和数据质量。", "/analytics/*"],
   ["OpenClaw 集成", "插件健康、统一交互分析、班级隔离 Agent、微信二维码和可信 class_id 注入。", "/openclaw/status · /interaction-analyses · /agent-binding"],
   ["管理员调试", "用户、历史班级分配、智能体状态、二维码重试和脱敏只读数据库浏览。", "/admin/agents · /admin/database/*"],
 ];
@@ -95,7 +104,7 @@ async function loadAgents() {
   if (state.me?.role !== "admin") return; try { state.agents = await api("/admin/agents"); $("#agentCards").innerHTML = state.agents.length ? state.agents.map(({binding, class: cls, owner}) => `<article class="agent-card"><span class="tag ${binding.status === "linked" ? "" : "warn"}">${escapeHtml(binding.status)}</span><h3>${escapeHtml(binding.agent_name)}</h3><p>班级：${escapeHtml(cls.name)}<br>账号：${escapeHtml(owner?.username || "未分配")}<br>OpenClaw ID：${escapeHtml(binding.openclaw_agent_id || "尚未创建")}<br>微信：${escapeHtml(binding.channel_account_id || "尚未绑定")}${binding.last_error ? `<br><span class="error">${escapeHtml(binding.last_error)}</span>` : ""}</p><button class="secondary" data-agent-start="${cls.id}">刷新配置并生成二维码</button></article>`).join("") : '<div class="empty">尚无班级智能体。创建班级后会自动生成绑定记录。</div>'; } catch (error) { toast(error.message, true); }
 }
 async function startAgent(classId) {
-  stopAgentPolling(); state.agentPollClassId = classId; state.agentPollDeadline = Date.now() + 5 * 60 * 1000;
+  stopAgentPolling(); state.agentPollClassId = classId; state.agentPollDeadline = Date.now() + uiConfig.wechat.qr_binding_timeout_seconds * 1000;
   try {
     const result = await api(`/admin/agents/${classId}/wechat/start`, { method: "POST", body: JSON.stringify({ force: true }) });
     if (result.connected && result.route_ready !== false) { toast("微信与消息路由已经连接"); await loadAgents(); return; }
@@ -103,7 +112,7 @@ async function startAgent(classId) {
   } catch (error) { toast(error.message, true); }
 }
 function stopAgentPolling() { clearTimeout(state.agentPollTimer); state.agentPollTimer = null; state.agentPollInFlight = false; }
-function scheduleAgentPoll(delay = 1200) { clearTimeout(state.agentPollTimer); state.agentPollTimer = setTimeout(pollAgentBinding, delay); }
+function scheduleAgentPoll(delay = uiConfig.wechat.qr_initial_poll_ms) { clearTimeout(state.agentPollTimer); state.agentPollTimer = setTimeout(pollAgentBinding, delay); }
 async function pollAgentBinding() {
   if (!state.agentPollClassId || state.agentPollInFlight) return;
   if (Date.now() >= state.agentPollDeadline) { stopAgentPolling(); $("#qrMessage").textContent = "自动等待扫码已超时，请重新生成二维码。"; return; }
@@ -111,8 +120,8 @@ async function pollAgentBinding() {
   try {
     const result = await api(`/classes/${state.agentPollClassId}/agent-binding/wait`, { method: "POST", body: "{}" });
     if (result.connected && result.route_ready !== false) { stopAgentPolling(); $("#qrBox").classList.add("hidden"); toast("微信绑定完成，消息路由已就绪"); await loadAgents(); }
-    else { if (result.qr_data_url) $("#agentQr").src = result.qr_data_url; $("#qrMessage").textContent = `${result.message || "尚未检测到扫码。"} 正在自动等待。`; scheduleAgentPoll(1800); }
-  } catch (error) { $("#qrMessage").textContent = `自动确认暂未完成：${error.message}。网页会继续重试。`; scheduleAgentPoll(3000); }
+    else { if (result.qr_data_url) $("#agentQr").src = result.qr_data_url; $("#qrMessage").textContent = `${result.message || "尚未检测到扫码。"} 正在自动等待。`; scheduleAgentPoll(uiConfig.wechat.qr_poll_ms); }
+  } catch (error) { $("#qrMessage").textContent = `自动确认暂未完成：${error.message}。网页会继续重试。`; scheduleAgentPoll(uiConfig.wechat.qr_retry_ms); }
   finally { state.agentPollInFlight = false; }
 }
 
@@ -129,4 +138,4 @@ $("#tabs").addEventListener("click", (event) => { const button = event.target.cl
 $("#userRows").addEventListener("click", (event) => { const button = event.target.closest("[data-user-action]"); if (button) userAction(button); });
 $("#agentCards").addEventListener("click", (event) => { const button = event.target.closest("[data-agent-start]"); if (button) startAgent(button.dataset.agentStart); });
 $("#tableList").addEventListener("click", (event) => { const button = event.target.closest("[data-table]"); if (button) loadTable(button.dataset.table); });
-restoreSession();
+(async () => { await loadUiConfig(); await restoreSession(); })();

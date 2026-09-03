@@ -9,13 +9,17 @@ from app.core.responses import ok
 from app.core.security import principal_from_request, require_owned_class
 from app.database import get_db
 from app.models.entities import ClassOnboardingSession, ClassSubject, WriteProposal
-from app.schemas.domain import ClassOnboardingCreate, ClassOnboardingUpdate, WechatLoginWait, WriteProposalBatchConfirm, WriteProposalConfirm, WriteProposalCreate
+from app.schemas.domain import (
+    ClassOnboardingCreate,
+    ClassOnboardingUpdate,
+    WechatLoginWait,
+    WriteProposalBatchConfirm,
+    WriteProposalConfirm,
+    WriteProposalCreate,
+)
+from app.services import admin_console, ai_tasks, openclaw_bridge, openclaw_provisioning
 from app.services import approval as service
-from app.services import admin_console
-from app.services import openclaw_bridge
-from app.services import openclaw_provisioning
 from app.services import operations as operations_service
-
 
 router = APIRouter(tags=["强制复核与班级创建引导"])
 
@@ -177,27 +181,29 @@ async def class_onboarding_files(
     db: Session = Depends(get_db),
 ):
     _require_web(request)
-    admin_console.require_feature(db, "feature.file_analysis")
+    admin_console.require_feature("feature.file_analysis")
     if not files or len(files) > 8:
         from app.core.errors import AppError
 
         raise AppError("VALIDATION_ERROR", "每次必须上传 1 至 8 个文件", 422)
     session = service.get_onboarding(db, session_id)
     _require_onboarding_access(request, session)
-    attachments = []
-    for upload in files:
-        attachment = operations_service.save_attachment(db, upload, None, f"班级创建/{target_section}/OpenClaw处理")
-        operations_service.link_attachment(db, attachment.id, "class_onboarding_session", session_id)
-        attachments.append(attachment)
-    result = await openclaw_bridge.analyze_onboarding_files(
-        db,
-        session_id,
-        target_section,
-        attachments,
-        expected_revision,
-        cancelled=request.is_disconnected,
-    )
-    return ok(request, result, "文件已由 OpenClaw 分析并填入草稿")
+    async with ai_tasks.track(request) as cancelled:
+        attachments = []
+        for upload in files:
+            attachment = operations_service.save_attachment(db, upload, None, f"班级创建/{target_section}/OpenClaw处理")
+            operations_service.link_attachment(db, attachment.id, "class_onboarding_session", session_id)
+            attachments.append(attachment)
+        result = await openclaw_bridge.analyze_onboarding_files(
+            db,
+            session_id,
+            target_section,
+            attachments,
+            expected_revision,
+            cancelled=cancelled,
+        )
+        message = "文件已由 OpenClaw 分析并填入草稿" if result["analysis"]["accepted"] else "AI 认为文件数据不够可靠，未修改草稿"
+        return ok(request, result, message)
 
 
 @router.post("/class-onboarding/sessions/{session_id}/analyze-text")
@@ -225,7 +231,7 @@ async def class_agent_provision(request: Request, class_id: str, db: Session = D
 async def class_agent_binding_start(request: Request, class_id: str, force: bool = Body(default=False, embed=True), db: Session = Depends(get_db)):
     _require_web(request)
     require_owned_class(request, class_id)
-    admin_console.require_feature(db, "feature.wechat_binding")
+    admin_console.require_feature("feature.wechat_binding")
     return ok(request, await openclaw_provisioning.start_wechat_binding(db, class_id, force), "专属智能体已创建，请扫码绑定微信")
 
 
@@ -233,6 +239,7 @@ async def class_agent_binding_start(request: Request, class_id: str, force: bool
 async def class_agent_binding_wait(request: Request, class_id: str, body: WechatLoginWait, db: Session = Depends(get_db)):
     _require_web(request)
     require_owned_class(request, class_id)
+    admin_console.require_feature("feature.wechat_binding")
     return ok(request, await openclaw_provisioning.wait_wechat_binding(db, class_id, body.current_qr_data_url), "微信绑定状态已刷新")
 
 

@@ -2,8 +2,9 @@
 
 import { el, clear, toast, todayStr, addDaysStr, WEEKDAY_NAMES, weekdayOf, periodLabel } from "../util.js";
 import { api, AI_REQUEST_TIMEOUT_MS } from "../api.js";
+import { featureEnabled } from "../config.js";
 import { state, refreshClassInfo, refreshSubjects } from "../state.js";
-import { pageHeader, field, errorPanel, skeleton, emptyState, statusBadge, confirmDanger, fileDropzone } from "../components.js";
+import { pageHeader, field, errorPanel, skeleton, emptyState, statusBadge, confirmDanger, fileDropzone, showAiRejection } from "../components.js";
 import { timetableGridEditor } from "../timetableGrid.js";
 
 export async function render(mount, ctx, helpers) {
@@ -452,6 +453,10 @@ export async function render(mount, ctx, helpers) {
     const analysisBox = el("div");
     const saveBtn = el("button", { class: "primary", type: "button", disabled: !periods.length }, "保存整张基础课表");
     const resetBtn = el("button", { class: "secondary", type: "button" }, "重新设置基础课表");
+    if (!featureEnabled("file_analysis")) {
+      resetBtn.disabled = true;
+      resetBtn.textContent = "文件解析已关闭";
+    }
     const saveInfo = el("span", { class: "muted", style: { fontSize: "13px" } });
     const periodNameInput = el("input", { type: "text", placeholder: "节次名称（可选）" });
     const addPeriodBtn = el("button", { class: "secondary", type: "button" }, "新增一节");
@@ -489,7 +494,8 @@ export async function render(mount, ctx, helpers) {
       multiple: true,
       manualStart: true,
       busyText: "正在识别课表，请稍候…",
-      onFiles: async (files, { signal }) => {
+      disabled: !featureEnabled("file_analysis"),
+      onFiles: async (files, { signal, taskId }) => {
         clear(analysisBox);
         const form = new FormData();
         files.slice(0, 4).forEach((file) => form.append("files", file));
@@ -499,7 +505,13 @@ export async function render(mount, ctx, helpers) {
             body: form,
             timeoutMs: AI_REQUEST_TIMEOUT_MS,
             signal,
+            aiTaskId: taskId,
           });
+          if (!result.analysis?.accepted) {
+            showAiRejection(result.analysis, "课表数据未采用");
+            analysisBox.append(...(result.analysis?.reasons || []).map((text) => el("div", { class: "issue issue-error" }, text)));
+            return;
+          }
           importedPeriods = result.periods;
           showEditor(result.periods, result.items);
           analysisBox.append(

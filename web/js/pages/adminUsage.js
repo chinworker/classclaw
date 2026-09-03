@@ -1,5 +1,6 @@
 import { el, clear } from "../util.js";
 import { api } from "../api.js";
+import { appConfig } from "../config.js";
 import { pageHeader, metricCard, dataTable, field, errorPanel, skeleton, openDrawer } from "../components.js";
 
 const num = (value) => Number(value || 0).toLocaleString("zh-CN");
@@ -12,7 +13,9 @@ const duration = (value) => {
 
 export async function render(mount) {
   const host = el("div");
-  const days = el("select", {}, [7, 14, 30, 90, 180, 365].map((value) => el("option", { value, selected: value === 30 }, `${value} 天`)));
+  const configuredDays = Number(appConfig.web.usage_window_days || 30);
+  const dayOptions = [...new Set([7, 14, 30, 90, 180, 365, configuredDays])].sort((a, b) => a - b);
+  const days = el("select", {}, dayOptions.map((value) => el("option", { value, selected: value === configuredDays }, `${value} 天`)));
   mount.append(pageHeader("使用量与 Token", "统计网页与智能体的请求、写入、登录及 OpenClaw Responses API 返回的 Token 用量。"),
     el("div", { class: "filter-bar" }, field("统计窗口", days), el("button", { class: "secondary", type: "button", onclick: load }, "查询")), host);
 

@@ -72,24 +72,19 @@ openclaw config set plugins.entries.classclaw.config.timeoutMs 120000
 openclaw gateway restart
 ```
 
-`timeoutMs` 是班级智能体调用 `classclaw_analyze_interaction` 等工具的等待上限，必须不小于后端的 `CLASSCLAW_OPENCLAW_TIMEOUT_SECONDS`；默认 30 秒会在分析较慢时把工具调用变成超时失败。
+`timeoutMs` 是班级智能体调用 `classclaw_analyze_interaction` 等工具的等待上限，必须不小于后端 TOML 的 `openclaw.timeout_seconds`；默认 30 秒会在分析较慢时把工具调用变成超时失败。
 
 ### 5.1 轻量提取智能体（默认开启，提升分析速度）
 
-默认启用独立提取智能体（`CLASSCLAW_OPENCLAW_EXTRACTOR_ENABLED=true`，无需任何设置）。后端所有 JSON 提取（interaction 清洗、onboarding 导入、课表/座位/值日/事件分析）走一个专用的无工具智能体，默认名 `classclaw-extractor`（可用 `CLASSCLAW_OPENCLAW_EXTRACTOR_AGENT_ID` 覆盖），首次使用时自动创建；清洗规范自动写入其工作区 `data/openclaw-agents/_extractor/AGENTS.md`，内容哈希变化时自动覆写（手工修改会被下次规则更新覆盖），请求 prompt 只携带数据。相比走主智能体，省去工具循环和工作区加载，单次分析耗时显著下降。设 `CLASSCLAW_OPENCLAW_EXTRACTOR_ENABLED=false` 可回退主智能体与完整内联提示词。该智能体不绑定班级，不出现在管理后台的智能体列表中；创建依赖 5.3 节的 `admin-http-rpc`，未启用时自动回退。
+默认启用独立提取智能体（TOML 的 `openclaw.extractor_enabled=true`，无需额外设置）。后端所有 JSON 提取（interaction 清洗、onboarding 导入、课表/座位文件和事件分类）走一个专用的无工具智能体，默认名 `classclaw-extractor`（可用 `openclaw.extractor_agent_id` 修改）。服务启动和首次使用时会自动创建并校正它的独立 OpenClaw runtime：显式固定当前默认模型作为独立模型、开启 fast mode、关闭 thinking/reasoning/verbose、技能和记忆，并用 `minimal + deny session_status` 保证向模型暴露零个工具。它不会再继承 Main 的 coding 工具集或思考级别。
+
+清洗规范自动写入其工作区 `data/openclaw-agents/_extractor/AGENTS.md`，内容哈希变化时自动覆写（手工修改会被下次规则更新覆盖），请求 prompt 只携带数据。设 `openclaw.extractor_enabled=false` 可回退主智能体与完整内联提示词。创建和运行配置校正依赖 5.3 节的 `admin-http-rpc`，未启用时自动回退。
 
 ClassClaw 自动维护 `plugins.entries.classclaw.config.agentClasses` 和顶层 `bindings`，不要手工把多个班级指向同一个 agent 或微信 account。
 
-## ClassClaw 环境变量与启动
+## ClassClaw 静态配置与启动
 
-```dotenv
-CLASSCLAW_API_TOKEN=与-ClassClaw-插件配置一致
-CLASSCLAW_OPENCLAW_GATEWAY_URL=http://127.0.0.1:18789
-CLASSCLAW_OPENCLAW_GATEWAY_TOKEN=与-gateway.auth.token-一致
-CLASSCLAW_OPENCLAW_AGENT_ID=main
-CLASSCLAW_OPENCLAW_CLASS_WORKSPACE_ROOT=./data/openclaw-agents
-CLASSCLAW_OPENCLAW_WECHAT_CHANNEL=openclaw-weixin
-```
+Gateway 地址、Agent、班级工作区和微信 channel 配置在 `config/classclaw.toml` 的 `[openclaw]`、`[storage]` 与 `[wechat]`；`.env` 只保存与 ClassClaw 插件一致的 `CLASSCLAW_API_TOKEN` 和与 `gateway.auth.token` 一致的 `CLASSCLAW_OPENCLAW_GATEWAY_TOKEN`。字段和校验规则见 [静态配置说明](configuration.md)。
 
 ```bash
 cd /Users/wellon/classclaw
@@ -103,7 +98,7 @@ python run.py
 ## 创建班级
 
 1. 输入 ClassClaw API Token，点击“连接 OpenClaw”。页面必须同时通过 Gateway、ClassClaw 插件和 `admin-http-rpc` 检查。
-2. 填写班级名称、年级、班主任、本班教室和学期。这些字段确定且一一对应，不经过模型重写。
+2. 填写班级名称、年级、班主任、本班教室和学期。这些字段确定且一一对应，不经过模型重写。空白学期字段优先填入当天所在学期，寒暑假等非学期区间则填入未来最近的一学期：春季从农历元宵节至 7 月 1 日，秋季从 9 月 1 日至次年春节前 7 天；农历日期由后端离线换算，仍可人工修改。
 3. 选择学生名单文件后点击“开始解析”。支持 XLSX/XLSM、DOCX、PPTX、CSV/TSV、PDF、图片、JSON/XML、RTF、Markdown 和其他文本文件；解析中按钮变为“取消解析”，取消后不会把稍后返回的结果写入草稿。
 4. 在结构化名单表中核对、增删或修改行。当前步骤保存后才会解锁下一步；解析期间步骤导航保持锁定。
 5. 选择课表/作息文件并手动开始解析。OpenClaw 只分析本次文件，结果完整替换旧课表；不会引用 onboarding 历史对话。
@@ -125,7 +120,8 @@ python run.py
 ## 文件重新上传与人工修改规则
 
 - 文件解析使用随机的新 OpenClaw session key，提示词不包含旧草稿列表。
-- 文件选择与解析分开：选择后点击“开始解析”，进行中可取消；后端检测到连接中断后会取消上游 OpenClaw 请求并释放写会话，不应用解析结果。
+- 文件选择与解析分开：选择后点击“开始解析”，进行中可取消。网页为每次任务发送随机 `X-ClassClaw-AI-Task-ID`，取消按钮另行调用取消端点；后端主动取消 HTTPX/OpenClaw 请求并释放写会话，不再只依赖连接断开检测，也不会应用稍后返回的结果。
+- 每次 AI 解析必须返回 0 到 1 的置信度和非空原因项，统一通过门槛为 0.75。学生名单要求学号与姓名逐行清晰且唯一；课表要求星期、节次和科目明确。低置信度结果不修改草稿，网页弹窗逐项说明文件问题并要求重新上传。
 - `students` 上传完整替换学生列表；`timetable` 上传完整替换 `periods` 与 `base_timetable`。
 - 解析后只在 HTML 表格里编辑。PATCH 使用 `replace_lists=true`，删除一行就会从草稿删除。
 - 人工结构化编辑不会再次经过模型。只有重新上传文件时 OpenClaw 才重新介入。
@@ -133,8 +129,8 @@ python run.py
 
 ## 日常使用
 
-1. 微信 account binding 把消息送到班级专属 agent。
-2. Skill 要求附件先留证，非确定性输入调用 `classclaw_analyze_interaction`。
+1. 班主任可在网页“班级 Agent 对话”直接发送文字、使用浏览器语音转文字或上传文件，不需要先绑定微信。微信 account binding 则把微信消息送到同一个班级专属 agent。
+2. Skill 要求附件先留证，非确定性输入调用 `classclaw_analyze_interaction`。网页附件已由后端保存并提供 attachment ids，Agent 直接使用这些 ids，不重复上传。
 3. 插件从可信 `agentId` 查到固定 `class_id`，覆盖模型提供的班级参数。
 4. 后端返回澄清问题或待复核 proposal；此时没有业务写入。
 5. 用户在聊天中明确确认后，后端立即校验 proposal 的班级、revision、状态和有效期并执行；同组多条使用单事务批量写入，不再出现系统审批卡。

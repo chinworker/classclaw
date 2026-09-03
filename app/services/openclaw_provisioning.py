@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import io
@@ -20,7 +21,6 @@ from app.models.entities import ClassAgentBinding, ClassRoom
 from app.services.common import audit, entity_dict
 from app.services.http_client import get_http_client
 from app.utils.time import now
-
 
 EDITABLE_WORKSPACE_FILES = {
     "AGENTS.md": {"label": "系统提示词", "description": "核心行为、写入流程和回复规则。"},
@@ -372,7 +372,8 @@ def _workspace_files(cls: ClassRoom, binding: ClassAgentBinding) -> dict[str, st
     agents = f"""# System
 仅服务班级 `{cls.id}`（{cls.name}），禁止访问或修改其他班级。
 疑似写入意图的自然语言、微信、OCR、语音内容先调用 `classclaw_analyze_interaction`；纯查询用 `classclaw_read`；不要猜测缺失数据。
-附件先用 `classclaw_upload_file` 暂存，再连同 attachment_ids 调用 `classclaw_analyze_interaction`；`classclaw_propose_write` 仅限确定性结构化写入，不得绕过分析。
+附件先用 `classclaw_upload_file` 暂存，再带 attachment_ids 分析；网页有 attachment_ids 时勿上传。`classclaw_propose_write` 仅限确定性结构化写入，不得绕过分析。
+只预览和提交后端接受的数据；rejected_reasons 必须逐项告知用户并请其补充，不能写入。
 聊天写入：先展示简短预览；用户紧接着回复“确认/可以/写入/都确认”等肯定意思后直接提交，不存在审批卡或二次确认。
 一个预览用 `classclaw_commit_write`；同一回复中的多个预览获全部确认时，用 `classclaw_commit_writes` 一次原子提交。
 肯定回复只对应最近一组未决预览；新任务、纠正或澄清会结束旧组，绝不能误提交旧 proposal。
@@ -667,7 +668,12 @@ async def start_wechat_binding(db: Session, class_id: str, force: bool = False) 
     try:
         login = await admin_rpc(
             "web.login.start",
-            {"accountId": account_alias, "force": force, "timeoutMs": 30_000, "verbose": False},
+            {
+                "accountId": account_alias,
+                "force": force,
+                "timeoutMs": settings.wechat.gateway_start_timeout_seconds * 1000,
+                "verbose": False,
+            },
         )
         binding.channel_account_id = str(login.get("accountId") or account_alias)
         qr_content = _login_qr_content(login)
@@ -798,6 +804,39 @@ async def _ensure_runtime(binding: ClassAgentBinding) -> None:
         await _configure_runtime(binding, snapshot, include_route=False)
 
 
+async def ensure_class_agent_runtime(db: Session, class_id: str) -> ClassAgentBinding:
+    """Refresh one existing class agent's scoped tools and workspace before web chat."""
+    binding = get_binding(db, class_id)
+    if not binding.openclaw_agent_id:
+        raise AppError("OPENCLAW_AGENT_REQUIRED", "本班专属 Agent 尚未创建，请先创建班级助手", 409)
+    cls = db.get(ClassRoom, class_id)
+    if not cls:
+        raise not_found("班级", class_id)
+    _prepare_workspace(cls, binding)
+    try:
+        snapshot = await admin_rpc("config.get")
+        if not _runtime_is_configured(snapshot.get("config") or {}, binding):
+            await _configure_runtime(binding, snapshot, include_route=False)
+            # config.patch schedules a Gateway restart. Wait until the private
+            # admin surface is responsive before forwarding the chat turn.
+            await asyncio.sleep(1)
+            for attempt in range(20):
+                try:
+                    await admin_rpc("health")
+                    break
+                except AppError:
+                    if attempt == 19:
+                        raise
+                    await asyncio.sleep(0.25)
+        binding.last_error = None
+        db.commit()
+        return binding
+    except Exception as exc:
+        binding.last_error = str(exc)[:1000]
+        db.commit()
+        raise
+
+
 async def _bind_route(db: Session, binding: ClassAgentBinding, snapshot: dict[str, Any] | None = None) -> None:
     snapshot = snapshot or await admin_rpc("config.get")
     await _configure_runtime(binding, snapshot, include_route=True)
@@ -832,7 +871,10 @@ async def wait_wechat_binding(db: Session, class_id: str, current_qr_data_url: s
         return {"binding": binding, "connected": True, "route_ready": True, "message": "微信已绑定，消息路由已就绪"}
     if not binding.channel_account_id or not binding.openclaw_agent_id:
         raise AppError("VALIDATION_ERROR", "请先创建智能体并生成二维码", 409)
-    params: dict[str, Any] = {"accountId": binding.channel_account_id, "timeoutMs": 15_000}
+    params: dict[str, Any] = {
+        "accountId": binding.channel_account_id,
+        "timeoutMs": settings.wechat.gateway_wait_timeout_seconds * 1000,
+    }
     if current_qr_data_url:
         # OpenClaw validates this field as a PNG data URL. Older web clients sent
         # the provider's raw QR content, so normalize it here for compatibility.

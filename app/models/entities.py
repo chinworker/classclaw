@@ -506,6 +506,14 @@ class WriteProposal(Base, IdMixin, TimestampMixin):
     onboarding_session_id: Mapped[str | None] = mapped_column(ForeignKey("class_onboarding_sessions.id", ondelete="SET NULL"), index=True)
 
 
+class AnalysisCache(Base, TimestampMixin):
+    __tablename__ = "analysis_cache"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(100), index=True)
+    payload: Mapped[dict] = mapped_column(JSON)
+
+
 class ClassOnboardingSession(Base, IdMixin, TimestampMixin):
     __tablename__ = "class_onboarding_sessions"
 

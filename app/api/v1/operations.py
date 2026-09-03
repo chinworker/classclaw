@@ -6,14 +6,14 @@ from fastapi import APIRouter, Body, Depends, File, Form, Request, UploadFile
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.responses import ok
 from app.core.errors import AppError
+from app.core.responses import ok
 from app.core.security import principal_from_request, require_owned_record, scoped_class_id
 from app.database import get_db
-from app.models.entities import Arrangement, AttachmentLink, AuditLog
+from app.models.entities import Arrangement, AuditLog
 from app.schemas.domain import ArrangementCreate, AttachmentLinkCreate
-from app.services import admin_console, operations as service
-
+from app.services import admin_console
+from app.services import operations as service
 
 router = APIRouter(tags=["安排、附件与审计"])
 
@@ -48,13 +48,13 @@ def arrangement_complete(request: Request, arrangement_id: str, db: Session = De
 
 @router.get("/reminders/due")
 def due_reminders(request: Request, at: datetime | None = None, db: Session = Depends(get_db)):
-    admin_console.require_feature(db, "feature.reminders")
+    admin_console.require_feature("feature.reminders")
     return ok(request, service.due_reminders(db, at))
 
 
 @router.get("/reminders/{reminder_id}")
 def reminder_get(request: Request, reminder_id: str, db: Session = Depends(get_db)):
-    admin_console.require_feature(db, "feature.reminders")
+    admin_console.require_feature("feature.reminders")
     result = service.reminder_delivery(db, reminder_id)
     require_owned_record(request, db, Arrangement, result["arrangement"].id)
     return ok(request, result)
@@ -62,6 +62,7 @@ def reminder_get(request: Request, reminder_id: str, db: Session = Depends(get_d
 
 @router.post("/reminders/{reminder_id}/sent")
 def reminder_sent(request: Request, reminder_id: str, bound_class_id: str | None = Body(default=None, embed=True), db: Session = Depends(get_db)):
+    admin_console.require_feature("feature.reminders")
     result = service.reminder_delivery(db, reminder_id)
     require_owned_record(request, db, Arrangement, result["arrangement"].id)
     if bound_class_id and result["arrangement"].class_id != bound_class_id:
@@ -71,6 +72,7 @@ def reminder_sent(request: Request, reminder_id: str, bound_class_id: str | None
 
 @router.post("/reminders/{reminder_id}/failed")
 def reminder_failed(request: Request, reminder_id: str, error: str | None = None, db: Session = Depends(get_db)):
+    admin_console.require_feature("feature.reminders")
     return ok(request, service.mark_reminder(db, reminder_id, False, error), "提醒已标记发送失败")
 
 

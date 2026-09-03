@@ -1,0 +1,65 @@
+# ClassClaw 非敏感静态配置。复制为 classclaw.toml 后，停机修改并重启生效。
+# 相对路径以本文件所在目录为基准；生产环境建议使用绝对路径。
+
+[storage]
+database_url = "sqlite:///../data/classclaw.db"
+attachment_dir = "../data/attachments"
+max_attachment_bytes = 20971520
+class_workspace_root = "../data/openclaw-agents"
+openclaw_state_dir = "~/.openclaw"
+
+[runtime]
+timezone = "Asia/Shanghai"
+log_level = "INFO"
+log_file = "../data/logs/classclaw.log"
+auth_session_hours = 24
+# 确定性分析（如考试统计）缓存的最大条数，超过后清理最旧的缓存。
+analysis_cache_max_entries = 500
+
+[server]
+# 反向代理与 ClassClaw 同机时使用 127.0.0.1；需要直接从局域网访问时改为 0.0.0.0。
+host = "127.0.0.1"
+port = 8000
+access_log = false
+
+[bootstrap]
+# 只决定首次创建或完整初始化后的管理员用户名；现有管理员不会因此改名。
+default_admin_username = "admin"
+
+[openclaw]
+gateway_url = "http://127.0.0.1:18789"
+agent_id = "main"
+extractor_agent_id = "classclaw-extractor"
+extractor_enabled = true
+timeout_seconds = 120.0
+session_cleanup_hours = 24.0
+cli = "openclaw"
+
+[features]
+file_analysis = true
+event_ai = true
+wechat_binding = true
+reminders = true
+
+[web]
+ai_request_timeout_seconds = 150
+usage_window_days = 30
+database_page_size = 50
+
+[web.brand]
+name = "ClassClaw"
+title = "ClassClaw · 班主任工作台"
+mark = "C"
+subtitle = "班主任工作台"
+admin_name = "ClassClaw Control"
+admin_subtitle = "ADMIN CONSOLE"
+login_description = "班级管理、座位课表、值日作业考勤与班级专属智能体。"
+
+[wechat]
+channel = "openclaw-weixin"
+qr_binding_timeout_seconds = 300
+qr_initial_poll_ms = 1500
+qr_poll_ms = 2000
+qr_retry_ms = 3500
+gateway_start_timeout_seconds = 30
+gateway_wait_timeout_seconds = 15

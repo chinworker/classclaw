@@ -2,9 +2,10 @@
 
 import { el, clear, toast, todayStr, addDaysStr, fmtDate } from "../util.js";
 import { api, AI_REQUEST_TIMEOUT_MS } from "../api.js";
+import { featureEnabled } from "../config.js";
 import { state, refreshStudents, refreshSubjects } from "../state.js";
 import {
-  pageHeader, dataTable, statusBadge, openModal, field, fieldError, errorPanel, skeleton, emptyState, aiButton,
+  pageHeader, dataTable, statusBadge, openModal, field, fieldError, errorPanel, skeleton, emptyState, aiButton, showAiRejection,
 } from "../components.js";
 
 const EVENT_TYPES = [["", "全部类型"], ["homework", "作业"], ["attendance", "考勤"], ["behavior", "行为"], ["communication", "沟通"], ["honor", "荣誉"], ["other", "其他"]];
@@ -16,10 +17,12 @@ export async function render(mount) {
   const typeSelect = el("select", {}, EVENT_TYPES.map(([v, l]) => el("option", { value: v }, l)));
   const subjectInput = el("select", {}, el("option", { value: "" }, "全部科目"), ...subjects.map((s) => el("option", { value: s.name }, s.name)));
   const studentSelect = el("select", {}, el("option", { value: "" }, "全部学生"));
+  const eventAiEnabled = featureEnabled("event_ai");
+  const createButton = el("button", { class: "primary", type: "button", disabled: !eventAiEnabled, onclick: () => openEventForm() }, eventAiEnabled ? "登记事件" : "智能分类已关闭");
 
   mount.append(
     pageHeader("日常表现", "登记和查询学生表现。",
-      el("button", { class: "primary", type: "button", onclick: () => openEventForm() }, "登记事件")),
+      createButton),
     el("div", { class: "filter-bar" },
       field("开始日期", startInput), field("结束日期", endInput),
       field("学生", studentSelect), field("类型", typeSelect), field("科目", subjectInput),
@@ -95,7 +98,8 @@ export async function render(mount) {
     const analyzeAction = aiButton({
       label: "让智能体判断",
       runningLabel: "取消判断",
-      onRun: async ({ signal }) => {
+      disabled: !featureEnabled("event_ai"),
+      onRun: async ({ signal, taskId }) => {
         clear(errorLine);
         if (!contentInput.value.trim()) { errorLine.append(fieldError("请先填写事件内容")); return; }
         if (!dateInput.value) { errorLine.append(fieldError("日期必填")); return; }
@@ -106,7 +110,15 @@ export async function render(mount) {
             body: { student_id: studentSel.value, event_date: dateInput.value, content: contentInput.value.trim(), subject: subjectInput.value || null },
             timeoutMs: AI_REQUEST_TIMEOUT_MS,
             signal,
+            aiTaskId: taskId,
           });
+          if (!result.analysis?.accepted || !result.event) {
+            analyzedEvent = null;
+            saveBtn.disabled = true;
+            showAiRejection(result.analysis, "学生事件判断未采用");
+            analysisBox.replaceChildren(...(result.analysis?.reasons || []).map((text) => el("div", { class: "issue issue-error" }, text)));
+            return;
+          }
           analyzedEvent = result.event;
           const typeLabel = (EVENT_TYPES.find(([value]) => value === analyzedEvent.event_type) || [])[1] || analyzedEvent.event_type;
           const sentimentLabel = { positive: "正向", neutral: "中性", negative: "负向" }[analyzedEvent.sentiment];

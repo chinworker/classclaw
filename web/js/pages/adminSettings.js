@@ -6,7 +6,7 @@ import { clearSession } from "../state.js";
 export async function render(mount) {
   const host = el("div");
   const resultHost = el("div");
-  mount.append(pageHeader("功能与常量", "运行时配置保存在 system_settings；仅白名单项目可修改，密钥和环境变量不在此暴露。"), host);
+  mount.append(pageHeader("静态配置", "显示当前启动配置。请停机修改 classclaw.toml 或环境变量，校验后重启服务；密钥不会在此暴露。"), host);
 
   async function load() {
     clear(host); host.append(skeleton(6));
@@ -19,27 +19,22 @@ export async function render(mount) {
       }
       host.append(el("div", { class: "card danger-zone" },
         el("div", { class: "setting-row" },
-          el("div", {}, el("h3", {}, "完整系统初始化"), el("p", { class: "muted" }, "删除全部旧数据、账号、会话、配置、日志、统计、附件和班级智能体。只重新生成默认管理员，并保留 Main 与数据提取两个默认智能体。")),
+          el("div", {}, el("h3", {}, "完整系统初始化"), el("p", { class: "muted" }, "删除全部旧数据、账号、会话、数据库运行状态、日志、统计、附件和班级智能体；不会修改 classclaw.toml 或 .env。只重新生成默认管理员，并保留 Main 与数据提取两个默认智能体。")),
           el("button", { class: "danger", type: "button", onclick: initialize }, "完整初始化")),
         resultHost));
     } catch (error) { clear(host); host.append(errorPanel(error, { onRetry: load })); }
   }
 
   function settingRow(item) {
-    const input = item.type === "boolean"
-      ? el("input", { type: "checkbox", checked: item.value })
-      : el("input", { type: "number", value: item.value, min: item.minimum, max: item.maximum, step: "1" });
-    const button = el("button", { class: "secondary", type: "button" }, "保存");
-    button.addEventListener("click", async () => {
-      button.disabled = true;
-      const value = item.type === "boolean" ? input.checked : Number(input.value);
-      try { await api(`/admin/settings/${encodeURIComponent(item.key)}`, { method: "PUT", body: { value } }); toast(`${item.label}已保存`, "success"); }
-      catch (error) { toast(error.message, "error"); }
-      finally { button.disabled = false; }
-    });
+    const value = item.type === "boolean"
+      ? statusBadge(item.value ? "active" : "inactive", item.value ? "已开启" : "已关闭")
+      : el("code", {}, String(item.value));
     return el("div", { class: "setting-row" },
-      el("div", {}, el("div", { class: "row-gap" }, el("b", {}, item.label), el("code", {}, item.key)), el("p", { class: "muted" }, item.description)),
-      el("div", { class: `setting-control ${item.type}` }, input, button));
+      el("div", {},
+        el("div", { class: "row-gap" }, el("b", {}, item.label), el("code", {}, item.config_path)),
+        el("p", { class: "muted" }, item.description),
+        el("small", { class: "muted" }, "来源：启动配置 · 修改后需要重启")),
+      el("div", { class: `setting-control ${item.type}` }, value));
   }
 
   async function initialize() {
@@ -47,7 +42,7 @@ export async function render(mount) {
       title: "完整初始化系统",
       lines: [
         "全部班级、学生、业务记录、草稿和附件将被彻底删除。",
-        "全部用户、登录会话、系统设置、审计日志、Token 和调用统计将被删除。",
+        "全部用户、登录会话、数据库运行状态、审计日志、Token 和调用统计将被删除；静态配置文件保持不变。",
         "全部班级智能体及微信绑定将被删除；只保留 Main 和数据提取两个默认智能体。",
         "完成后只存在新建的默认管理员，当前登录会立即失效。",
       ],

@@ -1,16 +1,12 @@
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
 
 class AdminClassOwnerUpdate(BaseModel):
     owner_user_id: str | None = None
-
-
-class AdminSettingUpdate(BaseModel):
-    value: Any
 
 
 class OpenClawGlobalUpdate(BaseModel):

@@ -2,9 +2,10 @@
 
 import { el, clear, toast, copyText } from "../util.js";
 import { api } from "../api.js";
+import { appConfig } from "../config.js";
 import { pageHeader, errorPanel, skeleton, jsonDetails, pagination } from "../components.js";
 
-const PAGE_SIZE = 50;
+const PAGE_SIZE = Number(appConfig.web.database_page_size || 50);
 
 export async function render(mount) {
   const listHost = el("div", { class: "card" });

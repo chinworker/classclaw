@@ -37,9 +37,11 @@ openclaw config set plugins.entries.classclaw.config.timeoutMs 120000
 openclaw gateway restart
 ```
 
-`/tools/invoke` 用于验证 ClassClaw 插件确实已加载，`/v1/responses` 用于处理网页上传文件。两者都保持在本机或可信内网，不要暴露到公网。`timeoutMs` 是智能体调用 `classclaw_analyze_interaction` 等工具的等待上限，必须不小于后端的 `CLASSCLAW_OPENCLAW_TIMEOUT_SECONDS`，否则分析较慢时工具调用会先超时失败。
+`/tools/invoke` 用于验证 ClassClaw 插件确实已加载，`/v1/responses` 用于处理网页上传文件。两者都保持在本机或可信内网，不要暴露到公网。`timeoutMs` 是智能体调用 `classclaw_analyze_interaction` 等工具的等待上限，必须不小于 ClassClaw TOML 的 `openclaw.timeout_seconds`，否则分析较慢时工具调用会先超时失败。
 
-JSON 提取默认走自动创建的轻量提取智能体（详见 [专属智能体与微信使用说明](class-agent-onboarding.md) §5.1）：首次分析时后端会通过 admin RPC 创建 `classclaw-extractor`（无工具），清洗规范自动写入 `data/openclaw-agents/_extractor/AGENTS.md`。管理员在 Agent Studio 保存的文件会记录为自定义内容，后续自动检查不会覆盖；需要跟随 ClassClaw 新默认规则时，可在管理端恢复系统默认。因此 OpenClaw 侧必须启用 `admin-http-rpc`；未启用时后端自动回退主智能体。
+网页“班级 Agent 对话”同样由 ClassClaw 后端代理到 `/v1/responses`，后端根据班级绑定选择 `openclaw/<class-agent-id>`，Gateway Token 永不发送到浏览器。每个“新对话”使用独立稳定的会话键，连续消息保留上下文。语音由浏览器先转成可编辑文字；文件先保存为本班附件，再以已保存的 attachment ids 和文件内容交给 Agent，禁止重复上传。
+
+JSON 提取默认走自动创建的轻量提取智能体（详见 [专属智能体与微信使用说明](class-agent-onboarding.md) §5.1）：服务启动和首次分析时，后端会通过 admin RPC 创建并校正 `classclaw-extractor` 的独立 runtime。该 runtime 显式保存模型、开启 fast mode，关闭思考、推理、记忆与技能，并以 `minimal` profile 加 `deny: [session_status]` 将可调用工具降为零；不会继承 Main 的 coding profile。清洗规范自动写入 `data/openclaw-agents/_extractor/AGENTS.md`。管理员在 Agent Studio 保存的文件会记录为自定义内容，后续自动检查不会覆盖；需要跟随 ClassClaw 新默认规则时，可在管理端恢复系统默认。因此 OpenClaw 侧必须启用 `admin-http-rpc`；未启用时后端自动回退主智能体。
 
 ## 2. 配置并启动 ClassClaw 后端
 
@@ -48,21 +50,22 @@ cd /Users/wellon/classclaw
 python3.12 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+cp config/classclaw.example.toml config/classclaw.toml
 cp .env.example .env
 ```
 
-编辑 `.env`：
+在 `config/classclaw.toml` 的 `[openclaw]`、`[storage]` 和 `[wechat]` 中配置 Gateway 地址、Agent ID、工作区/状态目录及微信 channel；在 `.env` 中只填写密钥：
 
 ```dotenv
 CLASSCLAW_API_TOKEN=与插件配置相同的-ClassClaw-API-Token
-CLASSCLAW_OPENCLAW_GATEWAY_URL=http://127.0.0.1:18789
 CLASSCLAW_OPENCLAW_GATEWAY_TOKEN=与-OpenClaw-gateway.auth.token-相同
-CLASSCLAW_OPENCLAW_AGENT_ID=main
+CLASSCLAW_DEFAULT_ADMIN_PASSWORD=首次管理员强密码
 ```
 
 然后启动：
 
 ```bash
+python scripts/check_config.py --config config/classclaw.toml
 alembic upgrade head
 python run.py
 ```
@@ -92,7 +95,7 @@ openclaw doctor
 1. OpenClaw 收到原始文字或微信消息；附件先用 `classclaw_upload_file` 保存原件和哈希。
 2. 调用 `classclaw_analyze_interaction`，传入未经删改的原文、`channel`、稳定消息 id、已知 `class_id` 和附件 ids。
 3. 后端创建 `interaction_analysis`，并通过 Gateway Responses API 让 OpenClaw 在只读上下文中完成意图识别、姓名/班级匹配和字段清洗。
-4. 如果同名、日期、科目、分数、考勤时段或批量范围不明确，返回 `needs_clarification` 和问题；此时 proposal 数量为零。
+4. 所有分析顶层及每项数据都必须返回 `confidence` 和非空 `reasons`，统一门槛为 0.75。低于门槛，或同名、日期、科目、分数、考勤时段、批量范围等不明确时，返回 `needs_clarification`、具体 `rejected_reasons` 和问题；低置信度数据不会生成 proposal。
 5. 如果可确定，后端用 Pydantic schema 校验每个 operation，生成一个或多个 `pending_review` proposal；此时仍未改变业务表。
 6. OpenClaw 展示对象、日期、关键字段、数量和实质性警告。用户修改信息时要重新分析或重建 proposal，不能确认旧版本。
 7. 用户在聊天中明确回复“确认”“可以”“写入”“都确认”等肯定意思后，单条调用 `classclaw_commit_write`，同组多条调用 `classclaw_commit_writes`。聊天复核是唯一审批，不再弹出系统审批卡。
@@ -138,6 +141,10 @@ ClassClaw 不直接连接微信；微信连接器属于 OpenClaw。只要微信�
 
 网页中所有会调用 OpenClaw 做文件识别、自然语言分析或结构化生成的入口统一使用“AI 按钮”。任务运行时按钮显示跑马灯边框和精确到 0.1 秒的耗时；再次点击可取消请求，取消或完成后立即停止计时。普通数据库查询、保存和确定性分析不使用该样式。
 
+每次 AI 请求都带随机 `X-ClassClaw-AI-Task-ID`。按钮取消或前端超时时，网页会在终止原请求之外调用 `POST /api/v1/ai/tasks/{task_id}/cancel`；后端以当前登录主体校验任务归属，设置进程内取消事件，并取消正在执行的 HTTPX 请求。OpenClaw Responses API 会在上游连接关闭时中止对应 run。取消端点只改变进程内任务状态，特意使用只读数据库会话，避免被原 AI POST 长时间占用的单写者锁阻塞。这个机制依赖项目规定的单进程、单 Uvicorn worker；改为多 worker 前必须换成跨进程任务注册表。
+
+班级对话页的“停止”按钮也使用同一取消机制。ClassClaw 数据库不保存网页聊天原文；只保存用户明确上传的附件，以及 Agent 按既有流程产生的结构化 analysis/proposal。页面内消息仅在当前前端运行周期中保留，刷新页面后不从数据库恢复。
+
 ```text
 POST  /api/v1/class-onboarding/sessions
 GET   /api/v1/class-onboarding/sessions/{session_id}
@@ -160,7 +167,7 @@ POST  /api/v1/classes/{class_id}/agent-binding/wait
 
 OpenClaw 能可靠读取的任何类型都可以进入流程。对于加密文件、损坏文件或缺少解析器的专有格式，正确行为是保留原附件并请用户提供密码或导出为 PDF、图片、CSV/XLSX、音频或文本，而不是猜测内容。
 
-管理员控制台通过 OpenClaw 原生 `models.list`、`usage.cost`、`logs.tail` 和白名单配置写入接口提供专业运维能力。当前 `admin-http-rpc` 不放行 `sessions.usage`，因此后端从 `CLASSCLAW_OPENCLAW_STATE_DIR` 只读提取各 Agent transcript 的时间、role、duration、usage 和 stopReason 元数据，用于调用次数与响应耗时统计；消息正文被忽略，也不会写入 ClassClaw 数据库或日志。没有有效耗时字段时保留为空，不用零值代替。Gateway Token 始终只由后端读取。
+管理员控制台通过 OpenClaw 原生 `models.list`、`usage.cost`、`logs.tail` 和白名单配置写入接口提供专业运维能力。当前 `admin-http-rpc` 不放行 `sessions.usage`，因此后端从 TOML 的 `storage.openclaw_state_dir` 只读提取各 Agent transcript 的时间、role、duration、usage 和 stopReason 元数据，用于调用次数与响应耗时统计；消息正文被忽略，也不会写入 ClassClaw 数据库或日志。没有有效耗时字段时保留为空，不用零值代替。Gateway Token 始终只由后端读取。
 
 ## 6. 统一分析 API（供其他网页页面或渠道使用）
 
@@ -187,9 +194,9 @@ Content-Type: application/json
 
 返回状态：
 
-- `needs_clarification`：显示 `questions_json`，收集回答后以新 idempotency key 再分析；不得自行补值。
+- `needs_clarification`：先用自然语言逐项告知 `structured_json.rejected_reasons`，再显示 `questions_json`；收集回答后以新 idempotency key 再分析，不得自行补值。
 - `no_action`：只是查询/闲聊或没有写入意图，不产生 proposal。
-- `awaiting_review`：显示返回的 `proposals[].preview_json`；用户确认单条时调用 confirm，确认同组多条时调用 `/write-proposals/confirm-batch`。
+- `awaiting_review`：显示返回的高置信度 `proposals[].preview_json`；若同时存在 `rejected_reasons`，需告知哪些低置信度数据被排除及原因。用户确认单条时调用 confirm，确认同组多条时调用 `/write-proposals/confirm-batch`。
 - `failed`：显示安全错误并保留原输入；不要无提示自动提交或降级直写。
 
 可以用 `GET /api/v1/interaction-analyses/{id}` 查看结构化分析结果。`interaction_analyses` 不保存消息原文，只保存分析状态、摘要、置信度、问题、警告和 proposal 关联。
@@ -208,8 +215,8 @@ Content-Type: application/json
 
 ClassClaw 在 OpenClaw 中产生三类 session：
 
-1. **提取会话（一次性，会累积）**：每次后端分析调用都用唯一 `user` 键（`classclaw-onboarding-import-*`、`classclaw-timetable-import-*`、`classclaw-seating-import-*`、`classclaw-duty-rule-*`、`classclaw-event-*`、`classclaw-interaction-*`），在 Responses 端点各生成一个新 session。这是刻意的「无记忆提取」设计：不复用历史可避免跨文件污染，也避免把学生名单等原始文本累积进会话存储。
-2. **聊天会话（长期复用，不要清理）**：微信/网页对话按 `session.dmScope: per-account-channel-peer` 每个会话长期保留，是智能体上下文的来源。
+1. **提取会话（一次性，会累积）**：每次后端分析调用都用唯一 `user` 键（`classclaw-onboarding-import-*`、`classclaw-timetable-import-*`、`classclaw-seating-import-*`、`classclaw-event-*`、`classclaw-interaction-*`），在 Responses 端点各生成一个新 session。这是刻意的「无记忆提取」设计：不复用历史可避免跨文件污染，也避免把学生名单等原始文本累积进会话存储。
+2. **聊天会话（长期复用，不要清理）**：微信按 channel/peer 隔离；网页按“账号 + 班级 + 新对话 ID”隔离。它们是智能体上下文的来源。
 3. **提醒定时任务**：插件用 `--session isolated --delete-after-run` 创建，执行完自动删除。
 
 提取会话**不应复用**：复用会把原始输入累积进会话历史（违背「不保存消息原文」原则），并让每次调用的上下文随历史增长而变慢。前缀缓存收益不依赖会话复用——静态规范已冻结在 extractor 的 `AGENTS.md`，provider 端前缀缓存跨会话即可命中。
@@ -229,8 +236,8 @@ openclaw sessions cleanup --enforce
 
 由于 `admin-http-rpc` 白名单不含 `sessions.*`，后端通过 OpenClaw CLI 触发同一套内建清理机制：
 
-- 启动后每 5 分钟检查一次节流窗口，按 `CLASSCLAW_OPENCLAW_SESSION_CLEANUP_HOURS`（默认 24 小时）自动执行一次 `openclaw sessions cleanup --enforce`；Gateway 不在线时跳过且不计入窗口，`0` 可关闭；
+- 启动后每 5 分钟检查一次节流窗口，按 TOML 的 `openclaw.session_cleanup_hours`（默认 24 小时）自动执行一次 `openclaw sessions cleanup --enforce`；Gateway 不在线时跳过且不计入窗口，`0` 可关闭；
 - 管理员控制台可随时操作：
   - `GET /api/v1/admin/openclaw/sessions/cleanup`：查看开关、间隔与上次执行结果；
   - `POST /api/v1/admin/openclaw/sessions/cleanup?enforce=false`：预览（等价 `--dry-run`）；不带参数或 `enforce=true` 立即执行；
-- 清理只影响超出容量/空闲策略的会话，聊天会话与归档会话不会被误删；CLI 二进制由 `CLASSCLAW_OPENCLAW_BIN` 指定（默认 `openclaw`，需与 Gateway 同一主机/用户，能读取 `~/.openclaw` 配置）。
+- 清理只影响超出容量/空闲策略的会话，聊天会话与归档会话不会被误删；CLI 二进制由 TOML 的 `openclaw.cli` 指定（默认 `openclaw`，需与 Gateway 同一主机/用户，能读取 `storage.openclaw_state_dir` 配置）。

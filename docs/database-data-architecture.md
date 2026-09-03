@@ -2,7 +2,7 @@
 
 ## 1. 总体边界
 
-ClassClaw 使用 SQLite + SQLAlchemy，当前共有 32 张应用数据表（不含 SQLite 内部表和 Alembic 版本表）。数据以 `classes.id` 为班级边界，以 `students.id` 为学生事实主键。班主任只能访问自己账号绑定的一个班级；管理员可以管理账号、智能体并查看脱敏数据库内容。
+ClassClaw 使用 SQLite + SQLAlchemy，当前共有 33 张应用数据表（不含 SQLite 内部表和 Alembic 版本表）。数据以 `classes.id` 为班级边界，以 `students.id` 为学生事实主键。班主任只能访问自己账号绑定的一个班级；管理员可以管理账号、智能体并查看脱敏数据库内容。
 
 写入有两条路径：
 
@@ -16,17 +16,18 @@ ClassClaw 使用 SQLite + SQLAlchemy，当前共有 32 张应用数据表（不�
 | 分区 | 表 | 关系与用途 |
 |---|---|---|
 | 账户与权限 | `users`, `user_sessions` | 一个管理员；班主任用户名唯一。班主任通过 `classes.owner_user_id` 最多绑定一个班级。Session 只保存 Token 哈希。 |
-| 班级与智能体 | `classes`, `class_subjects`, `class_agent_bindings`, `system_settings` | 班级是业务根。每班最多一条智能体绑定；微信 account 可为空。科目按班级唯一。 |
+| 班级与智能体 | `classes`, `class_subjects`, `class_agent_bindings`, `system_settings` | 班级是业务根。每班最多一条智能体绑定；微信 account 可为空。科目按班级唯一。`system_settings` 仅保存当前班级等运行数据，部署配置改由启动 TOML 承载。 |
 | 学生主数据 | `students` | `(class_id, student_no)` 唯一。删除为软删除，历史考勤、事件、成绩仍可追溯。 |
 | 座位 | `seating_snapshots` | 每次修改新增完整命名版本，不覆盖历史；版本可选择、重命名和单独删除。 |
 | 值日 | `duty_rules`, `duty_schedules`, `duty_assignments`, `duty_score_items`, `duty_evaluations`, `duty_evaluation_details` | 规则可增删改查；任务直接使用 0–5 分，评分即完成，过往未评分任务次日补 5 分。 |
 | 作业 | `homework`, `homework_student_statuses` | 作业属于班级；每个学生对每份作业最多一条状态，可重复写入更新。 |
 | 学生事件 | `student_events` | 统一承载作业、考勤、行为、沟通、荣誉及其他事件。撤销为软删除。 |
 | 考勤 | `attendance_records` | `(student_id, attendance_date, period)` 唯一；重复登记同一时段时更新原记录。 |
-| 考试成绩 | `exams`, `exam_subjects`, `scores` | 考试包含科目满分；每名学生每场考试每科最多一条成绩，批量写入后计算排名。 |
+| 考试成绩 | `exams`, `exam_subjects`, `scores` | 考试包含科目满分；每名学生每场考试每科最多一条成绩，批量写入后计算排名。网页可删除考试（连同成绩、科目与分析缓存，删除走轻量审计）。 |
 | 课表 | `class_periods`, `base_timetable`, `lesson_overrides` | 基础课表按星期和节次唯一；临时覆盖按实际日期和节次覆盖基础课表。 |
 | 安排提醒 | `arrangements`, `reminders` | 一项安排最多三个提醒；未指定时默认在目标时间前三小时提醒一次。完成安排后写入完成时间。事项当天还会独立进入早报。 |
 | 附件 | `attachments`, `attachment_links` | 附件保存随机文件名、哈希和元数据；关联表把附件连到业务对象。 |
+| 分析缓存 | `analysis_cache` | 确定性分析（考试统计等）按数据指纹缓存结果；条数超过 `runtime.analysis_cache_max_entries` 时清理最旧条目，数据变化自动失效，删除考试时同步清理。 |
 | 对话写入 | `interaction_analyses`, `write_proposals` | 分析记录只保留结构化结果和 proposal 关联，不保存聊天原文；proposal 保存归一化 payload、预览、版本、状态与执行结果。 |
 | 网页建班 | `class_onboarding_sessions` | 保存网页建班草稿、版本和状态；最终确认时原子创建班级、学生、科目、节次、课表和智能体绑定记录。 |
 | 轻量审计 | `audit_logs` | 只记录少量关键动作，不保存整份业务消息或前后快照。 |
@@ -137,7 +138,7 @@ ClassClaw 使用 SQLite + SQLAlchemy，当前共有 32 张应用数据表（不�
 |---|---|---|
 | `duty.schedule.confirm` | “确认刚才的下周值日排班。” | 只能确认真实、未过期的排班预览；新增计划和每日任务。 |
 
-智能体不得自己构造 `preview_token`。值日规则和临时替班由网页接口管理；简单的 0–5 分值日评分可由微信对话生成预览，用户确认后写入。
+智能体不得自己构造 `preview_token`。值日规则和临时替班由网页接口管理；排班先生成全部日期的任务，再由用户一次性整体确认。简单的 0–5 分值日评分可由微信对话生成预览，用户确认后写入。
 
 ## 5. 网页或系统专用操作
 
@@ -148,7 +149,7 @@ ClassClaw 使用 SQLite + SQLAlchemy，当前共有 32 张应用数据表（不�
 - 班级：修改基本信息、设为当前班级、停用班级、彻底删除班级及关联业务数据。
 - 学生：网页直接新增/修改、软删除。
 - 座位：直接保存、交换、从历史快照恢复。
-- 值日：规则校验与保存、排班预览、替班、完成、评分及统计。
+- 值日：静态规则校验与保存、整批排班预览确认、替班、完成、评分及统计。
 - 作业：网页直接创建和更新状态、查询未交、把未交状态同步为学生事件。
 - 学生事件：网页直接登记、批量登记、查询和软撤销。
 - 考勤：网页直接登记/更正和统计。

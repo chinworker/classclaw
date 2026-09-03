@@ -13,6 +13,7 @@ AUDITED_ACTIONS = {
     ("hard_delete", "class"),
     ("soft_delete", "student"),
     ("revoke", "student_event"),
+    ("delete", "exam"),
     ("create", "user"),
     ("update", "user"),
     ("reset_password", "user"),

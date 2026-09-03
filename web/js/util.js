@@ -1,4 +1,10 @@
-// 通用工具：DOM 构建、文本安全、日期（Asia/Shanghai）、toast、防抖。
+// 通用工具：DOM 构建、文本安全、按后端启动时区显示日期、toast、防抖。
+
+let displayTimeZone = "Asia/Shanghai";
+
+export function configureTime(config) {
+  if (typeof config?.timezone === "string" && config.timezone) displayTimeZone = config.timezone;
+}
 
 export function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[char]));
@@ -36,19 +42,19 @@ export function clear(node) { node.replaceChildren(); return node; }
 
 const pad = (n) => String(n).padStart(2, "0");
 
-// 以 Asia/Shanghai 显示日期时间。后端时间戳为 ISO 8601（带时区）。
+// 以后端配置时区显示日期时间。后端时间戳为 ISO 8601（带时区）。
 export function fmtDate(value) {
   if (!value) return "—";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return String(value);
-  return date.toLocaleDateString("zh-CN", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" });
+  return date.toLocaleDateString("zh-CN", { timeZone: displayTimeZone, year: "numeric", month: "2-digit", day: "2-digit" });
 }
 
 export function fmtDateTime(value) {
   if (!value) return "—";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return String(value);
-  return date.toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false });
+  return date.toLocaleString("zh-CN", { timeZone: displayTimeZone, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false });
 }
 
 // 本地（用户浏览器在中国使用场景下即 Asia/Shanghai）的 YYYY-MM-DD，请求参数用。
@@ -56,11 +62,11 @@ export function dateStr(date = new Date()) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
 
-// 任意时间值按 Asia/Shanghai 归一为 YYYY-MM-DD（en-CA 产出 ISO 格式），用于与后端日期比较。
+// 任意时间值按后端配置时区归一为 YYYY-MM-DD（en-CA 产出 ISO 格式），用于与后端日期比较。
 export function dateStrSH(value) {
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) return "";
-  return date.toLocaleDateString("en-CA", { timeZone: "Asia/Shanghai" });
+  return date.toLocaleDateString("en-CA", { timeZone: displayTimeZone });
 }
 
 export function todayStr() { return dateStrSH(new Date()); }
@@ -146,6 +152,25 @@ function enhanceSelect(select) {
     role: "combobox", "aria-autocomplete": "list", "aria-expanded": "false",
   });
   const menu = el("div", { class: "smart-select-menu hidden", role: "listbox" });
+
+  /* 菜单用 fixed 定位：普通 absolute 会被 .table-wrap、.modal-body 等滚动容器裁剪，导致下拉列表显示不全。 */
+  function placeMenu() {
+    const rect = input.getBoundingClientRect();
+    if (!rect.width) return;
+    const width = Math.max(rect.width, 180);
+    const left = Math.min(Math.max(8, rect.left), Math.max(8, window.innerWidth - width - 8));
+    const spaceBelow = window.innerHeight - rect.bottom - 8;
+    const spaceAbove = rect.top - 16;
+    const openUp = spaceBelow < 140 && spaceAbove > spaceBelow;
+    menu.style.position = "fixed";
+    menu.style.width = `${width}px`;
+    menu.style.left = `${left}px`;
+    menu.style.right = "auto";
+    menu.style.top = openUp ? "auto" : `${rect.bottom + 5}px`;
+    menu.style.bottom = openUp ? `${window.innerHeight - rect.top + 5}px` : "auto";
+    menu.style.maxHeight = `${Math.max(120, Math.min(260, openUp ? spaceAbove : spaceBelow))}px`;
+  }
+  const reposition = () => { if (!menu.classList.contains("hidden")) placeMenu(); };
   const arrow = el("span", { class: "smart-select-arrow", aria: { hidden: "true" } }, "⌄");
   wrapper.append(input, arrow, menu);
 
@@ -173,6 +198,8 @@ function enhanceSelect(select) {
 
   function closeMenu() {
     menu.classList.add("hidden");
+    window.removeEventListener("scroll", reposition, { capture: true });
+    window.removeEventListener("resize", reposition);
     input.setAttribute("aria-expanded", "false");
     activeIndex = -1;
     input.value = selectedText();
@@ -204,6 +231,9 @@ function enhanceSelect(select) {
       });
     }
     menu.classList.remove("hidden");
+    placeMenu();
+    window.addEventListener("scroll", reposition, { capture: true, passive: true });
+    window.addEventListener("resize", reposition);
     input.setAttribute("aria-expanded", "true");
   }
 

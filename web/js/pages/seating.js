@@ -2,8 +2,9 @@
 
 import { el, clear, toast, fmtDateTime } from "../util.js";
 import { api, AI_REQUEST_TIMEOUT_MS } from "../api.js";
+import { featureEnabled } from "../config.js";
 import { state, refreshStudents } from "../state.js";
-import { pageHeader, errorPanel, skeleton, emptyState, field, fieldError, confirmDanger, openModal, fileDropzone } from "../components.js";
+import { pageHeader, errorPanel, skeleton, emptyState, field, fieldError, confirmDanger, openModal, fileDropzone, showAiRejection } from "../components.js";
 import { seatMapEditor } from "../seatmap.js";
 
 export async function render(mount) {
@@ -48,7 +49,8 @@ export async function render(mount) {
     const editorBox = el("div");
     const importBox = el("div", { class: "import-panel hidden" });
     const analysisBox = el("div");
-    const importBtn = el("button", { class: "secondary", type: "button" }, "从文件生成");
+    const fileAnalysisEnabled = featureEnabled("file_analysis");
+    const importBtn = el("button", { class: "secondary", type: "button", disabled: !fileAnalysisEnabled }, fileAnalysisEnabled ? "从文件生成" : "文件解析已关闭");
     function showEditor({ rows, cols, layout }) {
       editor = seatMapEditor({ students, rows, cols, layout, editable: true });
       editorBox.replaceChildren(editor.el);
@@ -61,7 +63,8 @@ export async function render(mount) {
       multiple: true,
       manualStart: true,
       busyText: "正在识别座位，请稍候…",
-      onFiles: async (files, { signal }) => {
+      disabled: !fileAnalysisEnabled,
+      onFiles: async (files, { signal, taskId }) => {
         clear(analysisBox);
         const form = new FormData();
         files.slice(0, 4).forEach((file) => form.append("files", file));
@@ -71,7 +74,13 @@ export async function render(mount) {
             body: form,
             timeoutMs: AI_REQUEST_TIMEOUT_MS,
             signal,
+            aiTaskId: taskId,
           });
+          if (!result.analysis?.accepted) {
+            showAiRejection(result.analysis, "座位表数据未采用");
+            analysisBox.append(...(result.analysis?.reasons || []).map((text) => el("div", { class: "issue issue-error" }, text)));
+            return;
+          }
           showEditor(result);
           analysisBox.append(el("div", { class: "issue issue-ok" }, `已识别 ${result.seated_count} 名学生，${result.unseated_count} 名暂未排座。`),
             ...(result.analysis?.warnings || []).map((text) => el("div", { class: "issue issue-warn" }, text)));

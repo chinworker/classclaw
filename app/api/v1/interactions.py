@@ -22,7 +22,8 @@ async def interaction_analyze(request: Request, body: InteractionAnalyzeCreate, 
         else:
             body = body.model_copy(update={"class_id": principal.class_id})
     result = await service.analyze(db, body)
-    return ok(request, result, "输入已由 OpenClaw 清洗；有效写入已生成待复核预览", 201)
+    message = "输入已由 OpenClaw 清洗；高置信度写入已生成待复核预览，低置信度数据已附原因"
+    return ok(request, result, message, 201)
 
 
 @router.get("/interaction-analyses/{analysis_id}")

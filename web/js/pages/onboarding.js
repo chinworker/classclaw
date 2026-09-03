@@ -4,10 +4,11 @@
 
 import { el, clear, toast, debounce } from "../util.js";
 import { api, AI_REQUEST_TIMEOUT_MS } from "../api.js";
+import { appConfig, featureEnabled } from "../config.js";
 import { state, refreshIdentity, refreshClassInfo, refreshOpenclaw } from "../state.js";
 import { navigate } from "../router.js";
 import {
-  field, fieldError, fileDropzone, proposalReview, qrBindingPanel, statusBadge, openclawBlocked, emptyState,
+  field, fieldError, fileDropzone, proposalReview, qrBindingPanel, statusBadge, openclawBlocked, emptyState, showAiRejection,
 } from "../components.js";
 import { timetableGridEditor } from "../timetableGrid.js";
 
@@ -177,6 +178,7 @@ export async function render(mount, ctx, helpers) {
 
   function renderClassInfo(panel) {
     const info = draft().class_info || {};
+    const semesterDefaults = appConfig.semester_defaults || {};
     const specs = [
       ["name", "班级名称 *", "text", "例如：高一（3）班"],
       ["grade", "年级 *", "text", "例如：高一"],
@@ -188,7 +190,12 @@ export async function render(mount, ctx, helpers) {
     ];
     const grid = el("div", { class: "form-grid" });
     for (const [key, label, type, placeholder] of specs) {
-      const input = el("input", { type, value: info[key] || "", placeholder: placeholder || "", autocomplete: "off" });
+      const input = el("input", {
+        type,
+        value: info[key] || semesterDefaults[key] || "",
+        placeholder: placeholder || "",
+        autocomplete: "off",
+      });
       classInputs[key] = input;
       grid.append(field(label, input, key === "name" ? null : null));
     }
@@ -196,6 +203,7 @@ export async function render(mount, ctx, helpers) {
     classInputs.name.addEventListener("blur", () => doNameCheck());
     panel.append(
       el("p", { class: "muted" }, "确定性字段，保存时不会被智能体改写。"),
+      el("p", { class: "muted" }, "今天处于学期范围内时默认使用当前学期；寒暑假期间默认使用未来最近的一学期。春季自农历元宵节至 7 月 1 日，秋季自 9 月 1 日至次年春节前一周。"),
       grid, nameStatus);
     if (info.name) doNameCheck();
   }
@@ -242,8 +250,9 @@ export async function render(mount, ctx, helpers) {
       multiple: true,
       manualStart: true,
       busyText: "正在解析学生名单…",
+      disabled: !featureEnabled("file_analysis"),
       onBusyChange: setAnalysisBusy,
-      onFiles: (files, { signal }) => uploadSection("students", files, signal),
+      onFiles: (files, { signal, taskId }) => uploadSection("students", files, signal, taskId),
     }));
     const addBtn = el("button", { class: "secondary", type: "button", onclick: () => appendStudentRow({}, true) }, "添加学生");
     panel.append(el("div", { class: "row-gap", style: { justifyContent: "space-between", marginBottom: "8px" } },
@@ -266,8 +275,9 @@ export async function render(mount, ctx, helpers) {
       multiple: true,
       manualStart: true,
       busyText: "正在解析课表…",
+      disabled: !featureEnabled("file_analysis"),
       onBusyChange: setAnalysisBusy,
-      onFiles: (files, { signal }) => uploadSection("timetable", files, signal),
+      onFiles: (files, { signal, taskId }) => uploadSection("timetable", files, signal, taskId),
     }));
     panel.append(el("b", { style: { display: "block", margin: "16px 0 6px" } }, "基础课表矩阵（周一至周五 × 节次）"));
     ttEditor = timetableGridEditor({
@@ -289,7 +299,7 @@ export async function render(mount, ctx, helpers) {
     refreshNavigation();
   }
 
-  async function uploadSection(section, files, signal) {
+  async function uploadSection(section, files, signal, taskId) {
     if (files.length > 8) { toast("每次最多上传 8 个文件", "error"); return; }
     const saved = await saveDraft(section, { allowDuringAnalysis: true, signal });
     if (!saved) return;
@@ -303,7 +313,12 @@ export async function render(mount, ctx, helpers) {
         body,
         timeoutMs: AI_REQUEST_TIMEOUT_MS,
         signal,
+        aiTaskId: taskId,
       });
+      if (!result.analysis?.accepted) {
+        showAiRejection(result.analysis, section === "students" ? "学生名单未采用" : "课表数据未采用");
+        return;
+      }
       local.session = result.session;
       local.savedSteps.add(local.step);
       local.stepSaved = true;

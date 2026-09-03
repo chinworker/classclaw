@@ -198,7 +198,7 @@ const plugin: OpenClawPluginDefinition = definePluginEntry({
     api.registerTool({
       name: "classclaw_analyze_interaction",
       label: "用 OpenClaw 清洗 ClassClaw 输入",
-      description: "Required gateway for natural-language, WeChat, pasted, or attachment-based input. OpenClaw cleans the source and the backend returns only validated, uncommitted write previews or clarification questions.",
+      description: "Required gateway for natural-language, WeChat, pasted, or attachment-based input. The backend accepts only high-confidence validated data; low-confidence data is excluded and returned with concrete rejected_reasons for the user.",
       parameters: Type.Object({
         channel: Type.String(), external_message_id: Type.Optional(Type.String()), sender_id: Type.Optional(Type.String()),
         message_type: Type.Optional(Type.String()), text: Type.Optional(Type.String()),

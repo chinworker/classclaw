@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-import uuid
 import time
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -24,11 +24,19 @@ from app.services.http_client import close_http_client
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     configure_logging()
+    get_logger("startup").info(
+        "Configuration loaded: file=%s hash=%s",
+        settings.config_file or "defaults-and-environment",
+        settings.config_hash[:12],
+    )
     settings.attachment_dir.mkdir(parents=True, exist_ok=True)
     init_db()
     with writer_session() as db:
         accounts.ensure_default_admin(db)
     cleanup_task = None
+    extractor_setup_task = None
+    if settings.openclaw_extractor_enabled:
+        extractor_setup_task = asyncio.create_task(openclaw_bridge.prepare_extractor_agent())
     if settings.openclaw_session_cleanup_hours > 0:
         cleanup_task = asyncio.create_task(openclaw_bridge.session_cleanup_loop())
     try:
@@ -40,13 +48,19 @@ async def lifespan(_app: FastAPI):
                 await cleanup_task
             except asyncio.CancelledError:
                 pass
+        if extractor_setup_task and not extractor_setup_task.done():
+            extractor_setup_task.cancel()
+            try:
+                await extractor_setup_task
+            except asyncio.CancelledError:
+                pass
         await close_http_client()
 
 
 app = FastAPI(
     title=settings.app_name,
     version="0.1.0",
-    description="供 OpenClaw 智能体与未来网页端共用的班级管理 REST API。",
+    description="供 OpenClaw 智能体与网页端共用的班级管理 REST API。",
     lifespan=lifespan,
 )
 

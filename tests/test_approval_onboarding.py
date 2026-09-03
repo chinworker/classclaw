@@ -1,16 +1,28 @@
-import base64
 import asyncio
+import base64
+from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import func, select
-from types import SimpleNamespace
 
+from app.config import settings
 from app.core.errors import AppError
-from app.models.entities import AttendanceRecord, BaseTimetable, ClassAgentBinding, ClassOnboardingSession, ClassPeriod, ClassRoom, ClassSubject, InteractionAnalysis, Student, WriteProposal
+from app.models.entities import (
+    AttendanceRecord,
+    BaseTimetable,
+    ClassAgentBinding,
+    ClassOnboardingSession,
+    ClassPeriod,
+    ClassRoom,
+    ClassSubject,
+    InteractionAnalysis,
+    Student,
+    WriteProposal,
+)
 from app.schemas.domain import ClassOnboardingUpdate
 from app.services import approval as approval_service
-from app.services import openclaw_bridge
-from app.services import openclaw_provisioning
+from app.services import openclaw_bridge, openclaw_provisioning
 
 
 def test_class_onboarding_is_draft_until_explicit_confirmation(client, db):
@@ -209,7 +221,17 @@ def test_onboarding_file_is_processed_by_openclaw_and_fills_draft(client, monkey
                 field_evidence_patch={"students.001": {"source_type": "file", "attachment_id": attachments[0].id, "confidence": 0.99}},
             ),
         )
-        return {"session": updated, "attachments": attachments, "analysis": {"summary": "识别 1 名学生", "warnings": [], "confidence": 0.99}}
+        return {
+            "session": updated,
+            "attachments": attachments,
+            "analysis": {
+                "accepted": True,
+                "summary": "识别 1 名学生",
+                "warnings": [],
+                "confidence": 0.99,
+                "reasons": ["学号和姓名均清晰"],
+            },
+        }
 
     monkeypatch.setattr(openclaw_bridge, "analyze_onboarding_files", analyze)
     response = client.post(
@@ -232,7 +254,13 @@ def test_reimport_uses_fresh_openclaw_session_and_replaces_old_rows(db, monkeypa
 
     async def responses(_prompt, *, user, attachments=None, max_output_tokens=8000, db=None):
         users.append(user)
-        return {"draft_patch": {"students": [{"student_no": "002", "name": "新学生"}]}, "warnings": [], "confidence": 0.99, "summary": "仅本次文件"}
+        return {
+            "draft_patch": {"students": [{"student_no": "002", "name": "新学生"}]},
+            "warnings": [],
+            "confidence": 0.99,
+            "reasons": ["每行学号和姓名均清晰且唯一"],
+            "summary": "仅本次文件",
+        }
 
     monkeypatch.setattr(openclaw_bridge, "_responses_json", responses)
     first = __import__("asyncio").run(openclaw_bridge.analyze_onboarding_files(db, onboarding.id, "students", [], onboarding.revision))
@@ -265,6 +293,7 @@ def test_cancelled_onboarding_analysis_does_not_update_draft(db, monkeypatch):
             "draft_patch": {"students": [{"student_no": "002", "name": "新学生"}]},
             "warnings": [],
             "confidence": 0.99,
+            "reasons": ["每行学号和姓名均清晰且唯一"],
             "summary": "已识别",
         }
 
@@ -344,7 +373,7 @@ def test_class_specific_agent_and_wechat_binding_flow(client, db, tmp_path, monk
     binding = db.scalar(select(ClassAgentBinding).where(ClassAgentBinding.class_id == class_id))
     binding.workspace_path = str(tmp_path / "class-agent")
     db.commit()
-    monkeypatch.setattr(openclaw_provisioning, "settings", SimpleNamespace(openclaw_class_workspace_root=tmp_path))
+    monkeypatch.setattr(openclaw_provisioning, "settings", replace(settings, openclaw_class_workspace_root=tmp_path))
     calls = []
 
     async def rpc(method, params=None):
@@ -461,7 +490,7 @@ def test_binding_recovers_agent_created_before_local_id_was_saved(client, db, tm
     )
     db.add_all([binding, stale_binding])
     db.commit()
-    monkeypatch.setattr(openclaw_provisioning, "settings", SimpleNamespace(openclaw_class_workspace_root=tmp_path))
+    monkeypatch.setattr(openclaw_provisioning, "settings", replace(settings, openclaw_class_workspace_root=tmp_path))
     calls = []
 
     async def rpc(method, params=None):
@@ -497,6 +526,7 @@ def test_wechat_interaction_creates_auditable_proposal_and_waits_for_confirmatio
             "intent": "attendance.set",
             "summary": "登记张三上午迟到",
             "confidence": 0.98,
+            "reasons": ["学生、日期、时段和迟到状态均明确"],
             "questions": [],
             "warnings": [],
             "operations": [{
@@ -511,6 +541,7 @@ def test_wechat_interaction_creates_auditable_proposal_and_waits_for_confirmatio
                 },
                 "summary": "张三上午迟到",
                 "confidence": 0.98,
+                "reasons": ["学生、日期、时段和迟到状态均明确"],
             }],
         }
 
@@ -548,6 +579,7 @@ def test_interaction_ambiguity_never_creates_a_proposal(client, db, monkeypatch)
             "intent": "student_event.create",
             "summary": "姓名不唯一",
             "confidence": 0.4,
+            "reasons": ["王伟对应多个学生，无法唯一匹配"],
             "questions": ["请确认是哪一个王伟（学号或班级）"],
             "warnings": ["检测到同名学生"],
             "operations": [],
@@ -559,6 +591,51 @@ def test_interaction_ambiguity_never_creates_a_proposal(client, db, monkeypatch)
     payload = response.json()["data"]
     assert payload["analysis"]["status"] == "needs_clarification"
     assert payload["proposals"] == []
+    assert payload["analysis"]["structured_json"]["rejected_reasons"] == ["王伟对应多个学生，无法唯一匹配"]
+    assert db.scalar(select(func.count(WriteProposal.id))) == 0
+
+
+def test_low_confidence_interaction_operation_is_excluded_and_reason_is_returned(client, db, sample, monkeypatch):
+    cls, _, students = sample
+
+    async def analyze_interaction(**_kwargs):
+        return {
+            "status": "ready",
+            "intent": "attendance.set",
+            "summary": "考勤信息部分模糊",
+            "confidence": 0.95,
+            "reasons": ["消息整体意图是登记考勤"],
+            "questions": [],
+            "warnings": [],
+            "operations": [
+                {
+                    "operation_type": "attendance.set",
+                    "payload": {
+                        "class_id": cls.id,
+                        "student_id": students[0].id,
+                        "attendance_date": "2026-08-29",
+                        "period": "morning",
+                        "status": "late",
+                    },
+                    "summary": "张三迟到",
+                    "confidence": 0.45,
+                    "reasons": ["原消息没有说明迟到发生在上午还是下午"],
+                }
+            ],
+        }
+
+    monkeypatch.setattr(openclaw_bridge, "analyze_interaction", analyze_interaction)
+    response = client.post(
+        "/api/v1/interaction-analyses",
+        json={"channel": "wechat", "text": "张三迟到了", "class_id": cls.id},
+    )
+
+    payload = response.json()["data"]
+    assert response.status_code == 201
+    assert payload["analysis"]["status"] == "needs_clarification"
+    assert payload["proposals"] == []
+    assert payload["analysis"]["structured_json"]["operations"] == []
+    assert "上午还是下午" in payload["analysis"]["structured_json"]["rejected_reasons"][0]
     assert db.scalar(select(func.count(WriteProposal.id))) == 0
 
 
@@ -572,6 +649,7 @@ def test_interaction_cleaner_prompt_contains_common_database_semantics(db, monke
             "intent": "none",
             "summary": "无写入",
             "confidence": 1,
+            "reasons": ["输入没有班级数据写入意图"],
             "questions": [],
             "warnings": [],
             "operations": [],
@@ -599,6 +677,8 @@ def test_interaction_cleaner_prompt_contains_common_database_semantics(db, monke
     assert "subtype=homework_missing" in agents_md
     assert "不新建/不关联具体作业" in agents_md
     assert "上学迟到" in agents_md
+    assert "reasons" in agents_md
+    assert "置信度门槛为 0.75" in agents_md
 
     # Fallback path: switch off, semantics stay in the inline prompt.
     monkeypatch.setattr(openclaw_bridge, "ensure_extractor_agent", extractor_off)

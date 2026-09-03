@@ -23,7 +23,6 @@ from app.models.entities import (
     ClassRoom,
     InteractionAnalysis,
     Student,
-    SystemSetting,
     User,
     UserSession,
     WriteProposal,
@@ -31,92 +30,78 @@ from app.models.entities import (
 from app.schemas.admin import OpenClawAgentUpdate, OpenClawGlobalUpdate
 from app.services import (
     accounts,
-    approval,
     class_student,
-    logs as log_service,
     openclaw_bridge,
     openclaw_provisioning,
     openclaw_usage,
     openclaw_workspaces,
 )
+from app.services import (
+    logs as log_service,
+)
 from app.services.common import audit
 from app.utils.time import now
-
 
 SETTING_DEFINITIONS: dict[str, dict[str, Any]] = {
     "feature.file_analysis": {
         "group": "features", "label": "文件智能解析", "description": "课表、座位表和 onboarding 文件上传后交由 OpenClaw 解析。",
-        "type": "boolean", "default": True,
+        "type": "boolean", "config_path": "features.file_analysis",
     },
     "feature.event_ai": {
         "group": "features", "label": "学生事件智能分类", "description": "网页登记学生事件时自动判断子类、倾向和严重程度。",
-        "type": "boolean", "default": True,
+        "type": "boolean", "config_path": "features.event_ai",
     },
     "feature.wechat_binding": {
         "group": "features", "label": "微信绑定", "description": "允许班级智能体生成微信二维码和绑定路由。",
-        "type": "boolean", "default": True,
+        "type": "boolean", "config_path": "features.wechat_binding",
     },
     "feature.reminders": {
         "group": "features", "label": "主动提醒", "description": "允许智能体查询和发送到期提醒；关闭后已有提醒保留。",
-        "type": "boolean", "default": True,
+        "type": "boolean", "config_path": "features.reminders",
     },
     "admin.usage_window_days": {
         "group": "constants", "label": "默认统计窗口（天）", "description": "管理员使用量页面首次加载的统计天数。",
-        "type": "integer", "default": 30, "minimum": 7, "maximum": 365,
+        "type": "integer", "config_path": "web.usage_window_days", "minimum": 7, "maximum": 365,
     },
     "admin.database_page_size": {
         "group": "constants", "label": "数据库默认分页行数", "description": "数据库调试页面每次默认读取的行数。",
-        "type": "integer", "default": 50, "minimum": 10, "maximum": 200,
+        "type": "integer", "config_path": "web.database_page_size", "minimum": 10, "maximum": 200,
     },
 }
 
 _agent_usage_cache: dict[int, tuple[float, list[dict[str, Any]]]] = {}
 
 
-def setting_value(db: Session, key: str) -> Any:
+def setting_value(key: str) -> Any:
     definition = SETTING_DEFINITIONS.get(key)
     if not definition:
-        raise AppError("SETTING_NOT_ALLOWED", "该配置项不允许通过管理端修改", 422, {"key": key})
-    row = db.scalar(select(SystemSetting).where(SystemSetting.key == key))
-    return row.value_json if row else definition["default"]
+        raise AppError("SETTING_NOT_FOUND", "该静态配置项不存在", 404, {"key": key})
+    target: Any = settings
+    for part in definition["config_path"].split("."):
+        target = getattr(target, part)
+    return target
 
 
-def feature_enabled(db: Session, key: str) -> bool:
-    return bool(setting_value(db, key))
+def feature_enabled(key: str) -> bool:
+    return bool(setting_value(key))
 
 
-def require_feature(db: Session, key: str) -> None:
-    if not feature_enabled(db, key):
+def require_feature(key: str) -> None:
+    if not feature_enabled(key):
         raise AppError("FEATURE_DISABLED", "该功能已被管理员关闭", 403, {"feature": key})
 
 
-def list_settings(db: Session) -> list[dict[str, Any]]:
-    stored = {row.key: row.value_json for row in db.scalars(select(SystemSetting).where(SystemSetting.key.in_(SETTING_DEFINITIONS)))}
-    return [{"key": key, **definition, "value": stored.get(key, definition["default"])} for key, definition in SETTING_DEFINITIONS.items()]
-
-
-def update_setting(db: Session, key: str, value: Any, *, operator_id: str | None) -> dict[str, Any]:
-    definition = SETTING_DEFINITIONS.get(key)
-    if not definition:
-        raise AppError("SETTING_NOT_ALLOWED", "该配置项不允许通过管理端修改", 422, {"key": key})
-    expected = definition["type"]
-    if expected == "boolean" and type(value) is not bool:
-        raise AppError("VALIDATION_ERROR", "配置值必须是布尔值", 422)
-    if expected == "integer":
-        if type(value) is not int:
-            raise AppError("VALIDATION_ERROR", "配置值必须是整数", 422)
-        if value < definition["minimum"] or value > definition["maximum"]:
-            raise AppError("VALIDATION_ERROR", f"配置值应在 {definition['minimum']} 到 {definition['maximum']} 之间", 422)
-    row = db.scalar(select(SystemSetting).where(SystemSetting.key == key))
-    before = row.value_json if row else definition["default"]
-    if row:
-        row.value_json = value
-    else:
-        row = SystemSetting(key=key, value_json=value)
-        db.add(row)
-    audit(db, "update_setting", "system_setting", row.id, operator_id=operator_id, before={"value": before}, after={"value": value})
-    db.commit()
-    return {"key": key, **definition, "value": value}
+def list_settings() -> list[dict[str, Any]]:
+    return [
+        {
+            "key": key,
+            **definition,
+            "value": setting_value(key),
+            "source": "startup_config",
+            "restart_required": True,
+        }
+        for key, definition in SETTING_DEFINITIONS.items()
+    ]
 
 
 def _count(db: Session, model, *filters) -> int:
@@ -150,7 +135,7 @@ def overview(db: Session) -> dict[str, Any]:
 
 
 def usage_stats(db: Session, days: int | None = None) -> dict[str, Any]:
-    window = days or int(setting_value(db, "admin.usage_window_days"))
+    window = days or int(setting_value("admin.usage_window_days"))
     if window < 1 or window > 365:
         raise AppError("VALIDATION_ERROR", "统计窗口应在 1 到 365 天之间", 422)
     start = now() - timedelta(days=window - 1)

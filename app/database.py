@@ -69,6 +69,7 @@ _write_lock = threading.Lock()
 _writer_stack = threading.local()
 
 _READ_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+_READ_ONLY_ROUTE_NAMES = frozenset({"ai_task_cancel"})
 
 
 @contextmanager
@@ -112,7 +113,9 @@ def reader_session() -> Generator[Session, None, None]:
 
 
 def get_db(request: Request) -> Generator[Session, None, None]:
-    if request.method in _READ_METHODS:
+    route = request.scope.get("route")
+    route_name = getattr(route, "name", None)
+    if request.method in _READ_METHODS or route_name in _READ_ONLY_ROUTE_NAMES:
         with reader_session() as db:
             yield db
     else:

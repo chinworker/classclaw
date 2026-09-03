@@ -94,7 +94,7 @@ export async function render(mount) {
                 },
               });
               close();
-              toast("安排已创建，并会出现在当天早报中", "success");
+              toast("安排已创建；绑定微信后会出现在当天早报中", "success");
               load();
             } catch (error) { errorLine.append(fieldError(error.message)); }
             finally { setSubmitting(false); }

@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+import hashlib
+import json
+import statistics
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 
-from sqlalchemy import func, select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import delete, func, select
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.core.errors import AppError, not_found
 from app.models.entities import (
+    AnalysisCache,
     AttendanceRecord,
     Exam,
     ExamSubject,
@@ -286,6 +291,24 @@ def create_exam(db: Session, data: ExamCreate, *, commit: bool = True) -> Exam:
     return exam
 
 
+def delete_exam(db: Session, exam_id: str, *, commit: bool = True) -> dict:
+    exam = db.get(Exam, exam_id)
+    if not exam:
+        raise not_found("考试", exam_id)
+    score_count = db.scalar(select(func.count(Score.id)).where(Score.exam_id == exam_id)) or 0
+    before = {"name": exam.name, "exam_date": exam.exam_date.isoformat(), "status": exam.status, "score_count": score_count}
+    name = exam.name
+    db.execute(delete(Score).where(Score.exam_id == exam_id))
+    db.execute(delete(ExamSubject).where(ExamSubject.exam_id == exam_id))
+    db.execute(delete(AnalysisCache).where(AnalysisCache.kind == f"exam_statistics:{exam_id}"))
+    audit(db, "delete", "exam", exam_id, before=before)
+    db.delete(exam)
+    db.flush()
+    if commit:
+        db.commit()
+    return {"id": exam_id, "name": name, "deleted_scores": score_count}
+
+
 def list_exams(
     db: Session,
     *,
@@ -374,26 +397,157 @@ def save_scores(db: Session, exam_id: str, data: ScoreBatch, *, commit: bool = T
     return result
 
 
-def score_statistics(db: Session, exam_id: str, subject: str | None = None) -> dict:
-    exam = db.get(Exam, exam_id)
-    if not exam:
-        raise not_found("考试", exam_id)
-    stmt = select(Score).where(Score.exam_id == exam_id)
+STATISTICS_DISTRIBUTION_BANDS = [
+    {"label": "不及格", "min_pct": 0.0, "max_pct": 0.6},
+    {"label": "及格", "min_pct": 0.6, "max_pct": 0.7},
+    {"label": "中等", "min_pct": 0.7, "max_pct": 0.8},
+    {"label": "良好", "min_pct": 0.8, "max_pct": 0.9},
+    {"label": "优秀", "min_pct": 0.9, "max_pct": 1.0},
+]
+
+
+def _exam_statistics_fingerprint(db: Session, exam_id: str) -> str:
+    subjects = [
+        {"id": s.id, "subject": s.subject, "full_score": round(s.full_score, 4)}
+        for s in db.scalars(select(ExamSubject).where(ExamSubject.exam_id == exam_id).order_by(ExamSubject.subject))
+    ]
+    count, max_updated, max_id = db.execute(
+        select(func.count(Score.id), func.max(Score.updated_at), func.max(Score.id)).where(Score.exam_id == exam_id)
+    ).one()
+    raw = json.dumps(
+        {"subjects": subjects, "count": count, "max_updated": max_updated.isoformat() if max_updated else None, "max_id": max_id},
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    return hashlib.sha256(f"exam_statistics:{exam_id}:{raw}".encode()).hexdigest()
+
+
+def _statistics_cache_put(db: Session, kind: str, key: str, payload: dict) -> None:
+    db.merge(AnalysisCache(key=key, kind=kind, payload=payload))
+    db.flush()
+    limit = settings.analysis_cache_max_entries
+    total = db.scalar(select(func.count(AnalysisCache.key))) or 0
+    if total > limit:
+        stale_keys = list(
+            db.scalars(
+                select(AnalysisCache.key)
+                .order_by(AnalysisCache.created_at.asc(), AnalysisCache.key.asc())
+                .limit(total - limit)
+            )
+        )
+        if stale_keys:
+            db.execute(delete(AnalysisCache).where(AnalysisCache.key.in_(stale_keys)))
+            db.flush()
+
+
+def _compute_exam_statistics(db: Session, exam: Exam, subject: str | None = None) -> dict:
+    stmt = select(Score).where(Score.exam_id == exam.id)
     if subject:
         stmt = stmt.where(Score.subject == subject)
     scores = list(db.scalars(stmt))
+    subjects_meta = {s.subject: s for s in db.scalars(select(ExamSubject).where(ExamSubject.exam_id == exam.id))}
+
     grouped: dict[str, list[Score]] = defaultdict(list)
     for score in scores:
         grouped[score.subject].append(score)
-    result = {}
-    for name, rows in grouped.items():
-        values = [r.score for r in rows]
+    subjects_result = []
+    for name in sorted(grouped):
+        rows = grouped[name]
         full = rows[0].full_score
-        result[name] = {
-            "count": len(values),
-            "average": round(sum(values) / len(values), 2),
-            "highest": max(values),
-            "lowest": min(values),
-            "pass_rate": sum(v >= full * 0.6 for v in values) / len(values),
-        }
-    return {"exam": exam, "subjects": result}
+        values = [r.score for r in rows]
+        pcts = [v / full for v in values] if full else [0.0] * len(values)
+        distribution = []
+        for index, band in enumerate(STATISTICS_DISTRIBUTION_BANDS):
+            if index == len(STATISTICS_DISTRIBUTION_BANDS) - 1:
+                count = sum(1 for p in pcts if p >= band["min_pct"])
+            else:
+                count = sum(1 for p in pcts if band["min_pct"] <= p < band["max_pct"])
+            distribution.append({"label": band["label"], "min_pct": band["min_pct"], "max_pct": band["max_pct"], "count": count})
+        subjects_result.append(
+            {
+                "subject": name,
+                "full_score": full,
+                "count": len(values),
+                "average": round(statistics.fmean(values), 2),
+                "median": round(statistics.median(values), 2),
+                "std_dev": round(statistics.pstdev(values), 2),
+                "highest": max(values),
+                "lowest": min(values),
+                "pass_rate": sum(v >= full * 0.6 for v in values) / len(values) if full else None,
+                "excellent_rate": sum(v >= full * 0.9 for v in values) / len(values) if full else None,
+                "distribution": distribution,
+            }
+        )
+
+    by_student: dict[str, list[Score]] = defaultdict(list)
+    for score in scores:
+        by_student[score.student_id].append(score)
+    students = {
+        s.id: s
+        for s in db.scalars(select(Student).where(Student.id.in_(list(by_student))))
+        if s.deleted_at is None
+    }
+    totals = []
+    for student_id, rows in by_student.items():
+        student = students.get(student_id)
+        if not student:
+            continue
+        total_score = round(sum(r.score for r in rows), 2)
+        total_full = round(sum(subjects_meta[r.subject].full_score for r in rows if r.subject in subjects_meta), 2)
+        totals.append(
+            {
+                "student_id": student_id,
+                "student_name": student.name,
+                "student_no": student.student_no,
+                "total_score": total_score,
+                "total_full": total_full,
+                "rate": round(total_score / total_full, 4) if total_full else None,
+                "subjects": {r.subject: r.score for r in sorted(rows, key=lambda r: r.subject)},
+            }
+        )
+    totals.sort(key=lambda t: (-t["total_score"], t["student_no"] or ""))
+    rank = 0
+    previous = None
+    for index, item in enumerate(totals, 1):
+        if previous is None or item["total_score"] < previous:
+            rank = index
+            previous = item["total_score"]
+        item["rank"] = rank
+
+    return {
+        "summary": {
+            "exam_id": exam.id,
+            "name": exam.name,
+            "exam_date": exam.exam_date.isoformat(),
+            "status": exam.status,
+            "subject_count": len(subjects_meta),
+            "score_count": len(scores),
+            "student_count": len(totals),
+            "single_subject": len(subjects_meta) == 1,
+        },
+        "subjects": subjects_result,
+        "totals": totals,
+        "generated_at": now().isoformat(),
+    }
+
+
+def score_statistics(db: Session, exam_id: str, subject: str | None = None, *, commit: bool = True) -> dict:
+    exam = db.get(Exam, exam_id)
+    if not exam:
+        raise not_found("考试", exam_id)
+    if subject:
+        return _compute_exam_statistics(db, exam, subject)
+    kind = f"exam_statistics:{exam_id}"
+    key = _exam_statistics_fingerprint(db, exam_id)
+    cached = db.get(AnalysisCache, key)
+    if cached and isinstance(cached.payload, dict):
+        return {**cached.payload, "cache_hit": True}
+    payload = _compute_exam_statistics(db, exam)
+    try:
+        _statistics_cache_put(db, kind, key, payload)
+        if commit:
+            db.commit()
+    except OperationalError:
+        # 缓存写入是尽力而为：读会话与单写者并发冲突时放弃本次缓存，统计结果照常返回。
+        db.rollback()
+    return {**payload, "cache_hit": False}

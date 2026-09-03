@@ -19,9 +19,9 @@ def operation_from_user(user: str) -> str:
         "classclaw-onboarding-import",
         "classclaw-timetable-import",
         "classclaw-seating-import",
-        "classclaw-duty-rule",
         "classclaw-event",
         "classclaw-interaction",
+        "classclaw-web-chat",
     )
     return next((prefix.removeprefix("classclaw-") for prefix in prefixes if user.startswith(prefix)), "other")
 

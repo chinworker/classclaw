@@ -7,7 +7,7 @@ OpenClaw 对话式写入使用以下预览/确认入口；网页中的结构化�
 | 工具/流程 | 方法与接口 | 作用 |
 |---|---|---|
 | classclaw_analyze_interaction | POST `/interaction-analyses` | 微信、自然语言、粘贴文本或附件的强制 OpenClaw 清洗入口；返回澄清问题或待复核 proposal |
-| classclaw_read interaction_analysis | GET `/interaction-analyses/{id}` | 读取结构化分析、状态、警告、置信度和关联 proposal |
+| classclaw_read interaction_analysis | GET `/interaction-analyses/{id}` | 读取结构化分析、状态、置信度、原因、低置信度拒绝项和关联 proposal |
 | classclaw_propose_write | POST `/write-proposals` | 校验并生成写入预览，不改业务数据 |
 | classclaw_read proposal | GET `/write-proposals/{id}` | 重新读取待复核版本和预览 |
 | classclaw_commit_write | POST `/write-proposals/{id}/confirm` | 用户在聊天中确认一条预览后直接执行 |
@@ -48,7 +48,6 @@ OpenClaw 对话式写入使用以下预览/确认入口；网页中的结构化�
 | duty_rule_update | PATCH `/duty/rules/{id}` | 可修改字段 | 规则 | 否 |
 | duty_rule_delete | DELETE `/duty/rules/{id}` | id | 删除结果 | 否 |
 | duty_rule_list | GET `/duty/rules` | class_id | 已保存规则 | 否 |
-| duty_rule_analyze | POST `/classes/{id}/duty/rules/analyze` | 自然语言、基础规则 | 归一化规则预览 | 否 |
 | duty_schedule_preview | POST `/duty/schedules/preview` | 日期,rule_json | 排班、冲突、工作量、token | 否 |
 | duty_schedule_confirm | POST `/duty/schedules/confirm` | 预览参数、token | 正式计划 | 是 |
 | duty_today | GET `/duty/today` | class_id,day | 当日安排 | 否 |
@@ -73,6 +72,8 @@ OpenClaw 对话式写入使用以下预览/确认入口；网页中的结构化�
 | attendance_summary | GET `/attendance/summary` | class_id,start_date,end_date | 统计 | 否 |
 | exam_create | POST `/exams` | 班级、名称、日期、科目满分 | 考试 | 否 |
 | exam_list | GET `/exams` | class_id,status,start_date,end_date | 考试及科目列表 | 否 |
+| exam_delete | DELETE `/exams/{id}` | — | 删除考试、成绩、科目与统计缓存 | 是 |
+| score_statistics | GET `/exams/{id}/statistics` | subject | 多维统计（概览/科目对比/分数段分布/总分排名，带指纹缓存） | 否 |
 | score_batch_save | POST `/exams/{id}/scores` | scores[] | 成绩与排名 | 是 |
 | score_query | GET `/exams/{id}/scores` | student_id,subject | 成绩 | 否 |
 | timetable_base_get | GET `/classes/{id}/timetable/base` | class id | 周课表 | 否 |

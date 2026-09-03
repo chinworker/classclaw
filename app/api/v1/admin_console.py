@@ -5,11 +5,16 @@ from sqlalchemy.orm import Session
 
 from app.core.errors import AppError
 from app.core.responses import ok
-from app.core.security import Principal, require_admin
+from app.core.security import require_admin
 from app.database import get_db
-from app.schemas.admin import AdminClassOwnerUpdate, AdminInitializeRequest, AdminSettingUpdate, OpenClawAgentUpdate, OpenClawGlobalUpdate, OpenClawWorkspaceFileUpdate
-from app.services import admin_console, openclaw_bridge, openclaw_provisioning
-
+from app.schemas.admin import (
+    AdminClassOwnerUpdate,
+    AdminInitializeRequest,
+    OpenClawAgentUpdate,
+    OpenClawGlobalUpdate,
+    OpenClawWorkspaceFileUpdate,
+)
+from app.services import admin_console, openclaw_bridge
 
 router = APIRouter(prefix="/admin", tags=["管理员控制台"], dependencies=[Depends(require_admin)])
 
@@ -32,13 +37,8 @@ async def usage_agents(request: Request, days: int = Query(30, ge=1, le=365), db
 
 
 @router.get("/settings")
-def settings_list(request: Request, db: Session = Depends(get_db)):
-    return ok(request, admin_console.list_settings(db))
-
-
-@router.put("/settings/{key}")
-def settings_update(request: Request, key: str, body: AdminSettingUpdate, principal: Principal = Depends(require_admin), db: Session = Depends(get_db)):
-    return ok(request, admin_console.update_setting(db, key, body.value, operator_id=principal.user_id), "配置已保存")
+def settings_list(request: Request):
+    return ok(request, admin_console.list_settings())
 
 
 @router.post("/classes", status_code=201)

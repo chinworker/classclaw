@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from fastapi import APIRouter, Body, Depends, Query, Request
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -10,9 +10,17 @@ from app.core.responses import ok
 from app.core.security import require_owned_class, require_owned_record, require_owned_student, scoped_class_id
 from app.database import get_db
 from app.models.entities import AttendanceRecord, Exam, Homework, HomeworkStudentStatus, Score, StudentEvent
-from app.schemas.domain import AttendanceSet, ExamCreate, HomeworkBatchStatus, HomeworkCreate, ScoreBatch, StudentEventAnalyzeRequest, StudentEventCreate
-from app.services import academic as service, admin_console, openclaw_bridge
-
+from app.schemas.domain import (
+    AttendanceSet,
+    ExamCreate,
+    HomeworkBatchStatus,
+    HomeworkCreate,
+    ScoreBatch,
+    StudentEventAnalyzeRequest,
+    StudentEventCreate,
+)
+from app.services import academic as service
+from app.services import admin_console, ai_tasks, openclaw_bridge
 
 router = APIRouter(tags=["作业、表现、考勤与成绩"])
 
@@ -76,17 +84,19 @@ def student_event_create(request: Request, body: StudentEventCreate, db: Session
 async def student_event_analyze(request: Request, class_id: str, body: StudentEventAnalyzeRequest, db: Session = Depends(get_db)):
     require_owned_class(request, class_id)
     require_owned_student(request, db, body.student_id)
-    admin_console.require_feature(db, "feature.event_ai")
-    result = await openclaw_bridge.analyze_student_event(
-        db,
-        class_id,
-        body.student_id,
-        body.event_date,
-        body.content,
-        body.subject,
-        cancelled=request.is_disconnected,
-    )
-    return ok(request, result, "事件已分析，请核对后登记")
+    admin_console.require_feature("feature.event_ai")
+    async with ai_tasks.track(request) as cancelled:
+        result = await openclaw_bridge.analyze_student_event(
+            db,
+            class_id,
+            body.student_id,
+            body.event_date,
+            body.content,
+            body.subject,
+            cancelled=cancelled,
+        )
+        message = "事件已分析，请核对后登记" if result["analysis"]["accepted"] else "AI 认为事件描述不够明确，未采用本次结果"
+        return ok(request, result, message)
 
 
 @router.post("/student-events/batch", status_code=201)
@@ -175,6 +185,12 @@ def exam_list(
 ):
     class_id = scoped_class_id(request, class_id)
     return ok(request, service.list_exams(db, class_id=class_id, status=status, start_date=start_date, end_date=end_date))
+
+
+@router.delete("/exams/{exam_id}")
+def exam_delete(request: Request, exam_id: str, db: Session = Depends(get_db)):
+    require_owned_record(request, db, Exam, exam_id)
+    return ok(request, service.delete_exam(db, exam_id), "考试已删除")
 
 
 @router.post("/exams/{exam_id}/scores", status_code=201)

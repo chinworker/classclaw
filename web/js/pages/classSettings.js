@@ -2,6 +2,7 @@
 
 import { el, clear, toast } from "../util.js";
 import { api } from "../api.js";
+import { appConfig } from "../config.js";
 import { state, refreshClassInfo, refreshIdentity } from "../state.js";
 import { navigate } from "../router.js";
 import { pageHeader, field, errorPanel, skeleton, confirmDanger, statusBadge, openModal } from "../components.js";
@@ -29,7 +30,10 @@ export async function render(mount, ctx, helpers) {
   ];
   const grid = el("div", { class: "form-grid" });
   for (const [key, label] of specs) {
-    const input = el("input", { type: key.startsWith("semester_") && key !== "semester_name" ? "date" : "text", value: cls[key] || "" });
+    const input = el("input", {
+      type: key.startsWith("semester_") && key !== "semester_name" ? "date" : "text",
+      value: cls[key] || appConfig.semester_defaults?.[key] || "",
+    });
     inputs[key] = input;
     grid.append(field(label, input));
   }
@@ -52,6 +56,7 @@ export async function render(mount, ctx, helpers) {
   mount.append(el("div", { class: "card" },
     el("h3", {}, "基本资料"),
     el("p", {}, el("b", {}, "状态："), statusBadge(cls.status), el("span", { class: "muted", style: { marginLeft: "8px" } }, `学期：${cls.semester_name || "未设置"}`)),
+    el("p", { class: "muted" }, "未设置学期时优先使用当前学期；寒暑假期间使用未来最近的一学期。日期由服务端按农历自动换算。"),
     grid, saveBtn));
 
   /* ---------- 危险区 ---------- */

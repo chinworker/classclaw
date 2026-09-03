@@ -9,7 +9,8 @@ from sqlalchemy import func, select
 from app.config import settings
 from app.database import Base
 from app.models.entities import AiUsageRecord, ClassAgentBinding, ClassRoom, Student, SystemSetting, User, UserSession
-from app.services import admin_console, logs as log_service, openclaw_bridge, openclaw_provisioning, openclaw_usage
+from app.services import admin_console, openclaw_bridge, openclaw_provisioning, openclaw_usage
+from app.services import logs as log_service
 from app.utils.time import now
 
 
@@ -34,16 +35,18 @@ def test_admin_console_overview_settings_and_usage(client, db):
 
     settings_response = client.get("/api/v1/admin/settings", headers=_admin_header())
     assert settings_response.status_code == 200
-    keys = {item["key"] for item in settings_response.json()["data"]}
+    rows = settings_response.json()["data"]
+    keys = {item["key"] for item in rows}
     assert {"feature.file_analysis", "admin.usage_window_days"} <= keys
+    assert all(item["source"] == "startup_config" and item["restart_required"] is True for item in rows)
 
     changed = client.put(
         "/api/v1/admin/settings/admin.usage_window_days",
         headers=_admin_header(),
         json={"value": 90},
     )
-    assert changed.status_code == 200
-    assert db.scalar(select(SystemSetting.value_json).where(SystemSetting.key == "admin.usage_window_days")) == 90
+    assert changed.status_code == 404
+    assert db.scalar(select(SystemSetting.value_json).where(SystemSetting.key == "admin.usage_window_days")) is None
 
     db.add(AiUsageRecord(operation="event", model="openclaw/main", input_tokens=120, output_tokens=30, total_tokens=150, cached_input_tokens=20))
     db.commit()
@@ -78,14 +81,13 @@ def test_admin_updates_and_assigns_class(client, db):
     assert db.get(ClassRoom, class_id).owner_user_id is None
 
 
-def test_feature_switch_blocks_the_feature(client, sample):
+def test_feature_switch_blocks_the_feature(client, sample, monkeypatch):
     cls, _other, students = sample
-    disabled = client.put(
-        "/api/v1/admin/settings/feature.event_ai",
-        headers=_admin_header(),
-        json={"value": False},
+    test_settings = replace(
+        settings,
+        features=settings.features.model_copy(update={"event_ai": False}),
     )
-    assert disabled.status_code == 200
+    monkeypatch.setattr(admin_console, "settings", test_settings)
     response = client.post(
         f"/api/v1/classes/{cls.id}/student-events/analyze",
         headers=_admin_header(),
@@ -93,6 +95,14 @@ def test_feature_switch_blocks_the_feature(client, sample):
     )
     assert response.status_code == 403
     assert response.json()["error"]["code"] == "FEATURE_DISABLED"
+
+
+def test_legacy_database_setting_does_not_override_startup_config(client, db):
+    db.add(SystemSetting(key="feature.file_analysis", value_json=False))
+    db.commit()
+    rows = client.get("/api/v1/admin/settings", headers=_admin_header()).json()["data"]
+    value = next(item["value"] for item in rows if item["key"] == "feature.file_analysis")
+    assert value is settings.features.file_analysis
 
 
 def test_admin_initialize_factory_resets_everything_and_recreates_defaults(client, db, monkeypatch, tmp_path):

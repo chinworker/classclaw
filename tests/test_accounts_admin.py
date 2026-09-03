@@ -12,7 +12,7 @@ def _admin_header() -> dict[str, str]:
 
 
 def test_default_admin_login(client):
-    logged_in = client.post("/api/v1/auth/login", json={"username": "ADMIN", "password": "32767"})
+    logged_in = client.post("/api/v1/auth/login", json={"username": "ADMIN", "password": settings.default_admin_password})
     assert logged_in.status_code == 200
     assert logged_in.json()["data"]["user"]["role"] == "admin"
 

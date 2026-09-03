@@ -2,16 +2,17 @@
 // 组件只接受结构化数据，动态文本一律经 textContent 安全插入。
 
 import { el, clear, escapeHtml, fmtDateTime, toast, copyText } from "./util.js";
-import { api, ApiError } from "./api.js";
+import { api, ApiError, createAiTaskId } from "./api.js";
+import { appConfig, featureEnabled } from "./config.js";
 
 /* ---------------- Modal ---------------- */
 
 const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
-export function openModal({ title, body, actions = [], wide = false, onClose = null, dismissible = true }) {
+export function openModal({ title, body, actions = [], wide = false, headClose = true, onClose = null, dismissible = true }) {
   const overlay = el("div", { class: "modal-overlay" });
   const modal = el("div", { class: `modal${wide ? " modal-wide" : ""}`, role: "dialog", "aria-modal": "true", "aria-label": title });
-  const closeBtn = el("button", { class: "modal-close", type: "button", "aria-label": "关闭" }, "关闭");
+  const closeBtn = headClose ? el("button", { class: "modal-close", type: "button", "aria-label": "关闭" }, "关闭") : null;
   const head = el("div", { class: "modal-head" }, el("h3", {}, title), closeBtn);
   const bodyBox = el("div", { class: "modal-body" });
   if (body) bodyBox.append(body);
@@ -34,7 +35,7 @@ export function openModal({ title, body, actions = [], wide = false, onClose = n
 
   function setSubmitting(value) {
     submitting = value;
-    closeBtn.disabled = value;
+    if (closeBtn) closeBtn.disabled = value;
     foot.querySelectorAll("button").forEach((b) => { b.disabled = value; });
   }
 
@@ -49,7 +50,7 @@ export function openModal({ title, body, actions = [], wide = false, onClose = n
     }
   }
 
-  closeBtn.addEventListener("click", close);
+  closeBtn?.addEventListener("click", close);
   overlay.addEventListener("mousedown", (event) => { if (event.target === overlay && dismissible && !submitting) close(); });
   document.addEventListener("keydown", onKey, true);
 
@@ -67,7 +68,7 @@ export function openModal({ title, body, actions = [], wide = false, onClose = n
   document.body.append(overlay);
   const firstInput = modal.querySelector("input, select, textarea") || modal.querySelector(FOCUSABLE);
   if (firstInput) firstInput.focus();
-  return { close, setSubmitting, body: bodyBox, modal };
+  return { close, setSubmitting, body: bodyBox, foot, modal };
 }
 
 // 危险操作二次确认：写明对象与影响，可要求输入特定文本。
@@ -232,6 +233,19 @@ export function fieldError(message) {
   return el("small", { class: "field-error", role: "alert" }, message);
 }
 
+export function showAiRejection(analysis, title = "AI 未采用本次数据") {
+  const reasons = (analysis?.reasons || []).filter(Boolean);
+  const body = el("div", {},
+    el("p", {}, "本次分析结果置信度不足，数据没有被使用。"),
+    el("div", { class: "issue issue-error" },
+      el("b", {}, "数据存在的问题"),
+      ...(reasons.length ? reasons : ["AI 未返回具体原因，请重新提供更清晰、完整的数据。"])
+        .map((reason) => el("p", {}, reason))),
+    el("p", { class: "muted" }, "请根据以上问题修改描述或文件后重新分析。"));
+  openModal({ title, body, actions: [{ label: "知道了", kind: "primary" }] });
+  return reasons;
+}
+
 /* ---------------- AI Button ---------------- */
 
 export function aiButton({
@@ -299,10 +313,11 @@ export function aiButton({
       return;
     }
     const controller = new AbortController();
+    const taskId = createAiTaskId();
     activeController = controller;
     setRunning(true);
     try {
-      await onRun({ signal: controller.signal, button });
+      await onRun({ signal: controller.signal, taskId, button });
     } finally {
       if (activeController === controller) {
         activeController = null;
@@ -334,12 +349,13 @@ export function fileDropzone({
   busyText = "正在上传…",
   manualStart = false,
   onBusyChange = null,
+  disabled = false,
 }) {
-  const input = el("input", { type: "file", hidden: true });
+  const input = el("input", { type: "file", hidden: true, disabled });
   if (accept) input.setAttribute("accept", accept);
   if (multiple) input.setAttribute("multiple", "");
-  const zone = el("div", { class: "dropzone", tabindex: "0", role: manualStart ? "group" : "button", "aria-label": hint },
-    el("b", {}, hint), el("span", { class: "muted" }, "文件会安全上传并进行识别"));
+  const zone = el("div", { class: `dropzone${disabled ? " disabled" : ""}`, tabindex: disabled ? "-1" : "0", role: manualStart ? "group" : "button", "aria-label": hint, "aria-disabled": disabled ? "true" : null },
+    el("b", {}, disabled ? "文件智能解析已关闭" : hint), el("span", { class: "muted" }, disabled ? "仍可使用页面中的手动录入功能" : "文件会安全上传并进行识别"));
   const progress = el("div", { class: "drop-progress hidden" });
   const selectedLine = el("span", { class: "drop-selected muted hidden" });
   let selectedFiles = [];
@@ -356,7 +372,7 @@ export function fileDropzone({
   }
 
   function fire(files) {
-    if (!files?.length || busy) return;
+    if (!files?.length || busy || disabled) return;
     selectedFiles = [...files];
     if (!manualStart) {
       onFiles(selectedFiles, { zone, setBusy, signal: null });
@@ -373,23 +389,23 @@ export function fileDropzone({
       runningLabel: "取消解析",
       disabled: true,
       onBusyChange: (value) => setBusy(value, busyText),
-      onRun: ({ signal }) => onFiles([...selectedFiles], { zone, setBusy, signal }),
+      onRun: ({ signal, taskId }) => onFiles([...selectedFiles], { zone, setBusy, signal, taskId }),
     });
     action.el.addEventListener("click", (event) => event.stopPropagation());
   }
   zone.append(input, selectedLine, progress);
   if (action) zone.append(action.el);
-  zone.addEventListener("click", () => { if (!busy) input.click(); });
+  zone.addEventListener("click", () => { if (!busy && !disabled) input.click(); });
   zone.addEventListener("keydown", (e) => {
-    if (!busy && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); input.click(); }
+    if (!busy && !disabled && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); input.click(); }
   });
   input.addEventListener("change", () => { fire(input.files); input.value = ""; });
-  zone.addEventListener("dragover", (e) => { e.preventDefault(); if (!busy) zone.classList.add("dragging"); });
+  zone.addEventListener("dragover", (e) => { e.preventDefault(); if (!busy && !disabled) zone.classList.add("dragging"); });
   zone.addEventListener("dragleave", () => zone.classList.remove("dragging"));
   zone.addEventListener("drop", (e) => {
     e.preventDefault();
     zone.classList.remove("dragging");
-    if (!busy) fire(e.dataTransfer.files);
+    if (!busy && !disabled) fire(e.dataTransfer.files);
   });
   return zone;
 }
@@ -404,6 +420,12 @@ export function qrBindingPanel(classId, { onDone = null, compact = false } = {})
   const startBtn = el("button", { class: "primary", type: "button" }, "绑定微信 / 重新生成二维码");
   box.append(statusLine, img, errLine, el("div", { class: "row-gap" }, startBtn));
   let pollTimer = null; let inFlight = false; let deadline = 0; let currentQr = null;
+
+  if (!featureEnabled("wechat_binding")) {
+    startBtn.disabled = true;
+    startBtn.textContent = "微信绑定已关闭";
+    statusLine.textContent = "管理员已在启动配置中关闭微信绑定。";
+  }
 
   function stopPoll() { clearTimeout(pollTimer); pollTimer = null; inFlight = false; }
   function schedule(delay) { clearTimeout(pollTimer); pollTimer = setTimeout(poll, delay); }
@@ -434,13 +456,14 @@ export function qrBindingPanel(classId, { onDone = null, compact = false } = {})
   }
 
   async function start(force = true) {
+    if (!featureEnabled("wechat_binding")) return;
     stopPoll();
-    deadline = Date.now() + 5 * 60 * 1000;
+    deadline = Date.now() + appConfig.wechat.qr_binding_timeout_seconds * 1000;
     startBtn.disabled = true;
     statusLine.textContent = "正在启动微信登录会话…";
     try {
       const result = await api(`/classes/${classId}/agent-binding/start`, { method: "POST", body: { force } });
-      if (!showResult(result)) schedule(1500);
+      if (!showResult(result)) schedule(appConfig.wechat.qr_initial_poll_ms);
     } catch (error) {
       statusLine.textContent = `无法开始绑定：${error.message}`;
       if (error.code === "WECHAT_QR_UNAVAILABLE") { errLine.textContent = "二维码不可用，请重新生成。"; errLine.classList.remove("hidden"); }
@@ -457,10 +480,10 @@ export function qrBindingPanel(classId, { onDone = null, compact = false } = {})
     try {
       // 轮询不重复提交大 PNG：仅在第一次发送二维码内容，此后传 null
       const result = await api(`/classes/${classId}/agent-binding/wait`, { method: "POST", body: { current_qr_data_url: null } });
-      if (!showResult(result)) schedule(2000);
+      if (!showResult(result)) schedule(appConfig.wechat.qr_poll_ms);
     } catch (error) {
       statusLine.textContent = `自动确认暂未完成：${error.message}，页面会继续重试。`;
-      schedule(3500);
+      schedule(appConfig.wechat.qr_retry_ms);
     } finally { inFlight = false; }
   }
 

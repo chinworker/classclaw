@@ -10,9 +10,16 @@ from app.core.responses import ok
 from app.core.security import require_owned_class, require_owned_record
 from app.database import get_db
 from app.models.entities import BaseTimetable, ClassPeriod, ClassSubject, LessonOverride
-from app.schemas.domain import LessonBatchChangeRequest, LessonOverrideCreate, LessonSwapRequest, PeriodCreate, TimetableImportApply, TimetableReplace
-from app.services import admin_console, openclaw_bridge, operations, timetable as service
-
+from app.schemas.domain import (
+    LessonBatchChangeRequest,
+    LessonOverrideCreate,
+    LessonSwapRequest,
+    PeriodCreate,
+    TimetableImportApply,
+    TimetableReplace,
+)
+from app.services import admin_console, ai_tasks, openclaw_bridge, operations
+from app.services import timetable as service
 
 router = APIRouter(tags=["课表与调课"])
 
@@ -50,21 +57,20 @@ def timetable_base_update(request: Request, class_id: str, body: TimetableReplac
 @router.post("/classes/{class_id}/timetable/import-preview")
 async def timetable_import_preview(request: Request, class_id: str, files: list[UploadFile] = File(...), db: Session = Depends(get_db)):
     require_owned_class(request, class_id)
-    admin_console.require_feature(db, "feature.file_analysis")
+    admin_console.require_feature("feature.file_analysis")
     if not files or len(files) > 4:
         from app.core.errors import AppError
 
         raise AppError("VALIDATION_ERROR", "每次请上传 1 至 4 个课表文件", 422)
-    attachments = []
-    for upload in files:
-        attachment = operations.save_attachment(db, upload, None, "课表文件识别")
-        operations.link_attachment(db, attachment.id, "class", class_id)
-        attachments.append(attachment)
-    return ok(
-        request,
-        await openclaw_bridge.analyze_timetable_files(db, class_id, attachments, cancelled=request.is_disconnected),
-        "课表文件已整理，请核对预览后保存",
-    )
+    async with ai_tasks.track(request) as cancelled:
+        attachments = []
+        for upload in files:
+            attachment = operations.save_attachment(db, upload, None, "课表文件识别")
+            operations.link_attachment(db, attachment.id, "class", class_id)
+            attachments.append(attachment)
+        result = await openclaw_bridge.analyze_timetable_files(db, class_id, attachments, cancelled=cancelled)
+        message = "课表文件已整理，请核对预览后保存" if result["analysis"]["accepted"] else "AI 认为课表数据不够可靠，未采用本次结果"
+        return ok(request, result, message)
 
 
 @router.post("/classes/{class_id}/timetable/import-apply")

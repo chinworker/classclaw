@@ -2,16 +2,16 @@
 
 主要表按领域分组：
 
-- 班级与学生：`classes`、`system_settings`、`students`、`class_subjects`
+- 班级与学生：`classes`、`system_settings`、`students`、`class_subjects`（`system_settings` 仅保留运行数据如当前班级选择，不承载部署配置）
 - 座位：`seating_snapshots`，二维 JSON 保存完整布局；每个版本有名称，可重命名或单独删除，最新版本作为当前座位表
 - 值日：`duty_rules`、`duty_schedules`、`duty_assignments`、`duty_score_items`、`duty_evaluations`、`duty_evaluation_details`
-- 教学：`homework`、`homework_student_statuses`、`student_events`、`attendance_records`、`exams`、`exam_subjects`、`scores`
+- 教学：`homework`、`homework_student_statuses`、`student_events`、`attendance_records`、`exams`、`exam_subjects`、`scores`；确定性分析缓存保存在 `analysis_cache`（以数据指纹为键，超上限自动清理最旧条目，删除考试时同步清理）
 - 课表：`class_periods`、`base_timetable`、`lesson_overrides`
 - 工作流与运维：`arrangements`、`reminders`、`attachments`、`attachment_links`、`interaction_analyses`、`audit_logs`、`write_proposals`、`class_onboarding_sessions`、`class_agent_bindings`、`ai_usage_records`
 
 所有主键为 UUID 字符串。主要唯一约束包括：班级+学号、学生+日期+考勤时段、考试+学生+科目、班级+星期+节次、班级+`lesson_key`、外部消息 ID。学生和学生事件支持软删除；班级采用停用。历史记录通过学生 UUID 关联，不靠姓名。
 
-值日任务 `duty_assignments.score` 使用 0–5 分。评分后任务状态为完成；查询值日时会把前一天及更早仍未评分的任务补为 5 分完成。考勤无记录默认按出勤统计。
+值日计划由静态规则生成预览，并在用户整体确认后一次性写入全部任务。`duty_assignments.score` 使用 0–5 分；评分后任务状态为完成，查询值日时会把前一天及更早仍未评分的任务补为 5 分完成。考勤无记录默认按出勤统计。
 
 SQLite 不保存附件 BLOB。`attachments.stored_path` 是相对附件父目录的路径，保存 SHA-256、大小和 MIME；`attachment_links` 以实体类型和实体 ID 建立通用关联。
 
@@ -21,4 +21,4 @@ SQLite 不保存附件 BLOB。`attachments.stored_path` 是相对附件父目录
 
 `ai_usage_records` 只保存 OpenClaw Responses API 返回的模型、调用类型和 input/output/cached/total Token 数，不保存 prompt、回复或用户消息。该表用于管理员控制台统计，从迁移 `0009` 后开始累计。
 
-迁移入口为 `alembic upgrade head`。首版迁移从 SQLAlchemy metadata 创建完整 schema，后续版本应使用 Alembic revision 明确记录增量变化。
+迁移入口为 `alembic upgrade head`。首版迁移从 SQLAlchemy metadata 创建完整 schema，后续版本应使用 Alembic revision 明确记录增量变化；已发布迁移 `0010` 保留在历史中，其动态值日字段由 `0011` 安全移除。

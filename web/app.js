@@ -1,7 +1,8 @@
 // ClassClaw 工作台入口：登录恢复、AppShell、路由守卫、页面挂载。
 
-import { el, clear, toast, todayStr, installEnhancedControls } from "./js/util.js";
-import { onUnauthorized } from "./js/api.js";
+import { el, clear, toast, todayStr, installEnhancedControls, configureTime } from "./js/util.js";
+import { configureApi, onUnauthorized } from "./js/api.js";
+import { appConfig, loadAppConfig } from "./js/config.js";
 import { login, logout, restoreSession } from "./js/auth.js";
 import { state, clearSession, refreshIdentity, refreshClassInfo, refreshOpenclaw, savePrefs } from "./js/state.js";
 import { defineRoutes, setRouteResolver, startRouter, dispatch, navigate, parseHash } from "./js/router.js";
@@ -13,7 +14,6 @@ installEnhancedControls();
 const TEACHER_NAV = [
   { group: "工作台", items: [
     { path: "/dashboard", label: "今日仪表盘", requiresClass: true },
-    { path: "/briefing", label: "每日早报", requiresClass: true },
   ]},
   { group: "快捷查询", items: [
     { path: "/query", label: "班级问题查询", requiresClass: true },
@@ -44,7 +44,7 @@ const TEACHER_NAV = [
     { path: "/workflow", label: "待确认记录" },
   ]},
   { group: "智能体", items: [
-    { path: "/agent", label: "班级助手与微信" },
+    { path: "/agent", label: "班级 Agent 对话" },
   ]},
   { group: "账户", items: [
     { path: "/account", label: "账户设置" },
@@ -67,7 +67,7 @@ const ADMIN_NAV = [
     { path: "/admin/audit", label: "审计日志" },
   ]},
   { group: "系统", items: [
-    { path: "/admin/settings", label: "功能与常量" },
+    { path: "/admin/settings", label: "静态配置" },
   ]},
 ];
 
@@ -78,7 +78,6 @@ for (const group of NAV) for (const item of group.items) PAGE_META[item.path] = 
 
 const routes = [
   { path: "/dashboard", title: "今日仪表盘", loader: () => import("./js/pages/dashboard.js"), requiresClass: true },
-  { path: "/briefing", title: "每日早报", loader: () => import("./js/pages/briefing.js"), requiresClass: true },
   { path: "/query", title: "快捷查询", loader: () => import("./js/pages/query.js"), requiresClass: true },
   { path: "/students", title: "学生档案", loader: () => import("./js/pages/students.js"), requiresClass: true },
   { path: "/seating", title: "座位表", loader: () => import("./js/pages/seating.js"), requiresClass: true },
@@ -95,7 +94,7 @@ const routes = [
   { path: "/analytics/class", title: "班级分析", loader: () => import("./js/pages/analytics.js?v=20260901-analytics-fix"), requiresClass: true, section: "class" },
   { path: "/analytics/attention", title: "重点关注", loader: () => import("./js/pages/analytics.js?v=20260901-analytics-fix"), requiresClass: true, section: "attention" },
   { path: "/workflow", title: "待确认记录", loader: () => import("./js/pages/workflow.js") },
-  { path: "/agent", title: "班级助手与微信", loader: () => import("./js/pages/agent.js") },
+  { path: "/agent", title: "班级 Agent 对话", loader: () => import("./js/pages/agent.js?v=20260903-agent-chat") },
   { path: "/admin/overview", title: "运行概览", loader: () => import("./js/pages/adminOverview.js"), adminOnly: true },
   { path: "/admin/users", title: "用户管理", loader: () => import("./js/pages/adminUsers.js"), adminOnly: true },
   { path: "/admin/classes", title: "班级管理", loader: () => import("./js/pages/adminClasses.js"), adminOnly: true },
@@ -105,7 +104,7 @@ const routes = [
   { path: "/admin/logs", title: "运行日志", loader: () => import("./js/pages/adminLogs.js"), adminOnly: true },
   { path: "/admin/database", title: "数据库调试", loader: () => import("./js/pages/adminDatabase.js"), adminOnly: true },
   { path: "/admin/audit", title: "审计日志", loader: () => import("./js/pages/adminAudit.js"), adminOnly: true },
-  { path: "/admin/settings", title: "功能与常量", loader: () => import("./js/pages/adminSettings.js"), adminOnly: true },
+  { path: "/admin/settings", title: "静态配置", loader: () => import("./js/pages/adminSettings.js"), adminOnly: true },
   { path: "/account", title: "账户设置", loader: () => import("./js/pages/account.js") },
   { path: "/welcome", title: "创建班级", loader: () => import("./js/pages/welcome.js"), bare: true },
   { path: "/onboarding", title: "班级创建向导", loader: () => import("./js/pages/onboarding.js?v=20260901-onboarding-actions") },
@@ -154,9 +153,9 @@ function renderLogin(notice = null) {
   root.append(el("div", { class: "login-page" },
     el("div", { class: "login-card" },
       el("div", { class: "brand-line" },
-        el("span", { class: "brand-mark" }, "C"),
-        el("div", {}, el("h2", { style: { margin: "0" } }, "ClassClaw"), el("span", { class: "muted" }, "班主任工作台"))),
-      el("p", { class: "muted" }, "班级管理、座位课表、值日作业考勤与班级专属智能体。"),
+        el("span", { class: "brand-mark" }, appConfig.brand.mark),
+        el("div", {}, el("h2", { style: { margin: "0" } }, appConfig.brand.name), el("span", { class: "muted" }, appConfig.brand.subtitle))),
+      el("p", { class: "muted" }, appConfig.brand.login_description),
       notice ? el("p", { class: "login-hint" }, notice) : null,
       form,
       el("p", { class: "login-hint" }, "班主任账号由管理员创建，系统不提供自行注册。"))));
@@ -168,8 +167,8 @@ function buildShell() {
   const isAdmin = state.user?.role === "admin";
   const sidebar = el("aside", { class: "sidebar", id: "sidebar" });
   sidebar.append(el("div", { class: "brand-line" },
-    el("span", { class: "brand-mark" }, "C"),
-    el("div", {}, el("b", {}, isAdmin ? "ClassClaw Control" : "ClassClaw"), el("span", { class: "muted", style: { fontSize: "12px" } }, isAdmin ? "ADMIN CONSOLE" : "班主任工作台"))));
+    el("span", { class: "brand-mark" }, appConfig.brand.mark),
+    el("div", {}, el("b", {}, isAdmin ? appConfig.brand.admin_name : appConfig.brand.name), el("span", { class: "muted", style: { fontSize: "12px" } }, isAdmin ? appConfig.brand.admin_subtitle : appConfig.brand.subtitle))));
   const navMap = new Map();
   for (const group of (isAdmin ? ADMIN_NAV : TEACHER_NAV)) {
     const box = el("div", { class: "nav-group" }, el("div", { class: "nav-group-title" }, group.group));
@@ -334,6 +333,9 @@ startRouter();
 
 (async function boot() {
   try {
+    await loadAppConfig();
+    configureTime(appConfig.runtime);
+    configureApi(appConfig.web);
     const me = await restoreSession();
     if (me) {
       await renderApp();

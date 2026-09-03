@@ -43,7 +43,7 @@ def test_timetable_file_preview_and_apply(client, sample, monkeypatch):
         return {
             "periods": [{"period_no": 1, "name": "第一节", "sort_order": 1, "enabled": True}],
             "items": [{"weekday": 1, "period_no": 1, "subject": "语文", "teacher": "张老师", "room": "101"}],
-            "analysis": {"summary": "识别完成", "warnings": [], "confidence": 0.9},
+            "analysis": {"accepted": True, "summary": "识别完成", "warnings": [], "confidence": 0.9, "reasons": ["星期、节次和科目清晰"]},
             "attachments": attachments,
         }
 
@@ -79,7 +79,7 @@ def test_seating_file_preview(client, sample, monkeypatch):
             "layout": [[students[0].id, students[1].id, None]],
             "seated_count": 2,
             "unseated_count": 1,
-            "analysis": {"summary": "识别完成", "warnings": [], "confidence": 1},
+            "analysis": {"accepted": True, "summary": "识别完成", "warnings": [], "confidence": 1, "reasons": ["行列和学生身份清晰"]},
             "attachments": attachments,
         }
 
@@ -111,31 +111,16 @@ def test_seating_versions_can_be_named_renamed_and_deleted(client, sample):
     assert client.get(f"/api/v1/classes/{cls.id}/seating/current").json()["data"] is None
 
 
-def test_natural_language_duty_rule_and_list(client, sample, monkeypatch):
+def test_static_duty_rule_crud_still_works(client, sample):
     cls, _, _ = sample
     normalized = {"items": [{"name": "扫地", "count": 2}], "workdays": [1, 2, 3, 4, 5], "exclude_students": [], "skip_dates": []}
-
-    async def analyze(_db, class_id, text, base_rule, *, cancelled=None):
-        assert class_id == cls.id
-        assert cancelled is not None
-        assert "周五" in text
-        assert base_rule["items"][0]["name"] == "扫地"
-        return {"rule_json": normalized, "analysis": {"summary": "已合并", "warnings": [], "confidence": 0.95}}
-
-    monkeypatch.setattr(openclaw_bridge, "analyze_duty_rule", analyze)
-    preview = client.post(
-        f"/api/v1/classes/{cls.id}/duty/rules/analyze",
-        json={"text": "周五多安排一人", "base_rule": {"items": [{"name": "扫地", "count": 2}], "workdays": [1, 2, 3, 4, 5]}},
-    )
-    assert preview.status_code == 200
-
     saved = client.post(
         "/api/v1/duty/rules",
         json={
             "class_id": cls.id,
             "name": "日常值日",
-            "original_text": "周五多安排一人",
-            "rule_json": preview.json()["data"]["rule_json"],
+            "original_text": None,
+            "rule_json": normalized,
             "effective_from": "2026-08-30",
             "effective_to": "2026-12-31",
             "status": "active",
@@ -188,6 +173,12 @@ def test_web_student_event_is_classified_before_direct_save(client, sample, monk
                 "event_time": None, "score_delta": None, "source_message_id": None, "attachment_id": None,
             },
             "summary": "忘带学习用品，判为负向",
+            "analysis": {
+                "accepted": True,
+                "confidence": 0.96,
+                "reasons": ["内容明确描述了忘带课本"],
+                "warnings": [],
+            },
         }
 
     monkeypatch.setattr(openclaw_bridge, "analyze_student_event", analyze)
