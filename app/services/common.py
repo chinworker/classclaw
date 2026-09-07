@@ -21,6 +21,7 @@ AUDITED_ACTIONS = {
     ("recover_provision", "class_agent_binding"),
     ("provision", "class_agent_binding"),
     ("bind_channel", "class_agent_binding"),
+    ("update_agent_models", "class_agent_binding"),
 }
 
 

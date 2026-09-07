@@ -5,6 +5,7 @@ import { api, AI_REQUEST_TIMEOUT_MS, createAiTaskId } from "../api.js";
 import { appConfig, featureEnabled } from "../config.js";
 import { state, refreshOpenclaw } from "../state.js";
 import { pageHeader, errorPanel, skeleton, statusBadge, qrBindingPanel, openclawBlocked, emptyState } from "../components.js";
+import { openAgentModelSettings } from "../agentModelSettings.js";
 
 const MAX_FILES = 8;
 const ACCEPTED_FILES = ".xlsx,.xlsm,.docx,.pptx,.csv,.tsv,.pdf,.png,.jpg,.jpeg,.gif,.webp,.heic,.heif,.json,.xml,.rtf,.md,.markdown,.txt";
@@ -14,6 +15,10 @@ const chatRuntime = {
   messages: [],
   activeController: null,
   recognition: null,
+  mediaRecorder: null,
+  mediaStream: null,
+  voiceController: null,
+  discardRecording: false,
 };
 
 function newId() {
@@ -26,12 +31,19 @@ function newId() {
 
 function resetRuntime(scope = chatRuntime.scope) {
   chatRuntime.activeController?.abort();
+  chatRuntime.voiceController?.abort();
   try { chatRuntime.recognition?.stop(); } catch { /* 已停止 */ }
+  chatRuntime.discardRecording = true;
+  try { if (chatRuntime.mediaRecorder?.state === "recording") chatRuntime.mediaRecorder.stop(); } catch { /* 已停止 */ }
+  chatRuntime.mediaStream?.getTracks().forEach((track) => track.stop());
   chatRuntime.scope = scope;
   chatRuntime.conversationId = newId();
   chatRuntime.messages = [];
   chatRuntime.activeController = null;
   chatRuntime.recognition = null;
+  chatRuntime.mediaRecorder = null;
+  chatRuntime.mediaStream = null;
+  chatRuntime.voiceController = null;
 }
 
 function fileSize(bytes) {
@@ -67,10 +79,18 @@ function welcomeNode(onSuggestion) {
 }
 
 function bindingPanel(binding, mount, ctx, helpers) {
+  const modelButton = el("button", { class: "secondary agent-model-button", type: "button" }, "模型设置");
+  modelButton.addEventListener("click", () => openAgentModelSettings(state.classId, {
+    onSaved: (result) => {
+      resetRuntime();
+      window.setTimeout(() => render(mount, ctx, helpers), result.restart_requested ? 1600 : 0);
+    },
+  }));
   const body = el("div", { class: "agent-binding-body" },
     el("p", {}, el("b", {}, binding.agent_name)),
     el("p", { class: "muted" }, binding.linked_at ? `微信绑定于 ${fmtDateTime(binding.linked_at)}` : "网页对话不要求绑定微信，需要时可在这里扫码。"),
-    binding.last_error ? el("p", { class: "field-error" }, `最近错误：${binding.last_error}`) : null);
+    binding.last_error ? el("p", { class: "field-error" }, `最近错误：${binding.last_error}`) : null,
+    el("div", { class: "agent-binding-actions" }, modelButton));
   const details = el("details", { class: "agent-binding-card" },
     el("summary", {},
       el("span", {}, "Agent 与微信"),
@@ -104,6 +124,7 @@ function chatPanel(binding) {
   let selectedFiles = [];
   let busy = false;
   let listening = false;
+  let transcribing = false;
   let thinkingNode = null;
   const fileAnalysisEnabled = featureEnabled("file_analysis");
   const maxBytes = Number(appConfig.storage.max_attachment_bytes) || 20 * 1024 * 1024;
@@ -125,11 +146,15 @@ function chatPanel(binding) {
     aria: { label: "上传文件" },
   }, "附件");
   const Recognition = globalThis.SpeechRecognition || globalThis.webkitSpeechRecognition;
+  const modelVoiceSupported = Boolean(globalThis.MediaRecorder && navigator.mediaDevices?.getUserMedia);
+  const voiceSupported = binding.speech_model ? modelVoiceSupported : Boolean(Recognition);
   const voiceButton = el("button", {
     class: "agent-composer-tool",
     type: "button",
-    disabled: !Recognition,
-    title: Recognition ? "语音输入" : "当前浏览器不支持语音转文字",
+    disabled: !voiceSupported,
+    title: voiceSupported
+      ? binding.speech_model ? `使用 ${binding.speech_model} 录音并转写` : "使用浏览器语音输入"
+      : "当前浏览器不支持所选语音输入方式",
     aria: { label: "语音输入" },
   }, "语音");
   const sendButton = el("button", { class: "agent-chat-send", type: "button", aria: { label: "发送消息" } }, "发送");
@@ -187,19 +212,90 @@ function chatPanel(binding) {
     textarea.disabled = value;
     fileInput.disabled = value || !fileAnalysisEnabled;
     attachButton.disabled = value || !fileAnalysisEnabled;
-    voiceButton.disabled = value || !Recognition;
+    voiceButton.disabled = value || transcribing || !voiceSupported;
     sendButton.classList.toggle("hidden", value);
     stopButton.classList.toggle("hidden", !value);
     statusLine.textContent = value ? "班级 Agent 正在处理，可随时停止" : "Enter 发送 · Shift+Enter 换行";
   }
 
-  function stopVoice() {
+  function stopVoice(discard = false) {
     if (!listening) return;
+    chatRuntime.discardRecording = discard;
     try { chatRuntime.recognition?.stop(); } catch { /* 已停止 */ }
+    try { if (chatRuntime.mediaRecorder?.state === "recording") chatRuntime.mediaRecorder.stop(); } catch { /* 已停止 */ }
   }
 
-  function startVoice() {
-    if (!Recognition || busy) return;
+  function resetVoiceButton(message = "语音已转成文字，可修改后发送") {
+    listening = false;
+    voiceButton.classList.remove("active");
+    voiceButton.textContent = "语音";
+    statusLine.textContent = message;
+    textarea.focus();
+  }
+
+  async function startModelVoice() {
+    if (!modelVoiceSupported) return;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const candidates = ["audio/webm;codecs=opus", "audio/mp4", "audio/ogg;codecs=opus"];
+      const mimeType = candidates.find((item) => globalThis.MediaRecorder.isTypeSupported?.(item)) || "";
+      const recorder = new globalThis.MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+      const chunks = [];
+      chatRuntime.mediaStream = stream;
+      chatRuntime.mediaRecorder = recorder;
+      chatRuntime.discardRecording = false;
+      recorder.addEventListener("dataavailable", (event) => { if (event.data.size) chunks.push(event.data); });
+      recorder.addEventListener("start", () => {
+        listening = true;
+        voiceButton.classList.add("active");
+        voiceButton.textContent = "停止录音";
+        statusLine.textContent = `正在录音，停止后由 ${binding.speech_model} 转写…`;
+      });
+      recorder.addEventListener("stop", async () => {
+        stream.getTracks().forEach((track) => track.stop());
+        chatRuntime.mediaStream = null;
+        chatRuntime.mediaRecorder = null;
+        const discard = chatRuntime.discardRecording;
+        chatRuntime.discardRecording = false;
+        if (discard || !chunks.length) { resetVoiceButton("录音已取消"); return; }
+        listening = false;
+        transcribing = true;
+        voiceButton.classList.remove("active");
+        voiceButton.textContent = "识别中";
+        voiceButton.disabled = true;
+        statusLine.textContent = `正在使用 ${binding.speech_model} 识别语音…`;
+        const type = recorder.mimeType || chunks[0].type || "audio/webm";
+        const extension = type.includes("mp4") ? "m4a" : type.includes("ogg") ? "ogg" : "webm";
+        const form = new FormData();
+        form.append("audio", new Blob(chunks, { type }), `voice-${Date.now()}.${extension}`);
+        const controller = new AbortController();
+        const taskId = createAiTaskId();
+        chatRuntime.voiceController = controller;
+        try {
+          const result = await api(`/classes/${state.classId}/agent-chat/transcriptions`, {
+            method: "POST", body: form, timeoutMs: AI_REQUEST_TIMEOUT_MS, signal: controller.signal, aiTaskId: taskId,
+          });
+          textarea.value = [textarea.value.trim(), result.text].filter(Boolean).join(" ");
+          resizeInput();
+          resetVoiceButton(`已由 ${result.model} 转成文字，可修改后发送`);
+        } catch (error) {
+          resetVoiceButton(error.code === "REQUEST_CANCELLED" ? "语音识别已取消" : "语音识别失败，请重试");
+          if (error.code !== "REQUEST_CANCELLED") toast(error.message, "error");
+        } finally {
+          transcribing = false;
+          if (chatRuntime.voiceController === controller) chatRuntime.voiceController = null;
+          voiceButton.disabled = busy || !voiceSupported;
+        }
+      });
+      recorder.start(250);
+    } catch (error) {
+      resetVoiceButton("无法使用麦克风");
+      toast(error?.name === "NotAllowedError" ? "请允许浏览器使用麦克风" : "录音无法启动，请重试", "error");
+    }
+  }
+
+  function startBrowserVoice() {
+    if (!Recognition) return;
     if (listening) { stopVoice(); return; }
     const recognition = new Recognition();
     const base = textarea.value.trim();
@@ -227,19 +323,23 @@ function chatPanel(binding) {
       if (event.error !== "aborted") toast(event.error === "not-allowed" ? "请允许浏览器使用麦克风" : "语音识别失败，请重试", "error");
     };
     recognition.onend = () => {
-      listening = false;
-      voiceButton.classList.remove("active");
-      voiceButton.textContent = "语音";
-      statusLine.textContent = "语音已转成文字，可修改后发送";
       chatRuntime.recognition = null;
-      textarea.focus();
+      resetVoiceButton();
     };
     try { recognition.start(); } catch { toast("语音输入暂时无法启动", "error"); }
   }
 
+  function startVoice() {
+    if (busy || transcribing) return;
+    if (listening) { stopVoice(); return; }
+    if (binding.speech_model) void startModelVoice();
+    else startBrowserVoice();
+  }
+
   async function send() {
     if (busy) return;
-    stopVoice();
+    if (listening) { stopVoice(); return; }
+    if (transcribing) return;
     const text = textarea.value.trim();
     const files = [...selectedFiles];
     if (!text && !files.length) { textarea.focus(); return; }
@@ -373,6 +473,10 @@ export async function render(mount, ctx, helpers) {
 window.addEventListener("hashchange", () => {
   if (!location.hash.startsWith("#/agent")) {
     chatRuntime.activeController?.abort();
+    chatRuntime.voiceController?.abort();
     try { chatRuntime.recognition?.stop(); } catch { /* 已停止 */ }
+    chatRuntime.discardRecording = true;
+    try { if (chatRuntime.mediaRecorder?.state === "recording") chatRuntime.mediaRecorder.stop(); } catch { /* 已停止 */ }
+    chatRuntime.mediaStream?.getTracks().forEach((track) => track.stop());
   }
 });

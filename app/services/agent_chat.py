@@ -81,6 +81,7 @@ async def send_message(
         requested_by=requested_by,
         text=normalized_text,
         attachments=attachments,
+        model_override=binding.image_model if any((item.mime_type or "").startswith("image/") for item in attachments) else None,
         cancelled=cancelled,
     )
     return {

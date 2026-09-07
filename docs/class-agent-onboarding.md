@@ -130,10 +130,11 @@ python run.py
 ## 日常使用
 
 1. 班主任可在网页“班级 Agent 对话”直接发送文字、使用浏览器语音转文字或上传文件，不需要先绑定微信。微信 account binding 则把微信消息送到同一个班级专属 agent。
-2. Skill 要求附件先留证，非确定性输入调用 `classclaw_analyze_interaction`。网页附件已由后端保存并提供 attachment ids，Agent 直接使用这些 ids，不重复上传。
-3. 插件从可信 `agentId` 查到固定 `class_id`，覆盖模型提供的班级参数。
-4. 后端返回澄清问题或待复核 proposal；此时没有业务写入。
-5. 用户在聊天中明确确认后，后端立即校验 proposal 的班级、revision、状态和有效期并执行；同组多条使用单事务批量写入，不再出现系统审批卡。
+2. 对话页“模型设置”允许为本班选择主模型、网页图片理解模型和网页录音转写模型。主模型同时作用于网页与微信；图片和录音模型按网页入口隔离，避免一个班级改动 OpenClaw 全局媒体设置。只有 Gateway 当前可用的模型和已配置凭据的语音 Provider 才能保存。
+3. Skill 要求附件先留证，非确定性输入调用 `classclaw_analyze_interaction`。网页附件已由后端保存并提供 attachment ids，Agent 直接使用这些 ids，不重复上传。
+4. 插件从可信 `agentId` 查到固定 `class_id`，覆盖模型提供的班级参数。
+5. 后端返回澄清问题或待复核 proposal；此时没有业务写入。
+6. 用户在聊天中明确确认后，后端立即校验 proposal 的班级、revision、状态和有效期并执行；同组多条使用单事务批量写入，不再出现系统审批卡。
 
 ## 验证与排错
 

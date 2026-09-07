@@ -572,8 +572,17 @@ input[type="date"]::-webkit-calendar-picker-indicator, input[type="datetime-loca
 .agent-binding-card summary > .muted { grid-column: 1 / -1; font-size: 12px; }
 .agent-binding-card[open] summary { border-bottom: 1px solid var(--border); }
 .agent-binding-body { padding: 14px; }
+.agent-binding-actions { display: flex; margin-top: 12px; }
+.agent-model-button { width: 100%; }
 .agent-binding-body .qr-panel { margin-top: 14px; }
 .agent-binding-body .qr-img { width: 100%; height: auto; aspect-ratio: 1; }
+.agent-model-settings { display: grid; gap: 18px; }
+.agent-model-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; }
+.agent-model-summary > div { display: grid; gap: 5px; min-width: 0; padding: 11px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg); }
+.agent-model-summary code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-model-form { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 13px; }
+.agent-model-form .field { margin: 0; }
+.agent-model-warning { display: flex; align-items: center; gap: 9px; padding: 11px 12px; border: 1px solid #E8D9B8; border-radius: 10px; background: #FFFAEE; }
 
 /* ---------- Onboarding 向导 ---------- */
 .wizard-steps { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 18px; }
@@ -706,6 +715,7 @@ input[type="date"]::-webkit-calendar-picker-indicator, input[type="datetime-loca
   .adjustment-arrow { min-height: 44px; }
   .adjustment-arrow span { transform: rotate(90deg); }
   .agent-chat-layout { grid-template-columns: 1fr; }
+  .agent-model-summary, .agent-model-form { grid-template-columns: 1fr; }
   .agent-binding-card { order: -1; }
   .agent-chat-panel { height: calc(100vh - 175px); }
 }

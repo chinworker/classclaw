@@ -710,11 +710,14 @@ def _runtime_is_configured(config: dict[str, Any], binding: ClassAgentBinding) -
     agent = next((item for item in agents if isinstance(item, dict) and str(item.get("id") or item.get("agentId")) == binding.openclaw_agent_id), None)
     plugin = ((config.get("plugins") or {}).get("entries") or {}).get("classclaw") or {}
     agent_classes = (plugin.get("config") or {}).get("agentClasses") or {}
+    model_value = agent.get("model") if agent else None
+    configured_model = model_value.get("primary") if isinstance(model_value, dict) else model_value
     return bool(
         agent
         and agent.get("workspace") == binding.workspace_path
         and agent.get("skills") == ["classclaw-manager"]
         and (agent.get("tools") or {}).get("profile") == "minimal"
+        and (not binding.main_model or configured_model == binding.main_model)
         and agent_classes.get(binding.openclaw_agent_id) == binding.class_id
     )
 
@@ -751,11 +754,18 @@ async def _configure_runtime(binding: ClassAgentBinding, snapshot: dict[str, Any
             ],
         },
     }
+    if binding.main_model:
+        runtime["model"] = binding.main_model
     optimized_agents = []
     found_agent = False
     for item in agent_rows:
         if isinstance(item, dict) and str(item.get("id") or item.get("agentId")) == binding.openclaw_agent_id:
-            optimized_agents.append({**item, **runtime})
+            merged = {**item, **runtime}
+            existing_model = item.get("model")
+            existing_primary = existing_model.get("primary") if isinstance(existing_model, dict) else existing_model
+            if binding.main_model and existing_primary == binding.main_model:
+                merged["model"] = existing_model
+            optimized_agents.append(merged)
             found_agent = True
         else:
             optimized_agents.append(item)

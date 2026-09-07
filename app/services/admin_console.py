@@ -217,7 +217,17 @@ def _safe_models(payload: Any) -> list[dict[str, Any]]:
     if not isinstance(rows, list):
         return []
     allowed = {"id", "name", "provider", "api", "contextWindow", "reasoning", "input", "available"}
-    return [{key: row.get(key) for key in allowed if key in row} for row in rows if isinstance(row, dict)]
+    result = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        safe = {key: row.get(key) for key in allowed if key in row}
+        model_id = str(safe.get("id") or "").strip()
+        provider = str(safe.get("provider") or "").strip()
+        if model_id and provider and "/" not in model_id:
+            safe["id"] = f"{provider}/{model_id}"
+        result.append(safe)
+    return result
 
 
 def _agent_runtime_row(config: dict[str, Any], agent_id: str) -> dict[str, Any] | None:
@@ -491,6 +501,8 @@ async def update_openclaw_agent(db: Session, identifier: str, data: OpenClawAgen
         await openclaw_provisioning.admin_rpc("config.patch", params)
     target_type = "class_agent_binding" if descriptor["kind"] == "class" else "openclaw_agent"
     binding = descriptor.get("binding")
+    if binding and "model" in changes:
+        binding.main_model = data.model.strip() if data.model and data.model.strip() else None
     target_id = binding.id if binding else agent_id
     audit(db, "update_openclaw_agent", target_type, target_id, operator_type="admin", after=changes)
     db.commit()

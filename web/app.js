@@ -94,7 +94,7 @@ const routes = [
   { path: "/analytics/class", title: "班级分析", loader: () => import("./js/pages/analytics.js?v=20260901-analytics-fix"), requiresClass: true, section: "class" },
   { path: "/analytics/attention", title: "重点关注", loader: () => import("./js/pages/analytics.js?v=20260901-analytics-fix"), requiresClass: true, section: "attention" },
   { path: "/workflow", title: "待确认记录", loader: () => import("./js/pages/workflow.js") },
-  { path: "/agent", title: "班级 Agent 对话", loader: () => import("./js/pages/agent.js?v=20260903-agent-chat") },
+  { path: "/agent", title: "班级 Agent 对话", loader: () => import("./js/pages/agent.js?v=20260907-agent-models") },
   { path: "/admin/overview", title: "运行概览", loader: () => import("./js/pages/adminOverview.js"), adminOnly: true },
   { path: "/admin/users", title: "用户管理", loader: () => import("./js/pages/adminUsers.js"), adminOnly: true },
   { path: "/admin/classes", title: "班级管理", loader: () => import("./js/pages/adminClasses.js"), adminOnly: true },

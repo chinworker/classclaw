@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import ClassVar
 
 from app.config import settings
 from app.models.entities import Attachment, AttachmentLink, ClassAgentBinding
-from app.services import openclaw_bridge, openclaw_provisioning, operations
+from app.services import agent_models, openclaw_bridge, openclaw_provisioning, operations
 
 
 def _binding(db, class_id: str, workspace: Path) -> ClassAgentBinding:
@@ -105,6 +106,13 @@ def test_web_chat_cannot_target_another_teachers_class(client, db, sample):
     assert response.status_code == 403
     assert response.json()["error"]["code"] == "CLASS_ACCESS_DENIED"
 
+    models = client.get(
+        f"/api/v1/classes/{other.id}/agent-chat/models",
+        headers={"Authorization": f"Bearer {token}", "X-ClassClaw-Surface": "web"},
+    )
+    assert models.status_code == 403
+    assert models.json()["error"]["code"] == "CLASS_ACCESS_DENIED"
+
 
 def test_gateway_chat_uses_persistent_class_session_and_prestaged_files(db, tmp_path, monkeypatch):
     attachment_root = tmp_path / "attachments"
@@ -167,6 +175,7 @@ def test_gateway_chat_uses_persistent_class_session_and_prestaged_files(db, tmp_
             requested_by="teacher",
             text="请处理通知",
             attachments=[attachment],
+            model_override="provider/vision-model",
         )
     )
 
@@ -177,6 +186,124 @@ def test_gateway_chat_uses_persistent_class_session_and_prestaged_files(db, tmp_
     assert "attachment-web-1" in captured["json"]["instructions"]
     assert "不要再次调用 classclaw_upload_file" in captured["json"]["instructions"]
     assert captured["headers"]["x-openclaw-message-channel"] == "web"
+    assert captured["headers"]["x-openclaw-model"] == "provider/vision-model"
+
+
+def test_class_agent_models_are_scoped_validated_and_persisted(client, db, sample, tmp_path, monkeypatch):
+    cls = sample[0]
+    binding = _binding(db, cls.id, tmp_path / "workspace")
+    patches = []
+    runtime_rows = [{"id": binding.openclaw_agent_id, "workspace": binding.workspace_path}]
+
+    async def fake_rpc(method, params=None):
+        if method == "config.get":
+            return {
+                "hash": "models-hash",
+                "config": {"agents": {"defaults": {"model": {"primary": "provider/text-model"}}, "list": runtime_rows}},
+            }
+        if method == "models.list":
+            return {
+                "models": [
+                    {"id": "text-model", "name": "Text", "provider": "provider", "input": ["text"], "available": True},
+                    {"id": "vision-model", "name": "Vision", "provider": "provider", "input": ["text", "image"], "available": True},
+                ]
+            }
+        if method == "models.authStatus":
+            return {"providers": [{"provider": "openai", "status": "static"}]}
+        if method == "config.patch":
+            patches.append(params)
+            return {"ok": True}
+        raise AssertionError(method)
+
+    monkeypatch.setattr(openclaw_provisioning, "admin_rpc", fake_rpc)
+
+    settings_response = client.get(f"/api/v1/classes/{cls.id}/agent-chat/models")
+    assert settings_response.status_code == 200
+    settings = settings_response.json()["data"]
+    assert [item["id"] for item in settings["models"]] == ["provider/text-model", "provider/vision-model"]
+    assert [item["id"] for item in settings["image_models"]] == ["provider/vision-model"]
+
+    update = client.patch(
+        f"/api/v1/classes/{cls.id}/agent-chat/models",
+        json={
+            "main_model": "provider/text-model",
+            "image_model": "provider/vision-model",
+            "speech_model": "openai/gpt-4o-transcribe",
+        },
+    )
+    assert update.status_code == 200
+    assert update.json()["data"]["restart_requested"] is True
+    db.refresh(binding)
+    assert (binding.main_model, binding.image_model, binding.speech_model) == (
+        "provider/text-model",
+        "provider/vision-model",
+        "openai/gpt-4o-transcribe",
+    )
+    patched = json.loads(patches[-1]["raw"])
+    assert patched["agents"]["list"][0]["model"] == "provider/text-model"
+
+    invalid = client.patch(
+        f"/api/v1/classes/{cls.id}/agent-chat/models",
+        json={"image_model": "provider/text-model"},
+    )
+    assert invalid.status_code == 422
+    assert invalid.json()["error"]["code"] == "MODEL_UNAVAILABLE"
+
+
+def test_selected_image_model_overrides_only_image_chat_turn(client, db, sample, tmp_path, monkeypatch):
+    cls = sample[0]
+    binding = _binding(db, cls.id, tmp_path / "workspace")
+    binding.image_model = "provider/vision-model"
+    db.commit()
+
+    async def ensure_runtime(*_args, **_kwargs):
+        return binding
+
+    captured = {}
+
+    async def chat(**kwargs):
+        captured.update(kwargs)
+        return {"reply": "图片已读取", "response_id": "resp-image"}
+
+    monkeypatch.setattr(openclaw_provisioning, "ensure_class_agent_runtime", ensure_runtime)
+    monkeypatch.setattr(openclaw_bridge, "chat_with_class_agent", chat)
+    monkeypatch.setattr(
+        operations,
+        "settings",
+        SimpleNamespace(attachment_dir=tmp_path / "attachments", max_attachment_bytes=20 * 1024 * 1024),
+    )
+    response = client.post(
+        f"/api/v1/classes/{cls.id}/agent-chat/messages",
+        data={"conversation_id": "97d646a7-153d-4370-aa17-bc49d3ba5593"},
+        files={"files": ("photo.png", b"not-a-real-image", "image/png")},
+    )
+    assert response.status_code == 200
+    assert captured["model_override"] == "provider/vision-model"
+
+
+def test_model_voice_transcription_uses_temporary_file_and_selected_model(client, db, sample, tmp_path, monkeypatch):
+    cls = sample[0]
+    binding = _binding(db, cls.id, tmp_path / "workspace")
+    binding.speech_model = "openai/gpt-4o-transcribe"
+    db.commit()
+    captured = {}
+
+    async def fake_command(arguments, **_kwargs):
+        path = Path(arguments[arguments.index("--file") + 1])
+        captured["path"] = path
+        captured["arguments"] = arguments
+        assert path.exists()
+        return {"text": "明天第一节课改为数学"}
+
+    monkeypatch.setattr(agent_models, "_run_json_command", fake_command)
+    response = client.post(
+        f"/api/v1/classes/{cls.id}/agent-chat/transcriptions",
+        files={"audio": ("voice.webm", b"a" * 2048, "audio/webm")},
+    )
+    assert response.status_code == 200
+    assert response.json()["data"] == {"text": "明天第一节课改为数学", "model": "openai/gpt-4o-transcribe"}
+    assert captured["arguments"][captured["arguments"].index("--model") + 1] == binding.speech_model
+    assert not captured["path"].exists()
 
 
 def test_agent_chat_page_has_chatbot_voice_file_and_cancel_controls(client):
@@ -186,7 +313,9 @@ def test_agent_chat_page_has_chatbot_voice_file_and_cancel_controls(client):
 
     assert "班级 Agent 对话" in app
     assert "SpeechRecognition" in page and "webkitSpeechRecognition" in page
+    assert "MediaRecorder" in page and "agent-chat/transcriptions" in page
     assert "FormData" in page and 'body.append("files", file)' in page
     assert "createAiTaskId" in page and "activeController?.abort()" in page
     assert "新对话" in page and "Shift+Enter 换行" in page
+    assert "模型设置" in page and "agentModelSettings" in page
     assert ".agent-chat-panel" in styles and ".agent-chat-composer" in styles

@@ -41,6 +41,8 @@ openclaw gateway restart
 
 网页“班级 Agent 对话”同样由 ClassClaw 后端代理到 `/v1/responses`，后端根据班级绑定选择 `openclaw/<class-agent-id>`，Gateway Token 永不发送到浏览器。每个“新对话”使用独立稳定的会话键，连续消息保留上下文。语音由浏览器先转成可编辑文字；文件先保存为本班附件，再以已保存的 attachment ids 和文件内容交给 Agent，禁止重复上传。
 
+对话页提供班级独立模型设置。主模型写入该班 `agents.list` runtime，网页和微信共用；图片模型只在该班网页图片消息上通过受控 `x-openclaw-model` 覆盖生效，避免修改全局 `agents.defaults.imageModel` 而影响其他班；语音识别模型使用 `provider/model` 调用 `openclaw infer audio transcribe`。浏览器录音只写入临时文件，转写结束后立即删除，文字仍需在输入框复核后发送。未选择服务端 STT 时继续使用 Web Speech API，不上传录音。候选来自 Gateway `models.list` 和 OpenClaw 音频 Provider 目录；不可用的主/图片模型及未配置凭据的 STT Provider 会被后端拒绝。
+
 JSON 提取默认走自动创建的轻量提取智能体（详见 [专属智能体与微信使用说明](class-agent-onboarding.md) §5.1）：服务启动和首次分析时，后端会通过 admin RPC 创建并校正 `classclaw-extractor` 的独立 runtime。该 runtime 显式保存模型、开启 fast mode，关闭思考、推理、记忆与技能，并以 `minimal` profile 加 `deny: [session_status]` 将可调用工具降为零；不会继承 Main 的 coding profile。清洗规范自动写入 `data/openclaw-agents/_extractor/AGENTS.md`。管理员在 Agent Studio 保存的文件会记录为自定义内容，后续自动检查不会覆盖；需要跟随 ClassClaw 新默认规则时，可在管理端恢复系统默认。因此 OpenClaw 侧必须启用 `admin-http-rpc`；未启用时后端自动回退主智能体。
 
 ## 2. 配置并启动 ClassClaw 后端

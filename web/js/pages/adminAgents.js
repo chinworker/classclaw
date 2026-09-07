@@ -1,6 +1,7 @@
 import { el, clear, toast } from "../util.js";
 import { api } from "../api.js";
 import { pageHeader, statusBadge, errorPanel, skeleton, emptyState, qrBindingPanel, openDrawer, openModal, field, confirmDanger } from "../components.js";
+import { openAgentModelSettings } from "../agentModelSettings.js";
 
 export async function render(mount) {
   const globalHost = el("div", { class: "card" });
@@ -63,6 +64,9 @@ export async function render(mount) {
       binding?.last_error ? el("pre", { class: "admin-error-log" }, binding.last_error) : null,
       el("div", { class: "row-gap" },
         el("button", { class: "secondary", type: "button", disabled: !agent.present, onclick: () => editAgent(agent) }, "配置"),
+        isClass ? el("button", { class: "secondary", type: "button", disabled: !agent.present, onclick: () => openAgentModelSettings(cls.id, {
+          onSaved: (result) => window.setTimeout(load, result.restart_requested ? 1600 : 0),
+        }) }, "对话模型") : null,
         isClass ? el("button", { class: "secondary", type: "button", onclick: () => openQr(cls.id) }, "微信二维码") : null,
         el("button", { class: "text-button", type: "button", onclick: () => openDrawer({ title: `Runtime · ${agent.label}`, body: el("div", {}, kv("Workspace", agent.workspace_path), kv("Identifier", agent.identifier), isClass ? kv("Binding ID", binding.id) : null) }) }, "运行详情")));
   }

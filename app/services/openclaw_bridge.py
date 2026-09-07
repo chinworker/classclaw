@@ -584,6 +584,7 @@ async def chat_with_class_agent(
     requested_by: str,
     text: str,
     attachments: list[Attachment],
+    model_override: str | None = None,
     cancelled: Callable[[], Awaitable[bool]] | None = None,
 ) -> dict[str, Any]:
     """Run one persistent web-chat turn through a provisioned class agent."""
@@ -623,9 +624,12 @@ async def chat_with_class_agent(
 
     async def invoke() -> dict[str, Any]:
         try:
+            headers = {**_headers(), "x-openclaw-message-channel": "web"}
+            if model_override:
+                headers["x-openclaw-model"] = model_override
             response = await get_http_client().post(
                 f"{settings.openclaw_gateway_url}/v1/responses",
-                headers={**_headers(), "x-openclaw-message-channel": "web"},
+                headers=headers,
                 json=request_body,
                 timeout=settings.openclaw_timeout_seconds,
             )
