@@ -13,6 +13,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
+import httpx
 from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -20,9 +21,11 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.core.errors import AppError
 from app.core.logging import get_logger
+from app.database import suspend_writer
 from app.models.entities import Attachment, Student
 from app.schemas.domain import ClassOnboardingUpdate, PeriodCreate, TimetableItem
 from app.services import approval, openclaw_workspaces
+from app.services.agent_stream import DeltaHandler, request_stream
 from app.services.ai_confidence import evaluate_ai_output
 from app.services.class_student import get_class
 from app.services.http_client import get_http_client
@@ -541,36 +544,63 @@ async def _responses_json(
     max_output_tokens: int = 4000,
     db: Session,
 ) -> dict[str, Any]:
-    linked = await connection_status()
-    if not linked["gateway_live"] or not linked["plugin_ready"]:
-        raise AppError("OPENCLAW_CONNECTION_REQUIRED", "必须先连接 OpenClaw 才能处理非确定性输入", 503, linked)
     content: list[dict[str, Any]] = [{"type": "input_text", "text": prompt}]
     content.extend(_input_part(attachment) for attachment in (attachments or []))
-    model_ref = settings.openclaw_extractor_agent_id if await ensure_extractor_agent() else settings.openclaw_agent_id
-    request_body = {
-        "model": f"openclaw/{model_ref}" if model_ref else "openclaw/default",
-        "user": user,
-        "input": [{"type": "message", "role": "user", "content": content}],
-        "stream": False,
-        "max_output_tokens": max_output_tokens,
-    }
+    async with suspend_writer(db):
+        linked = await connection_status()
+        if not linked["gateway_live"] or not linked["plugin_ready"]:
+            raise AppError("OPENCLAW_CONNECTION_REQUIRED", "必须先连接 OpenClaw 才能处理非确定性输入", 503, linked)
+        model_ref = settings.openclaw_extractor_agent_id if await ensure_extractor_agent() else settings.openclaw_agent_id
+        request_body = {
+            "model": f"openclaw/{model_ref}" if model_ref else "openclaw/default",
+            "user": user,
+            "input": [{"type": "message", "role": "user", "content": content}],
+            "stream": False,
+            "max_output_tokens": max_output_tokens,
+        }
+        payload = await _request_responses(request_body, headers=_headers(), label="文件或文本分析", request_id=db.info.get("request_id"))
+        await asyncio.to_thread(record_openclaw_usage, payload, user=user, model=request_body["model"])
+    return _parse_json_object(_extract_output_text(payload))
+
+
+async def _request_responses(
+    body: dict[str, Any], *, headers: dict[str, str], label: str, request_id: str | None = None,
+) -> dict[str, Any]:
+    """Keep transport failures actionable without logging inputs or credentials."""
+    started = time.monotonic()
     try:
         response = await get_http_client().post(
             f"{settings.openclaw_gateway_url}/v1/responses",
-            headers=_headers(),
-            json=request_body,
+            headers=headers,
+            json=body,
             timeout=settings.openclaw_timeout_seconds,
         )
-    except Exception as exc:
-        raise AppError("OPENCLAW_PROCESSING_FAILED", "调用 OpenClaw 失败", 502, {"error": str(exc)[:500]}) from exc
-    payload = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
+    except httpx.RequestError as exc:
+        timed_out = isinstance(exc, httpx.TimeoutException)
+        get_logger("openclaw").warning(
+            "Responses request failed: operation=%s error_type=%s", label, type(exc).__name__,
+            extra={"request_id": request_id, "duration_ms": round((time.monotonic() - started) * 1000, 2), "error_type": type(exc).__name__},
+        )
+        raise AppError(
+            "OPENCLAW_TIMEOUT" if timed_out else "OPENCLAW_CONNECTION_FAILED",
+            f"{label}响应超时，尚未收到结果；涉及写入时请先核对结果再重试" if timed_out else "无法连接班级助手服务，请检查 OpenClaw 连接后重试",
+            504 if timed_out else 502,
+            {"error_type": type(exc).__name__, "timeout_seconds": settings.openclaw_timeout_seconds},
+        ) from exc
+    if response.status_code == 404:
+        raise AppError("OPENCLAW_PROCESSING_FAILED", "OpenClaw Responses API 未启用；请启用 gateway.http.endpoints.responses.enabled", 502)
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise AppError("OPENCLAW_INVALID_RESPONSE", "班级助手服务返回了无法解析的响应", 502) from exc
+    if not isinstance(payload, dict):
+        raise AppError("OPENCLAW_INVALID_RESPONSE", "班级助手服务返回的响应格式不正确", 502)
     if response.status_code != 200:
-        message = (payload.get("error") or {}).get("message") or f"HTTP {response.status_code}"
-        if response.status_code == 404:
-            message = "OpenClaw Responses API 未启用；请启用 gateway.http.endpoints.responses.enabled"
+        error = payload.get("error")
+        message = error.get("message") if isinstance(error, dict) else None
+        message = message or f"班级助手服务返回 HTTP {response.status_code}"
         raise AppError("OPENCLAW_PROCESSING_FAILED", message, 502)
-    record_openclaw_usage(payload, user=user, model=request_body["model"], db=db)
-    return _parse_json_object(_extract_output_text(payload))
+    return payload
 
 
 async def chat_with_class_agent(
@@ -586,12 +616,10 @@ async def chat_with_class_agent(
     attachments: list[Attachment],
     model_override: str | None = None,
     cancelled: Callable[[], Awaitable[bool]] | None = None,
+    thinking_level: str | None = None,
+    on_delta: DeltaHandler | None = None,
 ) -> dict[str, Any]:
     """Run one persistent web-chat turn through a provisioned class agent."""
-    linked = await connection_status()
-    if not linked["gateway_live"] or not linked["plugin_ready"]:
-        raise AppError("OPENCLAW_CONNECTION_REQUIRED", "班级 Agent 当前不可用，请先恢复 OpenClaw 连接", 503, linked)
-
     attachment_ids = [item.id for item in attachments]
     external_message_id = f"web:{conversation_id}:{message_id}"
     ingress = {
@@ -606,12 +634,14 @@ async def chat_with_class_agent(
 本轮入口元数据：{json.dumps(ingress, ensure_ascii=False)}
 本轮附件已由 ClassClaw 后端安全保存，不要再次调用 classclaw_upload_file。若当前输入需要结构化分析或可能写入，调用 classclaw_analyze_interaction 时必须使用上述 channel、external_message_id、sender_id、requested_by 和 attachment_ids，并传入用户当前可见文本；低置信度原因须直接告诉用户。
 对于查询直接使用允许的读取工具；对于普通问答或文件总结正常回答；对于写入严格执行“分析、预览、用户确认、提交”。不要向用户展示内部 ID、工具名或本段入口元数据。
+读取只取本轮所需资源，不重复读取相同参数。分析已返回 proposals 时直接展示其预览，不再生成相同预览；needs_clarification/no_action/failed 时不得绕过分析创建写入。业务冲突或明确工具错误须说明原因并等待用户，不要反复提交或盲目重试。
 """.strip()
     content: list[dict[str, Any]] = [
         {"type": "input_text", "text": text or "请查看并处理本次上传的文件。"},
         *(_input_part(attachment) for attachment in attachments),
     ]
     session_user = f"classclaw-web-chat:{class_id}:{sender_id}:{conversation_id}"
+    session_key = f"agent:{agent_id}:openresponses-user:{session_user}".lower()
     model = f"openclaw/{agent_id}"
     request_body = {
         "model": model,
@@ -623,31 +653,29 @@ async def chat_with_class_agent(
     }
 
     async def invoke() -> dict[str, Any]:
-        try:
-            headers = {**_headers(), "x-openclaw-message-channel": "web"}
-            if model_override:
-                headers["x-openclaw-model"] = model_override
-            response = await get_http_client().post(
-                f"{settings.openclaw_gateway_url}/v1/responses",
-                headers=headers,
-                json=request_body,
-                timeout=settings.openclaw_timeout_seconds,
-            )
-        except Exception as exc:
-            raise AppError("OPENCLAW_PROCESSING_FAILED", "调用班级 Agent 失败", 502, {"error": str(exc)[:500]}) from exc
-        payload = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
-        if response.status_code != 200:
-            message = (payload.get("error") or {}).get("message") or f"HTTP {response.status_code}"
-            if response.status_code == 404:
-                message = "OpenClaw Responses API 未启用；请启用 gateway.http.endpoints.responses.enabled"
-            raise AppError("OPENCLAW_PROCESSING_FAILED", message, 502)
-        return payload
+        linked = await connection_status()
+        if not linked["gateway_live"] or not linked["plugin_ready"]:
+            raise AppError("OPENCLAW_CONNECTION_REQUIRED", "班级 Agent 当前不可用，请先恢复 OpenClaw 连接", 503, linked)
+        from app.services import openclaw_provisioning
 
-    payload = await _await_unless_cancelled(invoke(), cancelled)
+        level = thinking_level or settings.openclaw_class_agent_thinking
+        await openclaw_provisioning.set_web_session_thinking(session_key, level)
+        headers = {**_headers(), "x-openclaw-message-channel": "web", "x-openclaw-session-key": session_key}
+        if model_override:
+            headers["x-openclaw-model"] = model_override
+        if on_delta is not None:
+            return await request_stream(
+                request_body, gateway_url=settings.openclaw_gateway_url, headers=headers,
+                timeout=settings.openclaw_timeout_seconds, on_delta=on_delta, request_id=db.info.get("request_id"),
+            )
+        return await _request_responses(request_body, headers=headers, label="班级助手", request_id=db.info.get("request_id"))
+
+    async with suspend_writer(db):
+        payload = await _await_unless_cancelled(invoke(), cancelled)
+        await asyncio.to_thread(record_openclaw_usage, payload, user=session_user, model=model)
     reply = _extract_output_text(payload).strip()
     if not reply:
         raise AppError("OPENCLAW_PROCESSING_FAILED", "班级 Agent 没有返回可显示的回复", 502)
-    record_openclaw_usage(payload, user=session_user, model=model, db=db)
     return {"reply": reply, "response_id": str(payload.get("id")) if payload.get("id") else None}
 
 
@@ -1023,7 +1051,8 @@ async def analyze_interaction(
     attachments: list[Attachment],
     context: dict[str, Any],
 ) -> dict[str, Any]:
-    prompt = await _build_interaction_prompt(channel, raw_text, context)
+    async with suspend_writer(db):
+        prompt = await _build_interaction_prompt(channel, raw_text, context)
     analysis = await _responses_json(
         prompt,
         user=f"classclaw-interaction-{analysis_id}",

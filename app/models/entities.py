@@ -99,23 +99,6 @@ class SystemSetting(Base, IdMixin, TimestampMixin):
     value_json: Mapped[dict | list | str | int | float | bool | None] = mapped_column(JSON)
 
 
-class AiUsageRecord(Base, IdMixin):
-    """Token usage reported by the OpenClaw Responses API."""
-
-    __tablename__ = "ai_usage_records"
-    __table_args__ = (Index("ix_ai_usage_created_operation", "created_at", "operation"),)
-
-    source: Mapped[str] = mapped_column(String(50), default="openclaw_responses")
-    operation: Mapped[str] = mapped_column(String(100), index=True)
-    model: Mapped[str | None] = mapped_column(String(200))
-    response_id: Mapped[str | None] = mapped_column(String(200))
-    input_tokens: Mapped[int] = mapped_column(Integer, default=0)
-    output_tokens: Mapped[int] = mapped_column(Integer, default=0)
-    total_tokens: Mapped[int] = mapped_column(Integer, default=0)
-    cached_input_tokens: Mapped[int] = mapped_column(Integer, default=0)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
-
-
 class Student(Base, IdMixin, TimestampMixin, SoftDeleteMixin):
     __tablename__ = "students"
     __table_args__ = (

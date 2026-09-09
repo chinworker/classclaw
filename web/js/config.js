@@ -13,6 +13,7 @@ export const appConfig = {
   },
   features: { file_analysis: true, event_ai: true, wechat_binding: true, reminders: true },
   runtime: { timezone: "Asia/Shanghai" },
+  agent_chat: { default_thinking_level: "off" },
   storage: { max_attachment_bytes: 20 * 1024 * 1024 },
   semester_defaults: {},
   web: { ai_request_timeout_seconds: 150, usage_window_days: 30, database_page_size: 50 },
@@ -41,6 +42,7 @@ export async function loadAppConfig() {
       Object.assign(appConfig.brand, value.brand || {});
       Object.assign(appConfig.features, value.features || {});
       Object.assign(appConfig.runtime, value.runtime || {});
+      Object.assign(appConfig.agent_chat, value.agent_chat || {});
       Object.assign(appConfig.storage, value.storage || {});
       Object.assign(appConfig.semester_defaults, value.semester_defaults || {});
       Object.assign(appConfig.web, value.web || {});

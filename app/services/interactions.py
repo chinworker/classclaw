@@ -96,6 +96,13 @@ async def analyze(db: Session, data: InteractionAnalyzeCreate) -> dict[str, Any]
     if idempotency_key:
         existing = db.scalar(select(InteractionAnalysis).where(InteractionAnalysis.idempotency_key == idempotency_key))
         if existing:
+            if existing.status in {"failed", "analyzing"}:
+                raise AppError(
+                    "INTERACTION_ANALYSIS_FAILED" if existing.status == "failed" else "INTERACTION_ANALYSIS_IN_PROGRESS",
+                    "这条消息的分析已失败，请说明问题并等待用户重新发送，不要重复调用或绕过分析写入"
+                    if existing.status == "failed" else "这条消息仍在分析，请勿重复调用或绕过分析写入",
+                    409, {"analysis_id": existing.id},
+                )
             return _result(db, existing)
 
     if data.onboarding_session_id and not db.get(ClassOnboardingSession, data.onboarding_session_id):

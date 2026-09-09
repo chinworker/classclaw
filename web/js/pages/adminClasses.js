@@ -40,6 +40,7 @@ export async function render(mount) {
   function actions(cls) {
     return el("div", { class: "row-gap" },
       el("button", { class: "secondary", type: "button", onclick: () => openEdit(cls) }, "修改"),
+      el("a", { href: `#/admin/agents?class_id=${encodeURIComponent(cls.id)}` }, "Agent 配置"),
       el("button", { class: "text-button danger-text", type: "button", onclick: () => remove(cls) }, "彻底删除"));
   }
 

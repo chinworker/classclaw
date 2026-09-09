@@ -12,11 +12,11 @@ from typing import Any
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
+from app import usage_database
 from app.config import settings
 from app.core.errors import AppError
 from app.database import Base
 from app.models.entities import (
-    AiUsageRecord,
     Attachment,
     AuditLog,
     ClassAgentBinding,
@@ -27,10 +27,12 @@ from app.models.entities import (
     UserSession,
     WriteProposal,
 )
+from app.models.usage import AiUsageRecord, UsageBase
 from app.schemas.admin import OpenClawAgentUpdate, OpenClawGlobalUpdate
 from app.services import (
     accounts,
     class_student,
+    configuration_catalog,
     openclaw_bridge,
     openclaw_provisioning,
     openclaw_usage,
@@ -92,16 +94,11 @@ def require_feature(key: str) -> None:
 
 
 def list_settings() -> list[dict[str, Any]]:
-    return [
-        {
-            "key": key,
-            **definition,
-            "value": setting_value(key),
-            "source": "startup_config",
-            "restart_required": True,
-        }
-        for key, definition in SETTING_DEFINITIONS.items()
-    ]
+    return configuration_catalog.list_settings(settings)
+
+
+def settings_catalog() -> dict[str, Any]:
+    return configuration_catalog.catalog(settings)
 
 
 def _count(db: Session, model, *filters) -> int:
@@ -114,6 +111,11 @@ def overview(db: Session) -> dict[str, Any]:
     if settings.database_url.startswith(prefix) and not settings.database_url.endswith(":memory:"):
         database_path = Path(settings.database_url.removeprefix(prefix))
     attachment_bytes = int(db.scalar(select(func.coalesce(func.sum(Attachment.file_size), 0))) or 0)
+    usage_path = Path(settings.usage_database_url.removeprefix(prefix))
+    try:
+        usage_bytes = usage_path.stat().st_size
+    except OSError:
+        usage_bytes = None
     return {
         "counts": {
             "users": _count(db, User),
@@ -126,6 +128,7 @@ def overview(db: Session) -> dict[str, Any]:
         },
         "storage": {
             "database_bytes": database_path.stat().st_size if database_path and database_path.exists() else None,
+            "usage_database_bytes": usage_bytes,
             "attachment_bytes": attachment_bytes,
             "attachment_count": _count(db, Attachment),
             "database_dialect": db.bind.dialect.name if db.bind else None,
@@ -138,12 +141,13 @@ def usage_stats(db: Session, days: int | None = None) -> dict[str, Any]:
     window = days or int(setting_value("admin.usage_window_days"))
     if window < 1 or window > 365:
         raise AppError("VALIDATION_ERROR", "统计窗口应在 1 到 365 天之间", 422)
-    start = now() - timedelta(days=window - 1)
+    start = (now() - timedelta(days=window - 1)).replace(hour=0, minute=0, second=0, microsecond=0)
     audits = list(db.scalars(select(AuditLog).where(AuditLog.created_at >= start)))
     analyses = list(db.scalars(select(InteractionAnalysis).where(InteractionAnalysis.created_at >= start)))
     proposals = list(db.scalars(select(WriteProposal).where(WriteProposal.created_at >= start)))
     sessions = list(db.scalars(select(UserSession).where(UserSession.created_at >= start)))
-    usage = list(db.scalars(select(AiUsageRecord).where(AiUsageRecord.created_at >= start)))
+    with usage_database.reader_session() as usage_db:
+        usage = list(usage_db.scalars(select(AiUsageRecord).where(AiUsageRecord.created_at >= start)))
     daily: dict[str, dict[str, int]] = defaultdict(lambda: {"requests": 0, "writes": 0, "logins": 0, "input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
 
     def day(value) -> str:
@@ -182,6 +186,43 @@ def usage_stats(db: Session, days: int | None = None) -> dict[str, Any]:
     }
 
 
+def database_overview(db: Session) -> dict[str, Any]:
+    tables = [
+        {"name": name, "row_count": db.scalar(select(func.count()).select_from(table)) or 0, "database": "core"}
+        for name, table in sorted(Base.metadata.tables.items())
+    ]
+    try:
+        with usage_database.reader_session() as usage_db:
+            tables.extend(
+                {"name": name, "row_count": usage_db.scalar(select(func.count()).select_from(table)) or 0, "database": "usage"}
+                for name, table in sorted(UsageBase.metadata.tables.items())
+            )
+    except AppError as exc:
+        tables.extend({"name": name, "row_count": None, "database": "usage", "error": exc.code} for name in UsageBase.metadata.tables)
+    return {"dialect": db.bind.dialect.name if db.bind else None, "tables": tables}
+
+
+def database_table(db: Session, table_name: str, offset: int, limit: int) -> dict[str, Any]:
+    def read(session: Session, table, database: str) -> dict[str, Any]:
+        statement = select(table).order_by(*table.primary_key.columns).offset(offset).limit(limit)
+        rows = session.execute(statement).mappings().all()
+        hidden = {"users": {"password_hash"}, "user_sessions": {"token_hash"}}.get(table_name, set())
+        return {
+            "table": table_name, "database": database, "columns": list(table.c.keys()),
+            "items": [{key: "***" if key in hidden and value is not None else value for key, value in row.items()} for row in rows],
+            "total": session.scalar(select(func.count()).select_from(table)) or 0, "offset": offset, "limit": limit,
+        }
+
+    table = UsageBase.metadata.tables.get(table_name)
+    if table is not None:
+        with usage_database.reader_session() as usage_db:
+            return read(usage_db, table, "usage")
+    table = Base.metadata.tables.get(table_name)
+    if table is None:
+        raise AppError("NOT_FOUND", "数据库表不存在", 404, {"table": table_name})
+    return read(db, table, "core")
+
+
 def _plugin_entry(config: dict[str, Any], name: str) -> dict[str, Any]:
     value = (((config.get("plugins") or {}).get("entries") or {}).get(name) or {})
     return value if isinstance(value, dict) else {}
@@ -196,7 +237,6 @@ async def openclaw_config() -> dict[str, Any]:
         "gateway": {
             "url": settings.openclaw_gateway_url,
             "token_configured": bool(settings.openclaw_gateway_token),
-            "token_masked": f"***{settings.openclaw_gateway_token[-4:]}" if settings.openclaw_gateway_token else None,
             "timeout_seconds": settings.openclaw_timeout_seconds,
             "default_agent_id": settings.openclaw_agent_id,
             "wechat_channel": settings.openclaw_wechat_channel,
@@ -208,6 +248,12 @@ async def openclaw_config() -> dict[str, Any]:
             "classclaw_plugin_enabled": _plugin_entry(config, "classclaw").get("enabled") is not False,
             "wechat_plugin_enabled": _plugin_entry(config, settings.openclaw_wechat_channel).get("enabled") is not False,
             "config_hash": snapshot.get("hash"),
+        },
+        "file_config": {
+            "path": snapshot.get("path"),
+            "default_model": _model_fields(((config.get("agents") or {}).get("defaults") or {}).get("model"))[0],
+            "default_image_model": _model_fields(((config.get("agents") or {}).get("defaults") or {}).get("imageModel"))[0],
+            "providers": sorted(((config.get("models") or {}).get("providers") or {}).keys()),
         },
     }
 
@@ -254,6 +300,18 @@ def _runtime_workspace(row: dict[str, Any] | None) -> str | None:
     return str(value) if value else None
 
 
+def _agent_model_summary(config: dict[str, Any], agent_id: str | None, binding: ClassAgentBinding | None = None) -> dict[str, Any]:
+    row = _agent_runtime_row(config, agent_id) if agent_id else None
+    primary, _ = _model_fields((row or {}).get("model"))
+    default, _ = _model_fields(((config.get("agents") or {}).get("defaults") or {}).get("model"))
+    return {
+        "main_model": primary or default,
+        "inherits_main": not bool(primary),
+        "image_model": binding.image_model if binding else None,
+        "speech_model": binding.speech_model if binding else None,
+    }
+
+
 def _system_agent_descriptors(config: dict[str, Any]) -> list[dict[str, Any]]:
     defaults = (config.get("agents") or {}).get("defaults") or {}
     main_id = settings.openclaw_agent_id
@@ -274,6 +332,7 @@ def _system_agent_descriptors(config: dict[str, Any]) -> list[dict[str, Any]]:
             "enabled": True,
             "resettable": False,
             "status": "active" if main_row else "unavailable",
+            "model_summary": _agent_model_summary(config, main_id),
         },
         {
             "identifier": "extractor",
@@ -286,14 +345,15 @@ def _system_agent_descriptors(config: dict[str, Any]) -> list[dict[str, Any]]:
             "enabled": settings.openclaw_extractor_enabled,
             "resettable": True,
             "status": "disabled" if not settings.openclaw_extractor_enabled else "active" if extractor_row else "unavailable",
+            "model_summary": _agent_model_summary(config, extractor_id),
         },
     ]
 
 
 def _class_agent_descriptors(db: Session, config: dict[str, Any]) -> list[dict[str, Any]]:
     rows = db.execute(
-        select(ClassAgentBinding, ClassRoom, User)
-        .join(ClassRoom, ClassRoom.id == ClassAgentBinding.class_id)
+        select(ClassRoom, ClassAgentBinding, User)
+        .outerjoin(ClassAgentBinding, ClassRoom.id == ClassAgentBinding.class_id)
         .outerjoin(User, User.id == ClassRoom.owner_user_id)
         .where(ClassRoom.deleted_at.is_(None))
         .order_by(ClassRoom.name)
@@ -304,17 +364,21 @@ def _class_agent_descriptors(db: Session, config: dict[str, Any]) -> list[dict[s
             "kind": "class",
             "label": cls.name,
             "description": "班级专属智能体，拥有独立提示词、工具和可选微信绑定。",
-            "agent_id": binding.openclaw_agent_id,
-            "workspace_path": binding.workspace_path,
-            "present": bool(binding.openclaw_agent_id and _agent_runtime_row(config, binding.openclaw_agent_id)),
+            "agent_id": binding.openclaw_agent_id if binding else None,
+            "workspace_path": binding.workspace_path if binding else None,
+            "present": bool(binding and binding.openclaw_agent_id and _agent_runtime_row(config, binding.openclaw_agent_id)),
             "enabled": True,
             "resettable": True,
-            "status": "unavailable" if binding.openclaw_agent_id and not _agent_runtime_row(config, binding.openclaw_agent_id) else binding.status,
+            "status": (
+                "pending_agent" if not binding else
+                "unavailable" if binding.openclaw_agent_id and not _agent_runtime_row(config, binding.openclaw_agent_id) else binding.status
+            ),
             "class": {"id": cls.id, "name": cls.name, "status": cls.status},
             "owner": accounts.public_user(owner, cls.id) if owner else None,
             "binding": binding,
+            "model_summary": _agent_model_summary(config, binding.openclaw_agent_id if binding else None, binding),
         }
-        for binding, cls, owner in rows
+        for cls, binding, owner in rows
     ]
 
 
@@ -395,6 +459,7 @@ async def openclaw_agent_settings(db: Session, identifier: str) -> dict[str, Any
         "agent": descriptor,
         "binding": descriptor.get("binding"),
         "runtime": safe_runtime,
+        "thinking_configuration": {"managed": descriptor["kind"] == "class", "default": settings.openclaw_class_agent_thinking},
         "models": _safe_models(models_payload),
         "workspace": _workspace_snapshot(db, descriptor),
         "config_hash": snapshot.get("hash"),
@@ -431,6 +496,10 @@ async def update_openclaw_agent(db: Session, identifier: str, data: OpenClawAgen
     changes = data.model_dump(exclude_unset=True)
     initial_snapshot = await openclaw_provisioning.admin_rpc("config.get")
     descriptor = _resolve_agent(db, identifier, initial_snapshot.get("config") or {})
+    if descriptor["kind"] == "class" and "thinking_default" in changes:
+        raise AppError(
+            "CLASS_AGENT_THINKING_MANAGED", "班级默认思考强度请修改 openclaw.class_agent_thinking 配置；单个对话请使用本会话思考强度", 409,
+        )
     agent_id = descriptor["agent_id"]
     if data.display_name is not None:
         params = {"agentId": agent_id, "name": data.display_name.strip()}
@@ -700,6 +769,9 @@ async def initialize_system(db: Session) -> dict[str, Any]:
         table.name: int(db.scalar(select(func.count()).select_from(table)) or 0)
         for table in Base.metadata.sorted_tables
     }
+    # Two SQLite files cannot share an atomic commit. If usage cleanup fails,
+    # preserve core data; if core cleanup fails, explicitly report the usage reset.
+    deleted_counts["ai_usage_records"] = await asyncio.to_thread(usage_database.clear_records)
     try:
         for table in reversed(Base.metadata.sorted_tables):
             db.execute(delete(table))
@@ -707,7 +779,10 @@ async def initialize_system(db: Session) -> dict[str, Any]:
         db.expunge_all()
     except Exception as exc:
         db.rollback()
-        raise AppError("SYSTEM_INITIALIZATION_FAILED", "数据库完整初始化失败，已回滚数据库删除", 500, {"error": str(exc)[:1000]}) from exc
+        raise AppError(
+            "SYSTEM_INITIALIZATION_FAILED", "业务库删除已回滚；用量库已清空，请修复后重试", 500,
+            {"error": str(exc)[:1000], "usage_records_deleted": deleted_counts["ai_usage_records"]},
+        ) from exc
 
     default_admin = accounts.ensure_default_admin(db)
     _agent_usage_cache.clear()

@@ -4,10 +4,10 @@ import hashlib
 import json
 import statistics
 from collections import defaultdict
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 
 from sqlalchemy import delete, func, select
-from sqlalchemy.exc import IntegrityError, OperationalError
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -73,7 +73,9 @@ def batch_homework_status(db: Session, homework_id: str, data: HomeworkBatchStat
             if submitted_at > deadline:
                 values["status"] = "late"
         if obj:
-            for key, value in values.items():
+            updates = item.model_dump(exclude_unset=True)
+            updates["status"] = values["status"]
+            for key, value in updates.items():
                 setattr(obj, key, value)
         else:
             obj = HomeworkStudentStatus(homework_id=homework_id, **values)
@@ -223,7 +225,7 @@ def set_attendance(db: Session, data: AttendanceSet, *, commit: bool = True) -> 
     )
     before = entity_dict(obj) if obj else None
     if obj:
-        for key, value in data.model_dump().items():
+        for key, value in data.model_dump(exclude_unset=True).items():
             setattr(obj, key, value)
     else:
         obj = AttendanceRecord(**data.model_dump())
@@ -374,7 +376,8 @@ def save_scores(db: Session, exam_id: str, data: ScoreBatch, *, commit: bool = T
             before = entity_dict(obj)
             obj.score = row.score
             obj.full_score = full_score
-            obj.note = row.note
+            if "note" in row.model_fields_set:
+                obj.note = row.note
         else:
             before = None
             obj = Score(exam_id=exam_id, student_id=row.student_id, subject=row.subject, score=row.score, full_score=full_score, note=row.note)

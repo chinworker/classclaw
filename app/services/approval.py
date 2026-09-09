@@ -9,17 +9,28 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.errors import AppError, not_found
 from app.config import settings
-from app.models.entities import ClassAgentBinding, ClassOnboardingSession, ClassRoom, ClassSubject, DutyAssignment, DutySchedule, Exam, Homework, Student, WriteProposal
+from app.core.errors import AppError, not_found
+from app.models.entities import (
+    ClassAgentBinding,
+    ClassOnboardingSession,
+    ClassRoom,
+    ClassSubject,
+    DutyAssignment,
+    DutySchedule,
+    Exam,
+    Homework,
+    Student,
+    WriteProposal,
+)
 from app.schemas.domain import (
     ArrangementCreate,
     AttendanceSet,
     ClassCreate,
     ClassOnboardingCreate,
     ClassOnboardingUpdate,
-    DutyConfirmRequest,
     DutyAssignmentScore,
+    DutyConfirmRequest,
     ExamCreate,
     HomeworkBatchStatus,
     HomeworkCreate,
@@ -40,7 +51,6 @@ from app.services import academic, class_student, duty, operations, seating, tim
 from app.services.common import audit, entity_dict
 from app.services.openclaw_provisioning import agent_name_for_class
 from app.utils.time import now
-
 
 SUPPORTED_OPERATIONS = {
     "class.onboarding.commit",
@@ -92,9 +102,10 @@ def _validation_error(exc: ValidationError) -> AppError:
     return AppError("VALIDATION_ERROR", "写入草稿字段校验失败", details={"errors": exc.errors(include_url=False)})
 
 
-def _model(model, payload: dict) -> dict:
+def _model(model, payload: dict, *, exclude_unset: bool = False) -> dict:
     try:
-        return model.model_validate(payload).model_dump(mode="json")
+        validated = model.model_validate(payload)
+        return validated.model_dump(mode="json", exclude_unset=exclude_unset)
     except ValidationError as exc:
         raise _validation_error(exc) from exc
 
@@ -207,12 +218,12 @@ def normalize_and_preview(operation_type: str, payload: dict, evidence: list[dic
     }
     if operation_type in specs:
         model, title = specs[operation_type]
-        normalized = _model(model, payload)
+        normalized = _model(model, payload, exclude_unset=operation_type == "attendance.set")
         return normalized, {"ready": True, "title": title, "summary": normalized, "missing_fields": [], "validation_errors": [], "confirmation_message": f"即将{title}，请核对字段后确认。"}
     if operation_type == "student.update":
         if not payload.get("student_id"):
             raise AppError("VALIDATION_ERROR", "student.update缺少student_id")
-        changes = _model(StudentUpdate, payload.get("changes") or {})
+        changes = _model(StudentUpdate, payload.get("changes") or {}, exclude_unset=True)
         normalized = {"student_id": payload["student_id"], "changes": changes}
         return normalized, {"ready": True, "title": "修改学生档案", "summary": normalized, "missing_fields": [], "validation_errors": [], "confirmation_message": "即将修改学生档案，请核对变更字段。"}
     if operation_type == "seating.update":
@@ -226,7 +237,7 @@ def normalize_and_preview(operation_type: str, payload: dict, evidence: list[dic
         model = HomeworkBatchStatus if id_field == "homework_id" else ScoreBatch
         if not payload.get(id_field):
             raise AppError("VALIDATION_ERROR", f"缺少{id_field}")
-        body = _model(model, payload)
+        body = _model(model, payload, exclude_unset=True)
         normalized = {id_field: payload[id_field], **body}
         count = len(body["items"] if "items" in body else body["scores"])
         return normalized, {"ready": True, "title": "批量更新作业状态" if id_field == "homework_id" else "批量保存成绩", "summary": {id_field: payload[id_field], "record_count": count}, "missing_fields": [], "validation_errors": [], "confirmation_message": f"即将批量写入{count}条记录。"}
@@ -548,7 +559,7 @@ def update_onboarding(db: Session, session_id: str, data: ClassOnboardingUpdate)
         raise AppError("PENDING_CONFIRMATION_REQUIRED", "引导内容已被其他客户端更新，请重新载入", 409, {"expected_revision": obj.revision})
     before = entity_dict(obj)
     merged_draft = _merge_draft(obj.draft_json or {}, data.draft_patch, data.replace_lists)
-    class_name = str(((merged_draft.get("class_info") or {}).get("name") or "")).strip()
+    class_name = str((merged_draft.get("class_info") or {}).get("name") or "").strip()
     if class_name:
         ensure_class_name_available(db, class_name)
     obj.draft_json = merged_draft
@@ -566,7 +577,7 @@ def update_onboarding(db: Session, session_id: str, data: ClassOnboardingUpdate)
 
 def preview_onboarding(db: Session, session_id: str, requested_by: str | None = None) -> WriteProposal:
     session = get_onboarding(db, session_id)
-    class_name = str((((session.draft_json or {}).get("class_info") or {}).get("name") or "")).strip()
+    class_name = str(((session.draft_json or {}).get("class_info") or {}).get("name") or "").strip()
     if class_name:
         ensure_class_name_available(db, class_name)
     evidence = []

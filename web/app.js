@@ -55,10 +55,20 @@ const ADMIN_NAV = [
   { group: "控制台", items: [
     { path: "/admin/overview", label: "运行概览" },
   ]},
-  { group: "资源", items: [
+  { group: "ClassClaw 系统", items: [
+    { path: "/admin/settings", label: "系统配置" },
     { path: "/admin/users", label: "用户" },
     { path: "/admin/classes", label: "班级" },
-    { path: "/admin/openclaw", label: "OpenClaw" },
+    { path: "/admin/maintenance", label: "备份与系统维护" },
+  ]},
+  { group: "OpenClaw 配置与维护", items: [
+    { path: "/admin/openclaw/settings", label: "连接与微信配置" },
+    { path: "/admin/openclaw", label: "Gateway 全局配置" },
+    { path: "/admin/openclaw/system-agents", label: "系统 Agent · Main / 提取" },
+    { path: "/admin/openclaw/maintenance", label: "会话维护" },
+  ]},
+  { group: "班级 Agent", items: [
+    { path: "/admin/agents", label: "各班级 Agent 配置" },
   ]},
   { group: "可观测性", items: [
     { path: "/admin/usage", label: "使用量与 Token" },
@@ -66,15 +76,12 @@ const ADMIN_NAV = [
     { path: "/admin/database", label: "数据库" },
     { path: "/admin/audit", label: "审计日志" },
   ]},
-  { group: "系统", items: [
-    { path: "/admin/settings", label: "静态配置" },
-  ]},
 ];
 
 const NAV = [...TEACHER_NAV, ...ADMIN_NAV];
 
 const PAGE_META = {};
-for (const group of NAV) for (const item of group.items) PAGE_META[item.path] = item;
+for (const group of NAV) for (const item of group.items) PAGE_META[item.path] = { ...item, group: group.group };
 
 const routes = [
   { path: "/dashboard", title: "今日仪表盘", loader: () => import("./js/pages/dashboard.js"), requiresClass: true },
@@ -94,17 +101,21 @@ const routes = [
   { path: "/analytics/class", title: "班级分析", loader: () => import("./js/pages/analytics.js?v=20260901-analytics-fix"), requiresClass: true, section: "class" },
   { path: "/analytics/attention", title: "重点关注", loader: () => import("./js/pages/analytics.js?v=20260901-analytics-fix"), requiresClass: true, section: "attention" },
   { path: "/workflow", title: "待确认记录", loader: () => import("./js/pages/workflow.js") },
-  { path: "/agent", title: "班级 Agent 对话", loader: () => import("./js/pages/agent.js?v=20260907-agent-models") },
+  { path: "/agent", title: "班级 Agent 对话", loader: () => import("./js/pages/agent.js?v=20260909-conversations") },
   { path: "/admin/overview", title: "运行概览", loader: () => import("./js/pages/adminOverview.js"), adminOnly: true },
   { path: "/admin/users", title: "用户管理", loader: () => import("./js/pages/adminUsers.js"), adminOnly: true },
   { path: "/admin/classes", title: "班级管理", loader: () => import("./js/pages/adminClasses.js"), adminOnly: true },
-  { path: "/admin/openclaw", title: "OpenClaw", loader: () => import("./js/pages/adminAgents.js"), adminOnly: true },
-  { path: "/admin/agents", title: "智能体管理", loader: () => import("./js/pages/adminAgents.js"), adminOnly: true },
+  { path: "/admin/openclaw", title: "Gateway 全局配置", loader: () => import("./js/pages/adminAgents.js"), adminOnly: true },
+  { path: "/admin/openclaw/settings", title: "OpenClaw 连接与微信配置", loader: () => import("./js/pages/adminSettings.js"), adminOnly: true },
+  { path: "/admin/openclaw/system-agents", title: "系统 Agent 配置", loader: () => import("./js/pages/adminAgents.js"), adminOnly: true },
+  { path: "/admin/openclaw/maintenance", title: "OpenClaw 会话维护", loader: () => import("./js/pages/adminMaintenance.js"), adminOnly: true },
+  { path: "/admin/agents", title: "班级 Agent 配置", loader: () => import("./js/pages/adminAgents.js"), adminOnly: true },
   { path: "/admin/usage", title: "使用量与 Token", loader: () => import("./js/pages/adminUsage.js"), adminOnly: true },
   { path: "/admin/logs", title: "运行日志", loader: () => import("./js/pages/adminLogs.js"), adminOnly: true },
   { path: "/admin/database", title: "数据库调试", loader: () => import("./js/pages/adminDatabase.js"), adminOnly: true },
   { path: "/admin/audit", title: "审计日志", loader: () => import("./js/pages/adminAudit.js"), adminOnly: true },
-  { path: "/admin/settings", title: "静态配置", loader: () => import("./js/pages/adminSettings.js"), adminOnly: true },
+  { path: "/admin/settings", title: "ClassClaw 系统配置", loader: () => import("./js/pages/adminSettings.js"), adminOnly: true },
+  { path: "/admin/maintenance", title: "备份与系统维护", loader: () => import("./js/pages/adminMaintenance.js"), adminOnly: true },
   { path: "/account", title: "账户设置", loader: () => import("./js/pages/account.js") },
   { path: "/welcome", title: "创建班级", loader: () => import("./js/pages/welcome.js"), bare: true },
   { path: "/onboarding", title: "班级创建向导", loader: () => import("./js/pages/onboarding.js?v=20260901-onboarding-actions") },
@@ -114,10 +125,19 @@ defineRoutes(routes);
 
 let shell = null; // { content, navMap, topTitle, topSub, classChip, statusDot, sidebar }
 let loginNotice = null;
+let activePage = null;
+let pageRevision = 0;
+
+function disposePage() {
+  pageRevision += 1;
+  activePage?.dispose?.();
+  activePage = null;
+}
 
 /* ---------------- 登录页 ---------------- */
 
 function renderLogin(notice = null) {
+  disposePage();
   shell = null;
   const userInput = el("input", { type: "text", autocomplete: "username", required: true, maxlength: "100" });
   const passInput = el("input", { type: "password", autocomplete: "current-password", required: true, maxlength: "128" });
@@ -164,6 +184,7 @@ function renderLogin(notice = null) {
 /* ---------------- AppShell ---------------- */
 
 function buildShell() {
+  disposePage();
   const isAdmin = state.user?.role === "admin";
   const sidebar = el("aside", { class: "sidebar", id: "sidebar" });
   sidebar.append(el("div", { class: "brand-line" },
@@ -259,6 +280,8 @@ function updateClassChip() {
 /* ---------------- 路由守卫与页面挂载 ---------------- */
 
 setRouteResolver(async (route, ctx) => {
+  disposePage();
+  const revision = pageRevision;
   if (!state.user) { renderLogin("请先登录"); return; }
   const isAdmin = state.user.role === "admin";
   if (route.adminOnly && !isAdmin) {
@@ -292,8 +315,11 @@ setRouteResolver(async (route, ctx) => {
   shell.content.append(mount);
   try {
     const mod = await route.loader();
+    if (revision !== pageRevision || !mount.isConnected) return;
+    activePage = mod;
     await mod.render(mount, ctx, { refreshShell: renderApp, refreshOpenclawDot });
   } catch (error) {
+    if (revision !== pageRevision || !mount.isConnected) return;
     console.error(error);
     clear(mount);
     mount.append(el("div", { class: "error-panel" }, el("b", {}, `页面加载失败：${error.message}`)));

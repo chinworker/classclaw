@@ -2,7 +2,7 @@
 
 ## 1. 总体边界
 
-ClassClaw 使用 SQLite + SQLAlchemy，当前共有 33 张应用数据表（不含 SQLite 内部表和 Alembic 版本表）。数据以 `classes.id` 为班级边界，以 `students.id` 为学生事实主键。班主任只能访问自己账号绑定的一个班级；管理员可以管理账号、智能体并查看脱敏数据库内容。
+ClassClaw 使用 SQLite + SQLAlchemy，核心业务库有 33 张应用数据表，独立用量库有 1 张表（不含 SQLite 内部表和 Alembic 版本表）。数据以 `classes.id` 为班级边界，以 `students.id` 为学生事实主键。班主任只能访问自己账号绑定的一个班级；管理员可以管理账号、智能体并查看脱敏数据库内容。
 
 写入有两条路径：
 
@@ -31,7 +31,7 @@ ClassClaw 使用 SQLite + SQLAlchemy，当前共有 33 张应用数据表（不�
 | 对话写入 | `interaction_analyses`, `write_proposals` | 分析记录只保留结构化结果和 proposal 关联，不保存聊天原文；proposal 保存归一化 payload、预览、版本、状态与执行结果。 |
 | 网页建班 | `class_onboarding_sessions` | 保存网页建班草稿、版本和状态；最终确认时原子创建班级、学生、科目、节次、课表和智能体绑定记录。 |
 | 轻量审计 | `audit_logs` | 只记录少量关键动作，不保存整份业务消息或前后快照。 |
-| AI 使用量 | `ai_usage_records` | 保存 OpenClaw 报告的 Token 数、模型和调用类型，不保存 prompt 或回复正文。 |
+| AI 使用量（独立 `usage.db`） | `ai_usage_records` | 保存 OpenClaw 报告的 Token 数、模型和调用类型，不保存 prompt 或回复正文；独立会话与写锁，不参与业务事务。 |
 
 ## 3. 智能体允许的查询操作
 

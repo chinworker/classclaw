@@ -7,6 +7,8 @@ import { promisify } from "node:util";
 import { Type } from "typebox";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import type { OpenClawPluginDefinition } from "openclaw/plugin-sdk/plugin-entry";
+import { createTurnGuard, toolResult as result, validateReadParams } from "./toolRuntime.js";
+import { sessionThinkingHandler } from "./sessionThinking.js";
 
 type JsonObject = Record<string, unknown>;
 type ClassClawConfig = { baseUrl: string; apiToken?: string; timeoutMs: number; allowedUploadRoots: string[]; agentClasses: Record<string, string> };
@@ -101,10 +103,6 @@ export function createClient(config: ClassClawConfig) {
   };
 }
 
-function result(data: unknown) {
-  return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }], details: data };
-}
-
 function query(params: Record<string, unknown>, keys: string[]): string {
   const search = new URLSearchParams();
   for (const key of keys) {
@@ -163,27 +161,38 @@ const plugin: OpenClawPluginDefinition = definePluginEntry({
   register(api) {
     const config = resolveConfig(api.pluginConfig);
     const client = createClient(config);
+    api.registerHttpRoute({
+      path: "/api/v1/classclaw/web-session-thinking", auth: "gateway", match: "exact",
+      gatewayRuntimeScopeSurface: "trusted-operator", handler: sessionThinkingHandler(config.agentClasses),
+    });
+    const guard = createTurnGuard();
+    const turnKey = (context: { agentId?: string; sessionKey?: string; runId?: string }, runId?: string) =>
+      context.runId || runId ? JSON.stringify([context.agentId, context.sessionKey, context.runId || runId]) : undefined;
+
+    api.on("after_tool_call", (event, context) => {
+      if (event.toolName.startsWith("classclaw_")) guard.after(turnKey(context, event.runId), event.toolName, event.result, event.error);
+    });
 
     api.on("before_tool_call", async (event, context) => {
       if (!event.toolName.startsWith("classclaw_")) return;
       const classId = context.agentId ? config.agentClasses[context.agentId] : undefined;
-      if (!classId) return;
       const params = { ...event.params } as Record<string, unknown>;
-      if (event.toolName === "classclaw_analyze_interaction") params.class_id = classId;
-      if (event.toolName === "classclaw_read") {
+      if (classId && event.toolName === "classclaw_analyze_interaction") params.class_id = classId;
+      if (classId && event.toolName === "classclaw_read") {
         if (params.resource === "classes") return { block: true, blockReason: "班级专属智能体不能列出其他班级" };
         if (params.class_id && params.class_id !== classId) return { block: true, blockReason: "班级专属智能体不能跨班读取" };
         params.class_id = classId;
         params.bound_class_id = classId;
       }
-      if (event.toolName === "classclaw_propose_write") {
+      if (classId && event.toolName === "classclaw_propose_write") {
         const payload = { ...((params.payload as JsonObject | undefined) ?? {}) };
         if (payload.class_id && payload.class_id !== classId) return { block: true, blockReason: "班级专属智能体不能跨班创建写入预览" };
         payload.class_id = classId;
         params.payload = payload;
       }
-      if (event.toolName === "classclaw_commit_write" || event.toolName === "classclaw_commit_writes") params.bound_class_id = classId;
-      if (event.toolName === "classclaw_mark_reminder_sent") params.bound_class_id = classId;
+      if (classId && ["classclaw_commit_write", "classclaw_commit_writes", "classclaw_mark_reminder_sent"].includes(event.toolName)) params.bound_class_id = classId;
+      const blocked = guard.before(turnKey(context, event.runId), event.toolName, params);
+      if (blocked) return { block: true, blockReason: blocked };
       return { params };
     }, { priority: 200 });
 
@@ -235,6 +244,7 @@ const plugin: OpenClawPluginDefinition = definePluginEntry({
       }),
       async execute(_id, params) {
         const values = params as Record<string, unknown> & { resource: typeof readResources[number] };
+        validateReadParams(values);
         let path: string;
         switch (values.resource) {
           case "classes": path = "/api/v1/classes"; break;

@@ -4,6 +4,7 @@ import threading
 import time
 from collections.abc import Generator
 from contextlib import contextmanager
+from types import SimpleNamespace
 
 from fastapi import Request
 from sqlalchemy.orm import Session, sessionmaker
@@ -65,20 +66,22 @@ def test_request_writer_can_close_on_another_thread(monkeypatch):
 
 def test_get_db_routes_by_http_method(monkeypatch):
     used: list[str] = []
+    reader = SimpleNamespace(info={})
+    writer = SimpleNamespace(info={})
 
     @contextmanager
     def fake_reader() -> Generator:
         used.append("read")
-        yield "reader"
+        yield reader
 
     @contextmanager
     def fake_writer() -> Generator:
         used.append("write")
-        yield "writer"
+        yield writer
 
     monkeypatch.setattr(database, "reader_session", fake_reader)
     monkeypatch.setattr(database, "request_writer_session", fake_writer)
-    assert next(get_db(Request({"type": "http", "method": "GET"}))) == "reader"
-    assert next(get_db(Request({"type": "http", "method": "POST"}))) == "writer"
-    assert next(get_db(Request({"type": "http", "method": "DELETE"}))) == "writer"
+    assert next(get_db(Request({"type": "http", "method": "GET"}))) is reader
+    assert next(get_db(Request({"type": "http", "method": "POST"}))) is writer
+    assert next(get_db(Request({"type": "http", "method": "DELETE"}))) is writer
     assert used == ["read", "write", "write"]

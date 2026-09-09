@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Awaitable, Callable
+from contextlib import contextmanager
 from typing import Any
 
 from fastapi import UploadFile
@@ -10,9 +11,24 @@ from sqlalchemy.orm import Session
 from app.core.errors import AppError
 from app.models.entities import Attachment
 from app.services import openclaw_bridge, openclaw_provisioning, operations
+from app.services.agent_stream import DeltaHandler
 
 MAX_CHAT_FILES = 8
 MAX_CHAT_TEXT_CHARS = 20_000
+_active_conversations: set[tuple[str, str, str]] = set()
+
+
+@contextmanager
+def conversation_turn(class_id: str, sender_id: str, conversation_id: str):
+    """Prevent competing runs/settings patches in the same owner-scoped session."""
+    key = (class_id, sender_id, _conversation_id(conversation_id))
+    if key in _active_conversations:
+        raise AppError("CHAT_ALREADY_RUNNING", "本对话正在回复，请等待完成或先停止本次回答", 409)
+    _active_conversations.add(key)
+    try:
+        yield
+    finally:
+        _active_conversations.discard(key)
 
 
 def _conversation_id(value: str) -> str:
@@ -52,6 +68,8 @@ async def send_message(
     sender_id: str,
     requested_by: str,
     cancelled: Callable[[], Awaitable[bool]] | None = None,
+    thinking_level: str | None = None,
+    on_delta: DeltaHandler | None = None,
 ) -> dict[str, Any]:
     """Send one authenticated web turn to the class-scoped OpenClaw agent."""
     normalized_conversation_id = _conversation_id(conversation_id)
@@ -83,6 +101,8 @@ async def send_message(
         attachments=attachments,
         model_override=binding.image_model if any((item.mime_type or "").startswith("image/") for item in attachments) else None,
         cancelled=cancelled,
+        thinking_level=thinking_level,
+        on_delta=on_delta,
     )
     return {
         "conversation_id": normalized_conversation_id,

@@ -1,17 +1,38 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.database import Base, get_db
+from app import usage_database
 from app.config import settings
+from app.database import Base, get_db
 from app.main import app
 from app.models import entities  # noqa: F401
 from app.models.entities import ClassRoom, Student
 from app.services import openclaw_bridge
+
+
+@pytest.fixture(autouse=True)
+def usage_store(tmp_path, monkeypatch):
+    store = usage_database.UsageStore(f"sqlite:///{tmp_path / 'usage.db'}")
+    usage_database.UsageBase.metadata.create_all(store.engine)
+    store.ready = True
+    monkeypatch.setattr(usage_database, "get_usage_store", lambda: store)
+    try:
+        yield store
+    finally:
+        store.dispose()
+
+
+@pytest.fixture()
+def usage_db(usage_store):
+    with usage_store.reader() as session:
+        yield session
 
 
 @pytest.fixture()
@@ -59,6 +80,17 @@ def client(db: Session, monkeypatch):
     async def extractor_off() -> bool:
         return False
 
+    async def no_runtime_sync():
+        return None
+
+    # TestClient runs the lifespan too: never initialize/migrate real local data.
+    @contextmanager
+    def startup_session():
+        yield db
+
+    monkeypatch.setattr("app.main.init_db", lambda: None)
+    monkeypatch.setattr("app.main.writer_session", startup_session)
+    monkeypatch.setattr("app.services.openclaw_provisioning.sync_class_agent_thinking_defaults", no_runtime_sync)
     monkeypatch.setattr(openclaw_bridge, "connection_status", connected)
     monkeypatch.setattr(openclaw_bridge, "ensure_extractor_agent", extractor_off)
     app.dependency_overrides[get_db] = override

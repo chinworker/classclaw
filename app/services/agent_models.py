@@ -7,6 +7,7 @@ import shutil
 import tempfile
 import time
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.core.errors import AppError
+from app.database import suspend_writer
 from app.schemas.agent_chat import ClassAgentModelUpdate
 from app.services import openclaw_provisioning
 from app.services.common import audit
@@ -96,18 +98,18 @@ async def _finish_process(
             if task in done:
                 return task.result()
             if cancelled and await cancelled():
-                process.terminate()
-                await process.wait()
-                task.cancel()
                 raise AppError("REQUEST_CANCELLED", "语音识别已取消", 499)
             if time.monotonic() >= deadline:
-                process.kill()
-                await process.wait()
-                task.cancel()
-                raise AppError("OPENCLAW_PROCESSING_FAILED", "语音识别超时，请缩短录音后重试", 504)
+                raise AppError("OPENCLAW_TIMEOUT", "语音识别超时，请缩短录音后重试", 504)
     finally:
+        if process.returncode is None:
+            with suppress(ProcessLookupError):
+                process.kill()
+            await process.wait()
         if not task.done():
             task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
 
 
 async def _run_json_command(
@@ -176,11 +178,12 @@ async def class_agent_model_settings(db: Session, class_id: str) -> dict[str, An
     binding = openclaw_provisioning.get_binding(db, class_id)
     if not binding.openclaw_agent_id:
         raise AppError("OPENCLAW_AGENT_REQUIRED", "本班专属 Agent 尚未创建", 409)
-    snapshot, models_payload, auth_payload = await asyncio.gather(
-        openclaw_provisioning.admin_rpc("config.get"),
-        openclaw_provisioning.admin_rpc("models.list"),
-        openclaw_provisioning.admin_rpc("models.authStatus"),
-    )
+    async with suspend_writer(db):
+        snapshot, models_payload, auth_payload = await asyncio.gather(
+            openclaw_provisioning.admin_rpc("config.get"),
+            openclaw_provisioning.admin_rpc("models.list"),
+            openclaw_provisioning.admin_rpc("models.authStatus"),
+        )
     config = snapshot.get("config") or {}
     row = _agent_row(config, binding.openclaw_agent_id)
     if not row:
@@ -239,7 +242,8 @@ async def update_class_agent_models(
 
     restart_requested = False
     if "main_model" in changes and data.main_model != current["configured"]["main_model"]:
-        snapshot = await openclaw_provisioning.admin_rpc("config.get")
+        async with suspend_writer(db):
+            snapshot = await openclaw_provisioning.admin_rpc("config.get")
         config = snapshot.get("config") or {}
         rows = list((config.get("agents") or {}).get("list") or [])
         found = False
@@ -264,7 +268,8 @@ async def update_class_agent_models(
         }
         if snapshot.get("hash"):
             params["baseHash"] = snapshot["hash"]
-        await openclaw_provisioning.admin_rpc("config.patch", params)
+        async with suspend_writer(db):
+            await openclaw_provisioning.admin_rpc("config.patch", params)
         restart_requested = True
 
     before = {name: getattr(binding, name) for name in ("main_model", "image_model", "speech_model")}
@@ -329,4 +334,6 @@ async def transcribe_for_class(
     binding = openclaw_provisioning.get_binding(db, class_id)
     if not binding.speech_model:
         raise AppError("SPEECH_MODEL_REQUIRED", "请先在模型设置中选择可用的语音识别模型", 409)
-    return await transcribe_upload(upload, model=binding.speech_model, cancelled=cancelled)
+    model = binding.speech_model
+    async with suspend_writer(db):
+        return await transcribe_upload(upload, model=model, cancelled=cancelled)

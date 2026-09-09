@@ -17,7 +17,7 @@ from app.config import settings
 from app.core.errors import AppError
 from app.core.logging import configure_logging, get_logger
 from app.database import init_db, writer_session
-from app.services import accounts, openclaw_bridge
+from app.services import accounts, openclaw_bridge, openclaw_provisioning
 from app.services.http_client import close_http_client
 
 
@@ -34,9 +34,15 @@ async def lifespan(_app: FastAPI):
     with writer_session() as db:
         accounts.ensure_default_admin(db)
     cleanup_task = None
-    extractor_setup_task = None
-    if settings.openclaw_extractor_enabled:
-        extractor_setup_task = asyncio.create_task(openclaw_bridge.prepare_extractor_agent())
+    async def prepare_agents():
+        try:
+            await openclaw_provisioning.sync_class_agent_thinking_defaults()
+        except Exception as exc:  # noqa: BLE001 - Gateway startup failure must not block deterministic APIs
+            get_logger("startup").warning("Class-agent defaults sync failed: %s", type(exc).__name__)
+        if settings.openclaw_extractor_enabled:
+            await openclaw_bridge.prepare_extractor_agent()
+
+    extractor_setup_task = asyncio.create_task(prepare_agents())
     if settings.openclaw_session_cleanup_hours > 0:
         cleanup_task = asyncio.create_task(openclaw_bridge.session_cleanup_loop())
     try:

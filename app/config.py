@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 BASE_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG_FILE = BASE_DIR / "config" / "classclaw.toml"
 load_dotenv(BASE_DIR / ".env", override=False)
+ThinkingLevel = Literal["off", "minimal", "low", "medium", "high", "xhigh", "adaptive", "max"]
 
 
 class ConfigurationError(RuntimeError):
@@ -29,6 +30,7 @@ class _StrictSection(BaseModel):
 
 class StorageConfig(_StrictSection):
     database_url: str = "sqlite:///./data/classclaw.db"
+    usage_database_url: str = "sqlite:///./data/usage.db"
     attachment_dir: str = "./data/attachments"
     max_attachment_bytes: int = Field(default=20 * 1024 * 1024, ge=1, le=1024 * 1024 * 1024)
     class_workspace_root: str = "./data/openclaw-agents"
@@ -58,6 +60,7 @@ class OpenClawConfig(_StrictSection):
     agent_id: str = Field(default="main", min_length=1, max_length=100)
     extractor_agent_id: str = Field(default="classclaw-extractor", min_length=1, max_length=100)
     extractor_enabled: bool = True
+    class_agent_thinking: ThinkingLevel = "off"
     timeout_seconds: float = Field(default=120, gt=0, le=120)
     session_cleanup_hours: float = Field(default=24, ge=0, le=8760)
     cli: str = Field(default="openclaw", min_length=1, max_length=500)
@@ -114,6 +117,7 @@ class Settings:
     app_name: str
     api_prefix: str
     database_url: str
+    usage_database_url: str
     attachment_dir: Path
     max_attachment_bytes: int
     timezone: str
@@ -129,6 +133,7 @@ class Settings:
     openclaw_agent_id: str
     openclaw_extractor_agent_id: str
     openclaw_extractor_enabled: bool
+    openclaw_class_agent_thinking: ThinkingLevel
     openclaw_timeout_seconds: float
     openclaw_class_workspace_root: Path
     openclaw_state_dir: Path
@@ -142,6 +147,8 @@ class Settings:
     server: ServerConfig
     config_file: Path | None
     config_hash: str
+    # Startup provenance only: never retain environment values or credentials here.
+    config_sources: tuple[tuple[str, str], ...] = ()
 
 
 _ENV_PATHS = {
@@ -153,6 +160,7 @@ _ENV_PATHS = {
 
 _ENV_STRINGS = {
     "CLASSCLAW_DATABASE_URL": ("storage", "database_url"),
+    "CLASSCLAW_USAGE_DATABASE_URL": ("storage", "usage_database_url"),
     "CLASSCLAW_TIMEZONE": ("runtime", "timezone"),
     "CLASSCLAW_LOG_LEVEL": ("runtime", "log_level"),
     "CLASSCLAW_SERVER_HOST": ("server", "host"),
@@ -160,6 +168,7 @@ _ENV_STRINGS = {
     "CLASSCLAW_OPENCLAW_GATEWAY_URL": ("openclaw", "gateway_url"),
     "CLASSCLAW_OPENCLAW_AGENT_ID": ("openclaw", "agent_id"),
     "CLASSCLAW_OPENCLAW_EXTRACTOR_AGENT_ID": ("openclaw", "extractor_agent_id"),
+    "CLASSCLAW_OPENCLAW_CLASS_AGENT_THINKING": ("openclaw", "class_agent_thinking"),
     "CLASSCLAW_OPENCLAW_BIN": ("openclaw", "cli"),
     "CLASSCLAW_OPENCLAW_WECHAT_CHANNEL": ("wechat", "channel"),
     "CLASSCLAW_WEB_NAME": ("web", "brand", "name"),
@@ -200,6 +209,28 @@ _ENV_BOOLEANS = {
     "CLASSCLAW_FEATURE_WECHAT_BINDING": ("features", "wechat_binding"),
     "CLASSCLAW_FEATURE_REMINDERS": ("features", "reminders"),
 }
+
+CONFIG_ENVIRONMENT_VARIABLES = {
+    ".".join(path): name
+    for name, path in {**_ENV_PATHS, **_ENV_STRINGS, **_ENV_INTS, **_ENV_FLOATS, **_ENV_BOOLEANS}.items()
+}
+
+
+def _configuration_sources(raw: dict, overridden: set[tuple[str, ...]], env: Mapping[str, str]) -> tuple[tuple[str, str], ...]:
+    result = []
+    for path, env_name in CONFIG_ENVIRONMENT_VARIABLES.items():
+        parts = tuple(path.split("."))
+        if parts in overridden:
+            if path == "storage.openclaw_state_dir" and not env.get(env_name, "").strip():
+                env_name = "OPENCLAW_STATE_DIR"
+            source = f"environment:{env_name}"
+        else:
+            value = raw
+            for part in parts:
+                value = value.get(part) if isinstance(value, dict) else None
+            source = "file" if value is not None else "default"
+        result.append((path, source))
+    return tuple(result)
 
 
 def _set_nested(target: dict, path: tuple[str, ...], value: object) -> None:
@@ -265,11 +296,13 @@ def _resolve_path(value: str, base: Path) -> Path:
     return path.resolve()
 
 
-def _resolve_database_url(value: str, base: Path) -> str:
+def _resolve_database_url(value: str, base: Path, field: str = "storage.database_url") -> str:
     prefix = "sqlite:///"
     if not value.startswith(prefix):
-        raise ConfigurationError("storage.database_url 只支持 sqlite:/// URL")
+        raise ConfigurationError(f"{field} 只支持 sqlite:/// URL")
     raw_path = value.removeprefix(prefix)
+    if "?" in raw_path:
+        raise ConfigurationError(f"{field} 不支持 URL 查询参数，请使用普通 SQLite 文件路径")
     if raw_path == ":memory:":
         return value
     path = _resolve_path(raw_path, base)
@@ -283,6 +316,7 @@ def _is_within(path: Path, root: Path) -> bool:
 def _validate_paths(
     *,
     database_url: str,
+    usage_database_url: str,
     attachment_dir: Path,
     log_file: Path,
     workspace_root: Path,
@@ -310,9 +344,17 @@ def _validate_paths(
         database_path = Path(database_url.removeprefix("sqlite:///")).resolve()
     protected = {
         "数据库": database_path,
+        "用量数据库": None if usage_database_url.endswith(":memory:") else Path(usage_database_url.removeprefix("sqlite:///")),
         "日志文件": log_file,
         "配置文件": config_file.resolve() if config_file else None,
     }
+    usage_path = protected["用量数据库"]
+    if database_path and usage_path and (
+        usage_path == database_path or (usage_path.exists() and database_path.exists() and usage_path.samefile(database_path))
+    ):
+        raise ConfigurationError("storage.usage_database_url 必须与业务数据库使用不同文件")
+    if usage_path and usage_path in {log_file, config_file}:
+        raise ConfigurationError("storage.usage_database_url 不能覆盖日志或配置文件")
     for root_name, root in destructive.items():
         for target_name, target in protected.items():
             if target is not None and _is_within(target, root):
@@ -323,6 +365,7 @@ def _validate_document(
     document: ConfigDocument,
     *,
     database_url: str,
+    usage_database_url: str,
     attachment_dir: Path,
     log_file: Path,
     workspace_root: Path,
@@ -360,6 +403,7 @@ def _validate_document(
         raise ConfigurationError("微信 Gateway 调用超时不能大于 openclaw.timeout_seconds")
     _validate_paths(
         database_url=database_url,
+        usage_database_url=usage_database_url,
         attachment_dir=attachment_dir,
         log_file=log_file,
         workspace_root=workspace_root,
@@ -425,6 +469,11 @@ def load_settings(
         document.storage.database_url,
         _field_base(raw, "storage", "database_url", config_base=config_base, overridden=overridden),
     )
+    usage_database_url = _resolve_database_url(
+        document.storage.usage_database_url,
+        _field_base(raw, "storage", "usage_database_url", config_base=config_base, overridden=overridden),
+        "storage.usage_database_url",
+    )
     attachment_dir = _resolve_path(
         document.storage.attachment_dir,
         _field_base(raw, "storage", "attachment_dir", config_base=config_base, overridden=overridden),
@@ -444,6 +493,7 @@ def load_settings(
     _validate_document(
         document,
         database_url=database_url,
+        usage_database_url=usage_database_url,
         attachment_dir=attachment_dir,
         log_file=log_file,
         workspace_root=workspace_root,
@@ -455,6 +505,7 @@ def load_settings(
         "document": document.model_dump(mode="json"),
         "resolved": {
             "database_url": database_url,
+            "usage_database_url": usage_database_url,
             "attachment_dir": str(attachment_dir),
             "log_file": str(log_file),
             "class_workspace_root": str(workspace_root),
@@ -466,6 +517,7 @@ def load_settings(
         app_name="ClassClaw 班级管理后端",
         api_prefix="/api/v1",
         database_url=database_url,
+        usage_database_url=usage_database_url,
         attachment_dir=attachment_dir,
         max_attachment_bytes=document.storage.max_attachment_bytes,
         timezone=document.runtime.timezone,
@@ -481,6 +533,7 @@ def load_settings(
         openclaw_agent_id=document.openclaw.agent_id,
         openclaw_extractor_agent_id=document.openclaw.extractor_agent_id,
         openclaw_extractor_enabled=document.openclaw.extractor_enabled,
+        openclaw_class_agent_thinking=document.openclaw.class_agent_thinking,
         openclaw_timeout_seconds=document.openclaw.timeout_seconds,
         openclaw_class_workspace_root=workspace_root,
         openclaw_state_dir=state_dir,
@@ -493,6 +546,7 @@ def load_settings(
         server=document.server,
         config_file=config_file,
         config_hash=config_hash,
+        config_sources=_configuration_sources(raw, overridden, env),
     )
 
 
@@ -513,6 +567,7 @@ def safe_config_summary(value: Settings) -> dict:
         "bootstrap": {"default_admin_username": value.default_admin_username},
         "storage": {
             "database_url": value.database_url,
+            "usage_database_url": value.usage_database_url,
             "attachment_dir": str(value.attachment_dir),
             "max_attachment_bytes": value.max_attachment_bytes,
             "class_workspace_root": str(value.openclaw_class_workspace_root),
@@ -524,6 +579,7 @@ def safe_config_summary(value: Settings) -> dict:
             "agent_id": value.openclaw_agent_id,
             "extractor_agent_id": value.openclaw_extractor_agent_id,
             "extractor_enabled": value.openclaw_extractor_enabled,
+            "class_agent_thinking": value.openclaw_class_agent_thinking,
             "timeout_seconds": value.openclaw_timeout_seconds,
             "session_cleanup_hours": value.openclaw_session_cleanup_hours,
             "cli": value.openclaw_bin,

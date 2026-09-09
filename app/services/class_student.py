@@ -344,6 +344,13 @@ def get_student(db: Session, student_id: str, include_deleted: bool = False) -> 
     return obj
 
 
+def _student_integrity_error(exc: IntegrityError) -> AppError:
+    message = str(getattr(exc, "orig", "") or exc)
+    if "UNIQUE constraint failed" in message and "students.student_no" in message:
+        return AppError("STUDENT_NO_CONFLICT", "同一班级内学号已存在", 409)
+    return AppError("STUDENT_SAVE_FAILED", "学生档案保存失败", 500)
+
+
 def create_student(db: Session, data: StudentCreate, *, commit: bool = True) -> Student:
     get_class(db, data.class_id)
     obj = Student(**data.model_dump())
@@ -352,7 +359,7 @@ def create_student(db: Session, data: StudentCreate, *, commit: bool = True) -> 
         db.flush()
     except IntegrityError as exc:
         db.rollback()
-        raise AppError("STUDENT_NO_CONFLICT", "同一班级内学号已存在", 409) from exc
+        raise _student_integrity_error(exc) from exc
     audit(db, "create", "student", obj.id, after=entity_dict(obj))
     if commit:
         db.commit()
@@ -368,7 +375,7 @@ def update_student(db: Session, student_id: str, data: StudentUpdate, *, commit:
         db.flush()
     except IntegrityError as exc:
         db.rollback()
-        raise AppError("STUDENT_NO_CONFLICT", "同一班级内学号已存在", 409) from exc
+        raise _student_integrity_error(exc) from exc
     audit(db, "update", "student", obj.id, before=before, after=entity_dict(obj))
     if commit:
         db.commit()

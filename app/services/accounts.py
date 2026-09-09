@@ -18,7 +18,6 @@ from app.schemas.auth import UserCreate, UserUpdate
 from app.services.common import audit
 from app.utils.time import now
 
-
 PASSWORD_ITERATIONS = 260_000
 
 
@@ -98,8 +97,12 @@ def login(db: Session, username: str, password: str) -> tuple[str, User]:
     ensure_default_admin(db)
     normalized = normalize_username(username)
     user = db.scalar(select(User).where(User.username == normalized))
-    if not user or not user.is_active or not verify_password(password, user.password_hash):
-        raise AppError("INVALID_CREDENTIALS", "用户名或密码错误", 401)
+    if not user:
+        raise AppError("ACCOUNT_NOT_FOUND", "账号不存在，请检查用户名", 401)
+    if not user.is_active:
+        raise AppError("ACCOUNT_DISABLED", "账号已停用，请联系管理员", 401)
+    if not verify_password(password, user.password_hash):
+        raise AppError("INVALID_PASSWORD", "密码错误，请检查密码", 401)
     token, _session = issue_session(db, user)
     return token, user
 
@@ -194,6 +197,40 @@ def reset_teacher_password(db: Session, user_id: str) -> User:
     audit(db, "reset_password", "user", user.id, operator_type="admin")
     db.commit()
     return user
+
+
+def admin_for_local_reset(db: Session) -> User:
+    """Lookup only; recovery must never bootstrap an account in a wrong database."""
+    admin = db.scalars(select(User).where(User.role == "admin")).one_or_none()
+    if admin is None:
+        raise AppError("ADMIN_NOT_FOUND", "数据库中不存在管理员，请核对数据库配置；不会自动创建账号", 404)
+    return admin
+
+
+def reset_admin_password_locally(db: Session, *, admin_id: str, new_password: str) -> User:
+    """Privileged local CLI only: never expose through an HTTP route or Agent tool.
+
+    The caller uses a dedicated writer_session; password, revocations and audit
+    are committed together. Match the selected administrator before writing.
+    """
+    # Match the login schema, including explicitly configured legacy passwords.
+    if not 1 <= len(new_password) <= 128 or not new_password.strip():
+        raise AppError("VALIDATION_ERROR", "配置的管理员密码须为 1–128 个字符，不能全部为空白", 422)
+    admin = admin_for_local_reset(db)
+    if admin.id != admin_id:
+        raise AppError("ADMIN_CHANGED", "管理员账号已发生变化，请重新运行重置命令", 409)
+    try:
+        admin.password_hash = hash_password(new_password)
+        admin.must_change_password = True
+        db.query(UserSession).filter(UserSession.user_id == admin.id, UserSession.revoked_at.is_(None)).update(
+            {"revoked_at": now()}, synchronize_session="fetch",
+        )
+        audit(db, "reset_password", "user", admin.id, operator_type="local_cli")
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    return admin
 
 
 def change_password(db: Session, user: User, current_password: str, new_password: str) -> None:

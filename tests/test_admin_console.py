@@ -8,7 +8,8 @@ from sqlalchemy import func, select
 
 from app.config import settings
 from app.database import Base
-from app.models.entities import AiUsageRecord, ClassAgentBinding, ClassRoom, Student, SystemSetting, User, UserSession
+from app.models.entities import ClassAgentBinding, ClassRoom, Student, SystemSetting, User, UserSession
+from app.models.usage import AiUsageRecord
 from app.services import admin_console, openclaw_bridge, openclaw_provisioning, openclaw_usage
 from app.services import logs as log_service
 from app.utils.time import now
@@ -28,7 +29,7 @@ def _create_class_fixture(db, *, name: str, grade: str, owner_user_id: str | Non
     return cls
 
 
-def test_admin_console_overview_settings_and_usage(client, db):
+def test_admin_console_overview_settings_and_usage(client, db, usage_db):
     overview = client.get("/api/v1/admin/overview", headers=_admin_header())
     assert overview.status_code == 200
     assert overview.json()["data"]["openclaw"]["ready"] is True
@@ -48,8 +49,8 @@ def test_admin_console_overview_settings_and_usage(client, db):
     assert changed.status_code == 404
     assert db.scalar(select(SystemSetting.value_json).where(SystemSetting.key == "admin.usage_window_days")) is None
 
-    db.add(AiUsageRecord(operation="event", model="openclaw/main", input_tokens=120, output_tokens=30, total_tokens=150, cached_input_tokens=20))
-    db.commit()
+    usage_db.add(AiUsageRecord(operation="event", model="openclaw/main", input_tokens=120, output_tokens=30, total_tokens=150, cached_input_tokens=20))
+    usage_db.commit()
     usage = client.get("/api/v1/admin/usage?days=7", headers=_admin_header())
     assert usage.status_code == 200
     assert usage.json()["data"]["totals"]["total_tokens"] == 150
@@ -105,7 +106,7 @@ def test_legacy_database_setting_does_not_override_startup_config(client, db):
     assert value is settings.features.file_analysis
 
 
-def test_admin_initialize_factory_resets_everything_and_recreates_defaults(client, db, monkeypatch, tmp_path):
+def test_admin_initialize_factory_resets_everything_and_recreates_defaults(client, db, usage_db, monkeypatch, tmp_path):
     test_settings = replace(
         settings,
         attachment_dir=tmp_path / "attachments",
@@ -156,7 +157,8 @@ def test_admin_initialize_factory_resets_everything_and_recreates_defaults(clien
     binding.channel_account_id = "reset-account"
     db.add(Student(class_id=cls.id, student_no="1", name="测试生", tags=[], status="active"))
     db.add(SystemSetting(key="feature.file_analysis", value_json=False))
-    db.add(AiUsageRecord(operation="reset-test", model="openclaw/main", input_tokens=10, output_tokens=5, total_tokens=15))
+    usage_db.add(AiUsageRecord(operation="reset-test", model="openclaw/main", input_tokens=10, output_tokens=5, total_tokens=15))
+    usage_db.commit()
     db.commit()
     assert db.scalar(select(func.count()).select_from(UserSession)) == 1
     test_settings.attachment_dir.mkdir(parents=True)
@@ -179,6 +181,8 @@ def test_admin_initialize_factory_resets_everything_and_recreates_defaults(clien
     assert response.status_code == 200
     result = response.json()["data"]
     assert result["status"] == "completed"
+    assert result["deleted_counts"]["ai_usage_records"] == 1
+    assert usage_db.scalar(select(func.count()).select_from(AiUsageRecord)) == 0
     assert result["deleted_classes"] == 1
     assert [item["kind"] for item in result["default_agents"]] == ["main", "extractor"]
     patched_agents = json.loads(runtime_patches[0]["raw"])["agents"]["list"]
@@ -350,10 +354,16 @@ def test_agent_studio_runtime_workspace_usage_and_logs(client, db, monkeypatch, 
         f"/api/v1/admin/openclaw/agents/{cls.id}", headers=_admin_header(),
         json={"model": "provider/model-a", "thinking_default": "high", "model_params": {"temperature": 0.2}},
     )
+    assert runtime_update.status_code == 409
+    assert runtime_update.json()["error"]["code"] == "CLASS_AGENT_THINKING_MANAGED"
+    runtime_update = client.patch(
+        f"/api/v1/admin/openclaw/agents/{cls.id}", headers=_admin_header(),
+        json={"model": "provider/model-a", "model_params": {"temperature": 0.2}},
+    )
     assert runtime_update.status_code == 200
     patched_config = json.loads(patches[-1]["raw"])
     agent_config = next(item for item in patched_config["agents"]["list"] if item["id"] == binding.openclaw_agent_id)
-    assert agent_config["thinkingDefault"] == "high"
+    assert agent_config["thinkingDefault"] == "low"
     assert agent_config["params"]["temperature"] == 0.2
 
     session_dir = tmp_path / "agents" / binding.openclaw_agent_id / "sessions"

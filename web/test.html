@@ -15,10 +15,10 @@
 
   <main class="page">
     <section id="loginCard" class="login-card card">
-      <div><p class="eyebrow">账户验证</p><h1>登录后全面检查后端</h1><p>初始管理员为 <code>admin</code>，默认密码为 <code>32767</code>。</p></div>
+      <div><p class="eyebrow">账户验证</p><h1>登录后全面检查后端</h1><p>初始管理员用户名通常为 <code>admin</code>；初始密码以当前部署的 <code>CLASSCLAW_DEFAULT_ADMIN_PASSWORD</code> 配置为准。</p></div>
       <form id="loginForm">
         <label>用户名<input id="username" autocomplete="username" value="admin" required></label>
-        <label>密码<input id="password" type="password" autocomplete="current-password" value="32767" required></label>
+        <label>密码<input id="password" type="password" autocomplete="current-password" required></label>
         <button class="primary" type="submit">登录验收台</button>
       </form>
       <p id="loginError" class="error hidden"></p>

@@ -471,8 +471,22 @@ input[type="date"]::-webkit-calendar-picker-indicator, input[type="datetime-loca
 
 /* ---------- 班级 Agent 对话 ---------- */
 .agent-chat-layout {
-  display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 16px; align-items: start;
+  display: grid; grid-template-columns: 250px minmax(0, 1fr); gap: 16px; align-items: start;
 }
+.agent-chat-sidebar { display: grid; gap: 14px; min-width: 0; }
+.agent-chat-main { min-width: 0; }
+.agent-conversation-list { padding: 14px; border: 1px solid var(--border); border-radius: 16px; background: #fff; }
+.agent-conversation-list h3 { margin: 0 0 12px; font-size: 14px; }
+.agent-conversation-items { display: grid; gap: 7px; max-height: min(50vh, 480px); overflow-y: auto; }
+.agent-conversation-item { display: grid; gap: 5px; width: 100%; text-align: left; padding: 11px; border: 1px solid transparent; border-radius: 10px; background: #F6F8F6; }
+.agent-conversation-item:hover { background: var(--primary-soft); }
+.agent-conversation-item.active { border-color: var(--primary); background: var(--primary-soft); }
+.agent-conversation-item:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.agent-conversation-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.agent-conversation-status { color: var(--muted); font-size: 12px; }
+.agent-conversation-status.running { color: var(--primary); font-weight: 700; }
+.agent-conversation-status.failed { color: var(--danger); }
+.agent-conversation-hint { margin: 12px 0 0; font-size: 11px; line-height: 1.6; }
 .agent-chat-panel {
   display: grid; grid-template-rows: auto minmax(320px, 1fr) auto; overflow: hidden;
   min-height: 620px; height: calc(100vh - 158px); max-height: 880px;
@@ -483,6 +497,8 @@ input[type="date"]::-webkit-calendar-picker-indicator, input[type="datetime-loca
   padding: 13px 18px; border-bottom: 1px solid var(--border); background: rgba(249, 252, 250, 0.96);
 }
 .agent-chat-bar > div { display: flex; align-items: center; gap: 9px; }
+.agent-thinking-control { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12px; }
+.agent-thinking-select { width: auto; max-width: 190px; min-height: 32px; font-size: 12px; }
 .agent-online {
   display: inline-flex; align-items: center; gap: 5px; color: var(--success); font-size: 12px; font-weight: 600;
 }
@@ -682,6 +698,21 @@ input[type="date"]::-webkit-calendar-picker-indicator, input[type="datetime-loca
 .log-expand { color: #93C5FD; font: inherit; }
 .log-detail { grid-column: 1 / -1; overflow: auto; max-height: 340px; margin: 2px 0 4px; padding: 10px; border: 1px solid #26364F; border-radius: 5px; color: #AFC3DE; background: #080D17; font: inherit; white-space: pre-wrap; }
 .settings-list { display: grid; }
+.config-file-guide code, .config-setting-row code { white-space: normal; overflow-wrap: anywhere; }
+.config-file-guide details { margin: 12px 0; }
+.config-file-guide summary, .agent-runtime-advanced summary { cursor: pointer; font-weight: 600; }
+.config-file-guide li { margin: 8px 0; }
+.config-filter { display: grid; grid-template-columns: minmax(180px, 2fr) minmax(150px, 1fr) auto; align-items: end; gap: 14px; }
+.config-filter .field { margin-bottom: 0; }
+.config-filter > [role="status"] { padding-bottom: 12px; white-space: nowrap; }
+.config-field-meta { display: grid; gap: 6px; color: var(--muted); }
+.config-field-meta code { justify-self: start; font-size: 11px; }
+.setting-row.config-setting-row { grid-template-columns: minmax(0, 3fr) minmax(150px, 2fr); }
+.config-setting-value { min-width: 0; text-align: right; }
+.config-setting-value code { display: inline-block; max-width: 100%; }
+.agent-runtime-section { min-width: 0; border: 1px solid var(--border); border-radius: 8px; padding: 14px; margin: 16px 0; }
+.agent-runtime-section legend { padding: 0 6px; font-weight: 600; }
+.agent-runtime-advanced { margin: 16px 0; }
 .setting-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 18px; align-items: center; padding: 13px 2px; border-bottom: 1px solid var(--border); }
 .setting-row:last-child { border-bottom: 0; }
 .setting-control { display: flex; align-items: center; gap: 8px; min-width: 220px; }
@@ -715,8 +746,8 @@ input[type="date"]::-webkit-calendar-picker-indicator, input[type="datetime-loca
   .adjustment-arrow { min-height: 44px; }
   .adjustment-arrow span { transform: rotate(90deg); }
   .agent-chat-layout { grid-template-columns: 1fr; }
+  .agent-conversation-items { grid-auto-flow: column; grid-auto-columns: 190px; grid-template-columns: none; overflow-x: auto; }
   .agent-model-summary, .agent-model-form { grid-template-columns: 1fr; }
-  .agent-binding-card { order: -1; }
   .agent-chat-panel { height: calc(100vh - 175px); }
 }
 @media (max-width: 480px) {
@@ -727,9 +758,10 @@ input[type="date"]::-webkit-calendar-picker-indicator, input[type="datetime-loca
   .seating-version-bar { grid-template-columns: 1fr; }
   .seating-version-row, .duty-rule-row { align-items: flex-start; flex-direction: column; }
   .attendance-options { min-width: 260px; }
-  .admin-quick-grid, .admin-config-grid, .admin-two-col, .admin-agent-grid, .agent-config-summary, .agent-runtime-grid, .agent-file-toolbar, .log-filters { grid-template-columns: 1fr; }
+  .admin-quick-grid, .admin-config-grid, .admin-two-col, .admin-agent-grid, .agent-config-summary, .agent-runtime-grid, .agent-file-toolbar, .log-filters, .config-filter { grid-template-columns: 1fr; }
+  .config-setting-value { text-align: left; }
   .agent-file-meta { justify-content: flex-start; }
-  .setting-row { grid-template-columns: 1fr; }
+  .setting-row, .setting-row.config-setting-row { grid-template-columns: 1fr; }
   .setting-control { min-width: 0; }
   .timetable-section { padding: 15px; }
   .timetable-section-header, .adjustment-footer { grid-template-columns: 1fr; flex-direction: column; align-items: stretch; }

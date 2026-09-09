@@ -68,11 +68,13 @@ def cancel(request: Request, task_id: str) -> dict[str, object]:
 
 
 @asynccontextmanager
-async def track(request: Request) -> AsyncIterator[Callable[[], Awaitable[bool]]]:
+async def track(request: Request, *, check_disconnect: bool = True) -> AsyncIterator[Callable[[], Awaitable[bool]]]:
     """Register an AI request and expose a cancellation callback to OpenClaw calls."""
     normalized = _task_id(request.headers.get(AI_TASK_ID_HEADER))
     if normalized is None:
-        yield request.is_disconnected
+        async def disconnected() -> bool:
+            return await request.is_disconnected() if check_disconnect else False
+        yield disconnected
         return
 
     owner = _owner(request)
@@ -90,7 +92,7 @@ async def track(request: Request) -> AsyncIterator[Callable[[], Awaitable[bool]]
     _active_tasks[normalized] = entry
 
     async def cancelled() -> bool:
-        return entry.event.is_set() or await request.is_disconnected()
+        return entry.event.is_set() or (check_disconnect and await request.is_disconnected())
 
     try:
         yield cancelled

@@ -24,6 +24,7 @@
   },
   "activation": { "onStartup": true },
   "contracts": {
+    "gatewayMethodDispatch": ["authenticated-request"],
     "tools": [
       "classclaw_health", "classclaw_upload_file", "classclaw_read",
       "classclaw_analyze_interaction",

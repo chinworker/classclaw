@@ -1,7 +1,8 @@
 // 内存状态 + 允许写入 sessionStorage 的少量内容（token、当前页、UI 偏好）。
 // 业务数据一律不落地，刷新后从 API 重新获取。
 
-import { api, setToken } from "./api.js";
+import { api, getToken, setToken } from "./api.js";
+import { agentChatStore } from "./agentChatStore.js";
 
 const TOKEN_KEY = "classclaw.session.token";
 const ROUTE_KEY = "classclaw.ui.route";
@@ -29,6 +30,9 @@ export function savePrefs(patch) {
 export function loadToken() { return sessionStorage.getItem(TOKEN_KEY) || null; }
 
 export function saveSession(token) {
+  // Cancel with the old credential before changing identity; never leak another
+  // account's in-memory conversation list into the new login.
+  if (getToken() !== (token || null)) agentChatStore.clear();
   setToken(token);
   if (token) sessionStorage.setItem(TOKEN_KEY, token); else sessionStorage.removeItem(TOKEN_KEY);
 }

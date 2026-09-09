@@ -6,54 +6,23 @@ import { appConfig, featureEnabled } from "../config.js";
 import { state, refreshOpenclaw } from "../state.js";
 import { pageHeader, errorPanel, skeleton, statusBadge, qrBindingPanel, openclawBlocked, emptyState } from "../components.js";
 import { openAgentModelSettings } from "../agentModelSettings.js";
+import { agentChatStore } from "../agentChatStore.js";
 
 const MAX_FILES = 8;
 const ACCEPTED_FILES = ".xlsx,.xlsm,.docx,.pptx,.csv,.tsv,.pdf,.png,.jpg,.jpeg,.gif,.webp,.heic,.heif,.json,.xml,.rtf,.md,.markdown,.txt";
-const chatRuntime = {
-  scope: null,
-  conversationId: null,
-  messages: [],
-  activeController: null,
-  recognition: null,
-  mediaRecorder: null,
-  mediaStream: null,
-  voiceController: null,
-  discardRecording: false,
-};
+let activeView = null;
 
-function newId() {
-  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
-  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (char) => {
-    const value = Math.floor(Math.random() * 16);
-    return (char === "x" ? value : (value & 0x3) | 0x8).toString(16);
-  });
-}
-
-function resetRuntime(scope = chatRuntime.scope) {
-  chatRuntime.activeController?.abort();
-  chatRuntime.voiceController?.abort();
-  try { chatRuntime.recognition?.stop(); } catch { /* 已停止 */ }
-  chatRuntime.discardRecording = true;
-  try { if (chatRuntime.mediaRecorder?.state === "recording") chatRuntime.mediaRecorder.stop(); } catch { /* 已停止 */ }
-  chatRuntime.mediaStream?.getTracks().forEach((track) => track.stop());
-  chatRuntime.scope = scope;
-  chatRuntime.conversationId = newId();
-  chatRuntime.messages = [];
-  chatRuntime.activeController = null;
-  chatRuntime.recognition = null;
-  chatRuntime.mediaRecorder = null;
-  chatRuntime.mediaStream = null;
-  chatRuntime.voiceController = null;
+// Page disposal only releases DOM subscriptions and microphone/input resources.
+// Sent chat requests keep running in agentChatStore until completion or Stop.
+export function dispose() {
+  activeView?.cleanup();
+  activeView = null;
 }
 
 function fileSize(bytes) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-}
-
-function clock(value = new Date()) {
-  return value.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false });
 }
 
 function messageNode(message) {
@@ -65,7 +34,9 @@ function messageNode(message) {
       el("div", { class: "agent-chat-meta" }, isUser ? "你" : "班级 Agent", el("span", {}, message.time || "")),
       files.length ? el("div", { class: "agent-chat-files" }, files.map((file) =>
         el("span", { class: "agent-chat-file" }, "文件 · ", file.name, el("small", {}, fileSize(file.size || file.file_size || 0))))) : null,
-      el("div", { class: `agent-chat-text${message.error ? " is-error" : ""}` }, message.text)));
+      el("div", { class: `agent-chat-text${message.error ? " is-error" : ""}` }, message.text),
+      message.incomplete ? el("small", { class: "field-error" }, "以上仅为未完成的部分回复，不能据此确认操作结果。") : null,
+      message.error && message.requestId ? el("small", { class: "muted" }, `问题编号：${message.requestId}`) : null));
 }
 
 function welcomeNode(onSuggestion) {
@@ -79,11 +50,11 @@ function welcomeNode(onSuggestion) {
 }
 
 function bindingPanel(binding, mount, ctx, helpers) {
+  let qr = null;
   const modelButton = el("button", { class: "secondary agent-model-button", type: "button" }, "模型设置");
   modelButton.addEventListener("click", () => openAgentModelSettings(state.classId, {
     onSaved: (result) => {
-      resetRuntime();
-      window.setTimeout(() => render(mount, ctx, helpers), result.restart_requested ? 1600 : 0);
+      window.setTimeout(() => { if (mount.isConnected) void render(mount, ctx, helpers); }, result.restart_requested ? 1600 : 0);
     },
   }));
   const body = el("div", { class: "agent-binding-body" },
@@ -98,9 +69,10 @@ function bindingPanel(binding, mount, ctx, helpers) {
       el("span", { class: "muted" }, binding.channel_account_id ? "微信已连接" : "微信未绑定")),
     body);
   if (!binding.channel_account_id) {
-    body.append(qrBindingPanel(state.classId, { compact: true, onDone: () => render(mount, ctx, helpers) }).el);
+    qr = qrBindingPanel(state.classId, { compact: true, onDone: () => render(mount, ctx, helpers) });
+    body.append(qr.el);
   }
-  return details;
+  return { el: details, dispose: () => qr?.dispose() };
 }
 
 function provisionPanel(mount, ctx, helpers, hint = "班级还没有可用于网页对话的专属 Agent。") {
@@ -110,7 +82,7 @@ function provisionPanel(mount, ctx, helpers, hint = "班级还没有可用于网
     button.textContent = "正在创建…";
     try {
       await api(`/classes/${state.classId}/agent-binding/provision`, { method: "POST", body: {} });
-      await render(mount, ctx, helpers);
+      if (mount.isConnected) await render(mount, ctx, helpers);
     } catch (error) {
       button.parentElement?.append(errorPanel(error));
       button.disabled = false;
@@ -120,12 +92,17 @@ function provisionPanel(mount, ctx, helpers, hint = "班级还没有可用于网
   return el("div", { class: "card" }, emptyState("需要先创建班级 Agent", hint, button));
 }
 
-function chatPanel(binding) {
-  let selectedFiles = [];
-  let busy = false;
+function chatPanel(binding, scope, conversation) {
+  let selectedFiles = [...conversation.files];
+  let busy = Boolean(conversation.activeController);
+  let disposed = false;
+  const chatRuntime = { recognition: null, mediaRecorder: null, mediaStream: null, voiceController: null, discardRecording: false };
   let listening = false;
   let transcribing = false;
-  let thinkingNode = null;
+  let renderedMessageCount = -1;
+  let renderedController;
+  let renderedRevision = -1;
+  let renderedTail = null;
   const fileAnalysisEnabled = featureEnabled("file_analysis");
   const maxBytes = Number(appConfig.storage.max_attachment_bytes) || 20 * 1024 * 1024;
   const messages = el("div", { class: "agent-chat-messages", role: "log", aria: { live: "polite", label: "班级 Agent 对话消息" } });
@@ -136,6 +113,7 @@ function chatPanel(binding) {
     maxlength: "20000",
     placeholder: "给班级 Agent 发消息…",
     aria: { label: "消息内容" },
+    value: conversation.draft,
   });
   const fileInput = el("input", { type: "file", hidden: true, multiple: true, accept: ACCEPTED_FILES, disabled: !fileAnalysisEnabled });
   const attachButton = el("button", {
@@ -160,21 +138,38 @@ function chatPanel(binding) {
   const sendButton = el("button", { class: "agent-chat-send", type: "button", aria: { label: "发送消息" } }, "发送");
   const stopButton = el("button", { class: "agent-chat-stop hidden", type: "button" }, "停止");
   const statusLine = el("span", { class: "agent-composer-status muted", role: "status" }, "Enter 发送 · Shift+Enter 换行");
+  const thinkingLabels = { off: "关闭", minimal: "极低", low: "低", medium: "中", high: "高", xhigh: "极高", adaptive: "自适应", max: "最高" };
+  const defaultLevel = appConfig.agent_chat.default_thinking_level;
+  const thinkingSelect = el("select", { class: "agent-thinking-select", aria: { label: "本会话思考强度" },
+    title: "仅影响本会话下一条消息，不修改其他对话、微信或默认配置；模型须支持所选档位。" },
+  el("option", { value: "" }, `跟随默认（${thinkingLabels[defaultLevel] || defaultLevel}）`),
+  Object.entries(thinkingLabels).map(([value, label]) => el("option", { value }, label)));
+  thinkingSelect.value = conversation.thinkingLevel || "";
+  thinkingSelect.addEventListener("change", () => {
+    agentChatStore.setThinkingLevel(scope, conversation, thinkingSelect.value || null);
+    thinkingSelect.value = conversation.thinkingLevel || "";
+  });
 
-  function scrollBottom() { requestAnimationFrame(() => { messages.scrollTop = messages.scrollHeight; }); }
+  function scrollBottom() { requestAnimationFrame(() => { if (!disposed) messages.scrollTop = messages.scrollHeight; }); }
 
   function renderMessages() {
     clear(messages);
-    if (!chatRuntime.messages.length) {
-      messages.append(welcomeNode((prompt) => { textarea.value = prompt; resizeInput(); textarea.focus(); }));
+    renderedTail = null;
+    if (!conversation.messages.length) {
+      messages.append(welcomeNode((prompt) => { textarea.value = prompt; conversation.draft = prompt; resizeInput(); textarea.focus(); }));
     } else {
-      messages.append(...chatRuntime.messages.map(messageNode));
+      const nodes = conversation.messages.map(messageNode);
+      messages.append(...nodes);
+      renderedTail = nodes.at(-1)?.querySelector(".agent-chat-text");
     }
-    if (thinkingNode) messages.append(thinkingNode);
+    if (conversation.activeController && !conversation.messages.at(-1)?.streaming) messages.append(el("article", { class: "agent-chat-message from-agent agent-chat-thinking" },
+      el("div", { class: "agent-chat-avatar" }, "AI"),
+      el("div", { class: "agent-chat-bubble" }, el("span", {}, "正在思考"), el("i"), el("i"), el("i"))));
     scrollBottom();
   }
 
   function renderFiles() {
+    conversation.files = selectedFiles;
     clear(selected);
     selected.classList.toggle("hidden", !selectedFiles.length);
     for (const [index, file] of selectedFiles.entries()) {
@@ -203,6 +198,7 @@ function chatPanel(binding) {
   }
 
   function resizeInput() {
+    conversation.draft = textarea.value;
     textarea.style.height = "auto";
     textarea.style.height = `${Math.min(textarea.scrollHeight, 180)}px`;
   }
@@ -226,6 +222,7 @@ function chatPanel(binding) {
   }
 
   function resetVoiceButton(message = "语音已转成文字，可修改后发送") {
+    if (disposed) return;
     listening = false;
     voiceButton.classList.remove("active");
     voiceButton.textContent = "语音";
@@ -237,6 +234,7 @@ function chatPanel(binding) {
     if (!modelVoiceSupported) return;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (disposed) { stream.getTracks().forEach((track) => track.stop()); return; }
       const candidates = ["audio/webm;codecs=opus", "audio/mp4", "audio/ogg;codecs=opus"];
       const mimeType = candidates.find((item) => globalThis.MediaRecorder.isTypeSupported?.(item)) || "";
       const recorder = new globalThis.MediaRecorder(stream, mimeType ? { mimeType } : undefined);
@@ -246,6 +244,7 @@ function chatPanel(binding) {
       chatRuntime.discardRecording = false;
       recorder.addEventListener("dataavailable", (event) => { if (event.data.size) chunks.push(event.data); });
       recorder.addEventListener("start", () => {
+        if (disposed) return;
         listening = true;
         voiceButton.classList.add("active");
         voiceButton.textContent = "停止录音";
@@ -257,7 +256,7 @@ function chatPanel(binding) {
         chatRuntime.mediaRecorder = null;
         const discard = chatRuntime.discardRecording;
         chatRuntime.discardRecording = false;
-        if (discard || !chunks.length) { resetVoiceButton("录音已取消"); return; }
+        if (disposed || discard || !chunks.length) { resetVoiceButton("录音已取消"); return; }
         listening = false;
         transcribing = true;
         voiceButton.classList.remove("active");
@@ -272,13 +271,15 @@ function chatPanel(binding) {
         const taskId = createAiTaskId();
         chatRuntime.voiceController = controller;
         try {
-          const result = await api(`/classes/${state.classId}/agent-chat/transcriptions`, {
+          const result = await api(`/classes/${scope.classId}/agent-chat/transcriptions`, {
             method: "POST", body: form, timeoutMs: AI_REQUEST_TIMEOUT_MS, signal: controller.signal, aiTaskId: taskId,
           });
+          if (disposed) return;
           textarea.value = [textarea.value.trim(), result.text].filter(Boolean).join(" ");
           resizeInput();
           resetVoiceButton(`已由 ${result.model} 转成文字，可修改后发送`);
         } catch (error) {
+          if (disposed) return;
           resetVoiceButton(error.code === "REQUEST_CANCELLED" ? "语音识别已取消" : "语音识别失败，请重试");
           if (error.code !== "REQUEST_CANCELLED") toast(error.message, "error");
         } finally {
@@ -289,6 +290,7 @@ function chatPanel(binding) {
       });
       recorder.start(250);
     } catch (error) {
+      if (disposed) return;
       resetVoiceButton("无法使用麦克风");
       toast(error?.name === "NotAllowedError" ? "请允许浏览器使用麦克风" : "录音无法启动，请重试", "error");
     }
@@ -304,12 +306,14 @@ function chatPanel(binding) {
     recognition.continuous = true;
     recognition.interimResults = true;
     recognition.onstart = () => {
+      if (disposed) return;
       listening = true;
       voiceButton.classList.add("active");
       voiceButton.textContent = "停止录音";
       statusLine.textContent = "正在听，请直接说话…";
     };
     recognition.onresult = (event) => {
+      if (disposed) return;
       let finalText = "";
       let interimText = "";
       for (const result of event.results) {
@@ -320,6 +324,7 @@ function chatPanel(binding) {
       resizeInput();
     };
     recognition.onerror = (event) => {
+      if (disposed) return;
       if (event.error !== "aborted") toast(event.error === "not-allowed" ? "请允许浏览器使用麦克风" : "语音识别失败，请重试", "error");
     };
     recognition.onend = () => {
@@ -330,69 +335,32 @@ function chatPanel(binding) {
   }
 
   function startVoice() {
-    if (busy || transcribing) return;
+    if (disposed || busy || transcribing) return;
     if (listening) { stopVoice(); return; }
     if (binding.speech_model) void startModelVoice();
     else startBrowserVoice();
   }
 
-  async function send() {
-    if (busy) return;
+  function send() {
+    if (disposed || busy) return;
     if (listening) { stopVoice(); return; }
     if (transcribing) return;
     const text = textarea.value.trim();
     const files = [...selectedFiles];
     if (!text && !files.length) { textarea.focus(); return; }
 
-    chatRuntime.messages.push({ role: "user", text: text || "请处理这些文件。", files, time: clock() });
     textarea.value = "";
     selectedFiles = [];
     renderFiles();
     resizeInput();
-    thinkingNode = el("article", { class: "agent-chat-message from-agent agent-chat-thinking" },
-      el("div", { class: "agent-chat-avatar" }, "AI"),
-      el("div", { class: "agent-chat-bubble" }, el("span", {}, "正在思考"), el("i"), el("i"), el("i")));
-    renderMessages();
-    setBusy(true);
-
-    const controller = new AbortController();
-    const taskId = createAiTaskId();
-    chatRuntime.activeController = controller;
-    const body = new FormData();
-    body.append("conversation_id", chatRuntime.conversationId);
-    if (text) body.append("text", text);
-    files.forEach((file) => body.append("files", file));
-    try {
-      const result = await api(`/classes/${state.classId}/agent-chat/messages`, {
-        method: "POST",
-        body,
-        timeoutMs: AI_REQUEST_TIMEOUT_MS,
-        signal: controller.signal,
-        aiTaskId: taskId,
-      });
-      chatRuntime.messages.push({ role: "assistant", text: result.reply, time: clock() });
-    } catch (error) {
-      const stopped = error.code === "REQUEST_CANCELLED";
-      chatRuntime.messages.push({
-        role: "assistant",
-        text: stopped ? "已停止本次回答。你可以修改消息后重新发送。" : `暂时无法完成：${error.message}`,
-        error: !stopped,
-        time: clock(),
-      });
-    } finally {
-      thinkingNode = null;
-      if (chatRuntime.activeController === controller) chatRuntime.activeController = null;
-      setBusy(false);
-      renderMessages();
-      textarea.focus();
-    }
+    void agentChatStore.sendMessage(scope, conversation, text, files);
   }
 
   fileInput.addEventListener("change", () => { addFiles(fileInput.files); fileInput.value = ""; });
   attachButton.addEventListener("click", () => fileInput.click());
   voiceButton.addEventListener("click", startVoice);
   sendButton.addEventListener("click", send);
-  stopButton.addEventListener("click", () => chatRuntime.activeController?.abort());
+  stopButton.addEventListener("click", () => agentChatStore.stopMessage(conversation));
   textarea.addEventListener("input", resizeInput);
   textarea.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
@@ -408,31 +376,119 @@ function chatPanel(binding) {
   const panel = el("section", { class: "agent-chat-panel", aria: { label: `与 ${binding.agent_name} 对话` } },
     el("div", { class: "agent-chat-bar" },
       el("div", {}, el("b", {}, binding.agent_name), el("span", { class: "agent-online" }, "在线")),
-      el("span", { class: "muted" }, "网页专属会话")),
+      el("label", { class: "agent-thinking-control" }, "本会话思考强度 ", thinkingSelect)),
     messages,
     composer);
-  renderMessages();
-  return panel;
+  function refresh() {
+    if (disposed) return;
+    const sameLayout = renderedMessageCount === conversation.messages.length && renderedController === conversation.activeController;
+    if (sameLayout && renderedRevision === conversation.revision) return;
+    thinkingSelect.disabled = Boolean(conversation.activeController);
+    thinkingSelect.value = conversation.thinkingLevel || "";
+    renderedRevision = conversation.revision;
+    if (sameLayout && renderedTail && conversation.messages.at(-1)?.streaming) {
+      renderedTail.textContent = conversation.messages.at(-1).text;
+      scrollBottom();
+      return;
+    }
+    renderedMessageCount = conversation.messages.length;
+    renderedController = conversation.activeController;
+    setBusy(Boolean(conversation.activeController));
+    renderMessages();
+  }
+  renderFiles();
+  resizeInput();
+  refresh();
+  return {
+    el: panel, conversationId: conversation.id, refresh,
+    dispose() {
+      if (disposed) return;
+      conversation.draft = textarea.value;
+      conversation.files = selectedFiles;
+      disposed = true;
+      chatRuntime.voiceController?.abort();
+      chatRuntime.discardRecording = true;
+      try { chatRuntime.recognition?.stop(); } catch { /* 已停止 */ }
+      try { if (chatRuntime.mediaRecorder?.state === "recording") chatRuntime.mediaRecorder.stop(); } catch { /* 已停止 */ }
+      chatRuntime.mediaStream?.getTracks().forEach((track) => track.stop());
+    },
+  };
 }
 
 export async function render(mount, ctx, helpers) {
-  const scope = `${state.user?.id || state.user?.username || "user"}:${state.classId || "none"}`;
-  if (chatRuntime.scope !== scope || !chatRuntime.conversationId) resetRuntime(scope);
-  const newChatButton = el("button", { class: "secondary", type: "button" }, "新对话");
+  if (!mount.isConnected) return;
+  dispose();
+  const view = {
+    disposed: false, panel: null, bindingPanel: null, unsubscribe: null,
+    cleanup() {
+      if (this.disposed) return;
+      this.disposed = true;
+      this.unsubscribe?.();
+      this.panel?.dispose();
+      this.bindingPanel?.dispose();
+    },
+  };
+  activeView = view;
+  const live = () => activeView === view && !view.disposed && mount.isConnected;
+  const scope = state.user?.role === "head_teacher" && state.classId
+    ? agentChatStore.getScope(state.user.id, state.classId) : null;
+  const newChatButton = el("button", { class: "secondary", type: "button", disabled: !scope }, "新对话");
   newChatButton.addEventListener("click", () => {
-    resetRuntime(scope);
-    void render(mount, ctx, helpers);
+    if (scope && live()) agentChatStore.createConversation(scope);
   });
   clear(mount);
   mount.append(pageHeader("班级 Agent 对话", "文字、语音和文件都可以直接交给本班专属 Agent。", newChatButton));
-  const host = el("div", {}, skeleton(4));
-  mount.append(host);
+  const host = el("div", { class: "agent-chat-main" }, skeleton(4));
+  const list = el("div", { class: "agent-conversation-list", role: "region", aria: { label: "对话列表" } });
+  const sidebar = el("aside", { class: "agent-chat-sidebar" }, list);
+  mount.append(scope ? el("div", { class: "agent-chat-layout" }, sidebar, host) : host);
+  let binding = null;
+  let renderedListSignature = null;
+
+  function refreshConversations() {
+    if (!live()) return;
+    if (scope.disposed) { dispose(); clear(mount); return; }
+    const current = agentChatStore.selectedConversation(scope);
+    if (binding) {
+      if (view.panel?.conversationId !== current.id) {
+        view.panel?.dispose();
+        view.panel = chatPanel(binding, scope, current);
+        clear(host);
+        host.append(view.panel.el);
+      }
+      current.unread = false;
+      view.panel.refresh();
+    }
+    const signature = JSON.stringify([scope.selectedId, ...scope.conversations.map(({ id, title, status, unread }) => [id, title, status, unread])]);
+    if (signature === renderedListSignature) return;
+    renderedListSignature = signature;
+    clear(list);
+    list.append(el("h3", {}, `对话列表 · ${scope.conversations.length}`));
+    const labels = { idle: "未发送", running: "处理中", completed: "已回复", stopped: "已停止", failed: "请求失败" };
+    list.append(el("div", { class: "agent-conversation-items" }, scope.conversations.map((conversation) =>
+      el("button", {
+        class: `agent-conversation-item${conversation.id === scope.selectedId ? " active" : ""}`,
+        type: "button", aria: { pressed: String(conversation.id === scope.selectedId) },
+        onclick: () => agentChatStore.selectConversation(scope, conversation.id),
+      },
+      el("b", { class: "agent-conversation-title" }, conversation.title),
+      el("span", { class: `agent-conversation-status ${conversation.status}` },
+        `${labels[conversation.status]}${conversation.unread ? " · 新回复" : ""}`),
+      el("small", { class: "muted" }, fmtDateTime(conversation.createdAt))))));
+    list.append(el("p", { class: "muted agent-conversation-hint" }, "新建、切换对话或前往站内其他页面不会停止回答。记录仅保留在本标签页内存，刷新或关闭后不保留。"));
+  }
+  if (scope) {
+    view.unsubscribe = agentChatStore.subscribe(scope, refreshConversations);
+    refreshConversations();
+  }
 
   let status;
   try {
     status = await refreshOpenclaw({ force: true });
+    if (!live()) return;
     helpers.refreshOpenclawDot();
   } catch (error) {
+    if (!live()) return;
     clear(host);
     host.append(errorPanel(error, { onRetry: () => render(mount, ctx, helpers) }));
     return;
@@ -458,25 +514,19 @@ export async function render(mount, ctx, helpers) {
   }
 
   try {
-    const binding = await api(`/classes/${state.classId}/agent-binding`);
-    if (!binding.openclaw_agent_id) {
+    const loadedBinding = await api(`/classes/${scope.classId}/agent-binding`);
+    if (!live()) return;
+    if (!loadedBinding.openclaw_agent_id) {
       host.append(provisionPanel(mount, ctx, helpers));
       return;
     }
-    host.append(el("div", { class: "agent-chat-layout" }, chatPanel(binding), bindingPanel(binding, mount, ctx, helpers)));
+    binding = loadedBinding;
+    view.bindingPanel = bindingPanel(binding, mount, ctx, helpers);
+    sidebar.append(view.bindingPanel.el);
+    refreshConversations();
   } catch (error) {
+    if (!live()) return;
     if (error.code === "NOT_FOUND") host.append(provisionPanel(mount, ctx, helpers));
     else host.append(errorPanel(error, { onRetry: () => render(mount, ctx, helpers) }));
   }
 }
-
-window.addEventListener("hashchange", () => {
-  if (!location.hash.startsWith("#/agent")) {
-    chatRuntime.activeController?.abort();
-    chatRuntime.voiceController?.abort();
-    try { chatRuntime.recognition?.stop(); } catch { /* 已停止 */ }
-    chatRuntime.discardRecording = true;
-    try { if (chatRuntime.mediaRecorder?.state === "recording") chatRuntime.mediaRecorder.stop(); } catch { /* 已停止 */ }
-    chatRuntime.mediaStream?.getTracks().forEach((track) => track.stop());
-  }
-});

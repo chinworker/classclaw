@@ -1,70 +1,89 @@
-import { el, clear, toast } from "../util.js";
+import { el, clear } from "../util.js";
 import { api } from "../api.js";
-import { pageHeader, confirmDanger, errorPanel, jsonDetails, skeleton, statusBadge } from "../components.js";
-import { clearSession } from "../state.js";
+import { pageHeader, errorPanel, emptyState, skeleton, statusBadge, field } from "../components.js";
 
-export async function render(mount) {
+export async function render(mount, ctx = {}) {
+  const category = ctx.path?.startsWith("/admin/openclaw") ? "openclaw" : "classclaw";
+  const isOpenClaw = category === "openclaw";
   const host = el("div");
-  const resultHost = el("div");
-  mount.append(pageHeader("静态配置", "显示当前启动配置。请停机修改 classclaw.toml 或环境变量，校验后重启服务；密钥不会在此暴露。"), host);
+  mount.append(pageHeader(isOpenClaw ? "OpenClaw 连接与微信配置" : "ClassClaw 系统配置",
+    "显示当前进程实际生效的启动配置。停止服务、修改配置文件或环境变量、校验后重启 ClassClaw。",
+    el("button", { class: "secondary", type: "button", onclick: load }, "刷新生效值")), host);
 
   async function load() {
     clear(host); host.append(skeleton(6));
     try {
-      const rows = await api("/admin/settings"); clear(host);
-      for (const group of ["features", "constants"]) {
-        const items = rows.filter((row) => row.group === group);
-        host.append(el("div", { class: "card" }, el("h3", {}, group === "features" ? "功能开关" : "运行常量"),
-          el("div", { class: "settings-list" }, items.map(settingRow))));
+      const catalog = await api("/admin/settings/catalog");
+      clear(host);
+      const sections = catalog.sections.filter((item) => item.category === category);
+      const rows = catalog.items.filter((item) => item.category === category);
+      const credentials = catalog.credentials.filter((item) => item.category === category);
+      const search = el("input", { type: "search", placeholder: "搜索名称、TOML 字段或环境变量", "aria-label": "搜索配置" });
+      const section = el("select", { "aria-label": "配置分组" }, el("option", { value: "" }, "全部分组"),
+        sections.map((item) => el("option", { value: item.id }, item.label)), el("option", { value: "credentials" }, "凭据与安全"));
+      const count = el("span", { class: "muted", role: "status" });
+      const results = el("div", { class: "config-sections" });
+      host.append(
+        el("div", { class: "card config-file-guide" },
+          el("div", { class: "row-gap admin-section-title" }, el("h3", {}, "配置文件与生效方式"), statusBadge("pending", "修改后重启 ClassClaw")),
+          el("p", {}, catalog.precedence),
+          el("p", {}, "当前 TOML：", el("code", {}, catalog.config_file || "未加载配置文件（使用环境变量 / 程序默认值）")),
+          el("p", { class: "muted" }, "默认文件：", el("code", {}, catalog.default_config_file), "；外置配置通过 ", el("code", {}, catalog.config_file_env_var), " 指定。"),
+          el("details", {}, el("summary", {}, "查看修改步骤与版本"),
+            el("ol", {},
+              el("li", {}, "停止 ClassClaw；涉及数据路径时先备份，路径修改不会搬迁数据。"),
+              el("li", {}, "未有配置文件时复制 config/classclaw.example.toml 为 config/classclaw.toml；密钥放在服务器 .env 或环境变量。"),
+              el("li", {}, "修改对应 TOML 字段；如有同名环境变量覆盖，也需同步修改或移除覆盖。"),
+              el("li", {}, "在项目目录执行 ", el("code", {}, "python scripts/check_config.py"), "；外置文件应保持 CLASSCLAW_CONFIG_FILE 与服务一致。"),
+              el("li", {}, "校验通过后重启 ClassClaw，再刷新页面核对生效值。")),
+            el("p", { class: "muted" }, "TOML 相对路径以配置文件目录为基准；环境变量相对路径以项目根目录为基准。页面展示解析后的路径。"),
+            el("p", {}, "启动配置版本：", el("code", {}, catalog.config_hash))),
+          el("div", { class: "row-gap" },
+            el("a", { href: isOpenClaw ? "#/admin/openclaw" : "#/admin/openclaw/settings" }, isOpenClaw ? "Gateway 网页配置" : "OpenClaw 连接配置"),
+            el("a", { href: "#/admin/agents" }, "各班级 Agent 配置"),
+            el("a", { href: isOpenClaw ? "#/admin/openclaw/system-agents" : "#/admin/maintenance" }, isOpenClaw ? "Main / 提取 Agent" : "备份与系统维护"))),
+        el("div", { class: "card config-filter" }, field("搜索配置", search), field("配置分组", section), count), results);
+
+      function filter() {
+        clear(results);
+        const query = search.value.trim().toLowerCase();
+        const matches = (item) => `${item.label} ${item.description} ${item.config_path || ""} ${item.env_var}`.toLowerCase().includes(query);
+        let total = 0;
+        for (const group of sections) {
+          if (section.value && section.value !== group.id) continue;
+          const items = rows.filter((item) => item.section === group.id && matches(item));
+          if (!items.length) continue;
+          total += items.length;
+          results.append(el("section", { class: "card" },
+            el("h3", {}, group.label), el("p", { class: "muted" }, group.description),
+            el("div", { class: "settings-list" }, items.map(settingRow))));
+        }
+        const secrets = !section.value || section.value === "credentials" ? credentials.filter(matches) : [];
+        if (secrets.length) {
+          total += secrets.length;
+          results.append(el("section", { class: "card" }, el("h3", {}, "凭据与安全"),
+            secrets.map((item) => el("div", { class: "setting-row config-setting-row" },
+              el("div", {}, el("b", {}, item.label), el("p", { class: "muted" }, item.description), el("code", {}, item.env_var)),
+              statusBadge(item.configured ? "active" : "pending", item.configured ? "已设置" : "未设置 / 内置默认")))));
+        }
+        count.textContent = `${total} / ${rows.length + credentials.length} 项`;
+        if (!total) results.append(emptyState("没有匹配的配置", "调整分组或搜索 TOML 字段、环境变量名称。"));
       }
-      host.append(el("div", { class: "card danger-zone" },
-        el("div", { class: "setting-row" },
-          el("div", {}, el("h3", {}, "完整系统初始化"), el("p", { class: "muted" }, "删除全部旧数据、账号、会话、数据库运行状态、日志、统计、附件和班级智能体；不会修改 classclaw.toml 或 .env。只重新生成默认管理员，并保留 Main 与数据提取两个默认智能体。")),
-          el("button", { class: "danger", type: "button", onclick: initialize }, "完整初始化")),
-        resultHost));
+      search.addEventListener("input", filter); section.addEventListener("change", filter); filter();
     } catch (error) { clear(host); host.append(errorPanel(error, { onRetry: load })); }
   }
-
-  function settingRow(item) {
-    const value = item.type === "boolean"
-      ? statusBadge(item.value ? "active" : "inactive", item.value ? "已开启" : "已关闭")
-      : el("code", {}, String(item.value));
-    return el("div", { class: "setting-row" },
-      el("div", {},
-        el("div", { class: "row-gap" }, el("b", {}, item.label), el("code", {}, item.config_path)),
-        el("p", { class: "muted" }, item.description),
-        el("small", { class: "muted" }, "来源：启动配置 · 修改后需要重启")),
-      el("div", { class: `setting-control ${item.type}` }, value));
-  }
-
-  async function initialize() {
-    const accepted = await confirmDanger({
-      title: "完整初始化系统",
-      lines: [
-        "全部班级、学生、业务记录、草稿和附件将被彻底删除。",
-        "全部用户、登录会话、数据库运行状态、审计日志、Token 和调用统计将被删除；静态配置文件保持不变。",
-        "全部班级智能体及微信绑定将被删除；只保留 Main 和数据提取两个默认智能体。",
-        "完成后只存在新建的默认管理员，当前登录会立即失效。",
-      ],
-      requireText: "INITIALIZE", confirmLabel: "执行初始化",
-    });
-    if (!accepted) return;
-    clear(resultHost);
-    resultHost.append(el("div", { class: "blocked-panel" }, el("b", {}, "初始化执行中"), el("span", {}, "正在清空数据库、附件和班级智能体，请勿关闭页面。")));
-    try {
-      const result = await api("/admin/system/initialize", { method: "POST", body: { confirmation: "INITIALIZE" } });
-      clear(resultHost);
-      resultHost.append(el("div", { class: `init-result ${result.status}` },
-        el("div", { class: "row-gap" }, el("h3", {}, "初始化状态"), statusBadge(result.status === "completed" ? "active" : result.status === "partial" ? "pending" : "failed", result.status.toUpperCase())),
-        el("p", {}, `已删除数据库记录 ${result.database_rows_deleted} 条、班级 ${result.deleted_classes} 个；外部清理错误 ${result.errors.length} 条。`),
-        el("p", { class: "muted" }, `新默认管理员：${result.default_admin.username}。请使用环境配置中的默认密码重新登录。`),
-        jsonDetails(result, "查看完整初始化报告"),
-        el("button", { class: "primary", type: "button", onclick: () => location.reload() }, "重新登录")));
-      clearSession();
-      toast(result.status === "completed" ? "系统完整初始化完成" : "系统数据已初始化，但存在外部清理错误", result.status === "completed" ? "success" : "error");
-    } catch (error) {
-      clear(resultHost); resultHost.append(errorPanel(error)); toast(error.message, "error");
-    }
-  }
   await load();
+}
+
+function settingRow(item) {
+  const source = item.value_source.startsWith("environment:")
+    ? `环境变量 ${item.value_source.slice("environment:".length)}（覆盖 TOML）`
+    : ({ file: "TOML 配置文件", default: "程序默认值", unknown: "启动配置" }[item.value_source] || "启动配置");
+  return el("div", { class: "setting-row config-setting-row" },
+    el("div", {}, el("div", { class: "row-gap" }, el("b", {}, item.label), el("code", {}, item.config_path)),
+      el("p", { class: "muted" }, item.description),
+      el("div", { class: "config-field-meta" }, el("code", {}, item.env_var), el("small", {}, `当前来源：${source}`))),
+    el("div", { class: "config-setting-value" }, item.type === "boolean"
+      ? statusBadge(item.value ? "active" : "inactive", item.value ? "已开启" : "已关闭")
+      : el("code", {}, String(item.value))));
 }

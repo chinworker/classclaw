@@ -38,7 +38,16 @@ async def usage_agents(request: Request, days: int = Query(30, ge=1, le=365), db
 
 @router.get("/settings")
 def settings_list(request: Request):
-    return ok(request, admin_console.list_settings())
+    response = ok(request, admin_console.list_settings())
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@router.get("/settings/catalog")
+def settings_catalog(request: Request):
+    response = ok(request, admin_console.settings_catalog())
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @router.post("/classes", status_code=201)

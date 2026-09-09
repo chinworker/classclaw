@@ -7,6 +7,7 @@ const manifest = JSON.parse(await readFile(resolve(root, "openclaw.plugin.json")
 const entry = (await import(pathToFileURL(resolve(root, "dist/index.js")).href)).default;
 const tools = [];
 const hooks = [];
+const routes = [];
 
 if (!entry || typeof entry.register !== "function") throw new Error("Plugin entry does not export a register function");
 entry.register({
@@ -17,6 +18,7 @@ entry.register({
     for (const row of rows) tools.push({ name: row.name, optional: options?.optional === true });
   },
   on(name) { hooks.push(name); },
+  registerHttpRoute(route) { routes.push(route); },
 });
 
 const declared = [...(manifest.contracts?.tools ?? [])].sort();
@@ -30,7 +32,11 @@ if (!tools.some((item) => item.name === "classclaw_commit_write" && item.optiona
 if (!tools.some((item) => item.name === "classclaw_commit_writes" && item.optional)) {
   throw new Error("classclaw_commit_writes must be registered as an optional tool");
 }
-if (hooks.length !== 1 || hooks[0] !== "before_tool_call") throw new Error("exactly one class-scope hook is required");
+if (JSON.stringify(hooks.sort()) !== JSON.stringify(["after_tool_call", "before_tool_call"])) throw new Error("Class scope and turn guard hooks are required");
+if (routes.length !== 1 || routes[0].auth !== "gateway" || routes[0].path !== "/api/v1/classclaw/web-session-thinking") {
+  throw new Error("Only the authenticated, fixed web-session thinking route is allowed");
+}
+if (!manifest.contracts?.gatewayMethodDispatch?.includes("authenticated-request")) throw new Error("Authenticated dispatch contract is required");
 for (const skill of manifest.skills ?? []) await access(resolve(root, skill, "SKILL.md"));
 
 console.log(`ClassClaw mixed plugin is valid: ${tools.length} tools, ${hooks.length} class-scope hook, ${(manifest.skills ?? []).length} skill.`);

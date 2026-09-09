@@ -16,7 +16,9 @@ npm test
 npm run plugin:validate
 ```
 
-仓库的 `plugin:validate` 会校验清单、实际注册工具、可选提交工具、唯一的班级范围钩子和 Skill 文件。发布前还应在隔离状态目录实际安装并执行 `openclaw plugins inspect classclaw --runtime --json`。
+仓库的 `plugin:validate` 会校验清单、实际注册工具、可选提交工具、班级范围/单轮调用保护钩子、专用鉴权会话设置路由和 Skill 文件。发布前还应在隔离状态目录实际安装并执行 `openclaw plugins inspect classclaw --runtime --json`。
+
+网页流式对话的独立思考设置需要此版本插件。`/api/v1/classclaw/web-session-thinking` 只接受 Gateway 鉴权的后端请求，只能修改绑定班级网页会话的 `thinkingLevel`；不是智能体工具，也不开放通用会话 RPC。修改后须重新构建插件，并在无进行中对话时重启 Gateway。工具返回采用显式成功 envelope，避免将 `cancelled` 等业务状态当成执行错误；完整预览和确认信息保留，重复 payload 不再进入模型上下文。
 
 ## 安装到 OpenClaw
 

@@ -30,7 +30,7 @@ export async function render(mount) {
     clear(listHost);
     listHost.append(el("h3", {}, `数据表（${data.tables.length}）`));
     listHost.append(el("div", { class: "chips" }, data.tables.map((t) =>
-      el("button", { class: "chip", type: "button", onclick: () => loadTable(t.name, 0) }, `${t.name} · ${t.row_count}`))));
+      el("button", { class: "chip", type: "button", onclick: () => loadTable(t.name, 0) }, `${t.database === "usage" ? "用量库" : "业务库"} · ${t.name} · ${t.row_count ?? "不可用"}`))));
   }
 
   async function loadTable(name, offset) {
@@ -46,7 +46,7 @@ export async function render(mount) {
       return;
     }
     clear(tableHost);
-    tableHost.append(el("h3", {}, `${data.table} · 共 ${data.total} 行`));
+    tableHost.append(el("h3", {}, `${data.database === "usage" ? "用量库" : "业务库"} · ${data.table} · 共 ${data.total} 行`));
     if (!data.items.length) { tableHost.append(el("p", { class: "muted" }, "该表暂无数据")); return; }
     const wrap = el("div", { class: "table-wrap" });
     const table = el("table", { class: "data-table" });

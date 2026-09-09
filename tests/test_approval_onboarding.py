@@ -111,7 +111,7 @@ def test_class_agent_can_be_provisioned_without_wechat(client, db, sample, tmp_p
     monkeypatch.setattr(
         openclaw_provisioning,
         "settings",
-        SimpleNamespace(openclaw_class_workspace_root=tmp_path, openclaw_wechat_channel="openclaw-weixin"),
+        SimpleNamespace(openclaw_class_workspace_root=tmp_path, openclaw_wechat_channel="openclaw-weixin", openclaw_class_agent_thinking="off"),
     )
     calls = []
 

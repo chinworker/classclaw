@@ -20,6 +20,7 @@ def app_config(request: Request):
             "brand": settings.web.brand.model_dump(),
             "features": settings.features.model_dump(),
             "runtime": {"timezone": settings.timezone},
+            "agent_chat": {"default_thinking_level": settings.openclaw_class_agent_thinking},
             "storage": {"max_attachment_bytes": settings.max_attachment_bytes},
             "semester_defaults": semester_defaults,
             "web": {

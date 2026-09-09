@@ -1,6 +1,43 @@
 # 静态配置说明
 
-ClassClaw 的部署配置采用“非敏感 TOML + 密钥环境变量”两层结构。所有配置都只在进程启动时读取，不支持在线热修改；修改后应先校验，再重启服务。这样可以让网页端、后端与微信绑定流程使用同一份确定配置，同时避免把 Gateway Token 等密钥返回给浏览器。
+ClassClaw 的部署配置采用“非敏感 TOML + 密钥环境变量”两层结构。部署参数只在进程启动时读取；修改后应先校验，再重启 ClassClaw。OpenClaw 运行参数、各班级 Agent 的模型与提示词使用各自的网页配置入口，生效方式见下表。
+
+## 管理端配置层级
+
+| 一级分类 | 二级入口 | 覆盖内容 | 修改位置与生效方式 |
+| --- | --- | --- | --- |
+| ClassClaw 系统 | 系统配置 | 服务监听、SQLite、附件、运行时区、日志、登录有效期、缓存、初始化账号、功能开关、网页品牌与默认值 | `config/classclaw.toml` / 环境变量；校验后重启 ClassClaw |
+| ClassClaw 系统 | 用户 / 班级 | 用户启停、密码重置、班级信息与负责人 | 网页保存；数据库立即生效 |
+| ClassClaw 系统 | 备份与系统维护 | 服务器备份恢复说明、无引用附件检查、完整初始化 | 备份恢复用服务器脚本；完整初始化需在网页明确确认 |
+| OpenClaw 配置与维护 | 连接与微信配置 | Gateway 地址与 Token 状态、超时、提取 Agent 开关与 ID、工作区、状态目录、CLI、维护间隔、微信通道与二维码参数 | ClassClaw TOML / 环境变量；校验后重启 ClassClaw |
+| OpenClaw 配置与维护 | Gateway 全局配置 | Responses API、ClassClaw 插件开关、私聊会话隔离；全局模型与 Provider 摘要 | 三项运行参数可在网页保存并重启 Gateway；Provider 地址、模型目录及凭据通过 OpenClaw 自身配置维护 |
+| OpenClaw 配置与维护 | 系统 Agent · Main / 提取 | 两个系统 Agent 各自的模型、思考与回复、上下文与记忆、模型参数、提示词和身份 | 网页运行参数保存请求重启 Gateway；工作区文件在后续对话轮次生效 |
+| OpenClaw 配置与维护 | 会话维护 | 定时维护状态、上次结果、只读维护预览 | 网页可执行 dry-run；维护策略在 OpenClaw 侧核对，班级聊天会话长期复用 |
+| 班级 Agent | 各班级 Agent 配置 | 按班级搜索、状态筛选，独立主/图片/语音模型、运行参数、提示词、微信绑定 | 使用各班级卡片的网页入口；主模型变更请求重启 Gateway，图片/语音设置在后续请求生效 |
+| 可观测性 | 使用量 / 运行日志 / 数据库 / 审计 | 运行诊断、调用统计、只读数据库及变更审计 | 只读查看，不与配置或初始化混放 |
+
+管理端 `/admin/settings` 和 `/admin/openclaw/settings` 合计覆盖当前全部 **43 项非敏感启动配置**，另显示 3 项凭据状态。每项显示实际生效值、TOML 路径、兼容环境变量和启动时来源；支持按分组及名称搜索。来源在启动时记录，修改磁盘文件或进程环境之后不会把旧运行值误标成新配置。重启后再刷新核对。
+
+`GET /api/v1/admin/settings/catalog` 返回完整分组目录，仅管理员可访问，不依赖 Gateway 在线，禁止缓存；旧的 `GET /api/v1/admin/settings` 保留列表格式并补齐全部非敏感字段。公开 `/app-config` 的白名单没有扩大，任何网页接口均不新增凭据原文或尾号。
+
+### OpenClaw 与班级 Agent 的配置文件边界
+
+OpenClaw 的配置文件由 Gateway 自身管理，网页展示 `config.get` 返回的路径（若提供）。不要把 OpenClaw 原生字段写进 ClassClaw TOML：后者会拒绝未知字段。文件修改时停止 Gateway，按服务器已安装的 OpenClaw 版本校验，再重启。
+
+| 内容 | OpenClaw 配置位置 / ClassClaw 存储位置 |
+| --- | --- |
+| 全局主模型 / 图片模型 | `agents.defaults.model` / `agents.defaults.imageModel` |
+| Provider 地址、模型目录、凭据 | `models.providers` 及 OpenClaw 自身凭据配置；ClassClaw 网页只显示 Provider 名称 |
+| Responses API / 插件 / 私聊隔离 | `gateway.http.endpoints.responses.enabled` / `plugins.entries.classclaw.enabled` / `session.dmScope` |
+| 单个 Agent 运行参数 | `agents.list` 中对应 Agent 条目；网页主模型、回退模型、辅助模型、思考、上下文、预算等配置写入该条目 |
+| 班级主模型 / 图片模型 / 语音模型 | ClassClaw `class_agent_bindings` 保存班级选择，主模型同时同步到 OpenClaw；请通过班级模型设置入口维护，不直接修改数据库 |
+| 提示词与身份文件 | 对应 Agent 的工作区中的 `AGENTS.md`、`SOUL.md`、`IDENTITY.md`、`TOOLS.md`、`USER.md`、`HEARTBEAT.md` |
+
+班级主模型同时保存在 ClassClaw 和 OpenClaw；仅手改 OpenClaw 的班级模型可能在后续 Agent 修复时被 ClassClaw 中的选择覆盖。班级图片理解与语音识别目前是网页对话功能，不将它们描述为微信端模型切换功能。Main 和提取 Agent 没有班级专用的图片/语音设置项。
+
+提示词优先用网页保存，以执行 SHA-256 冲突校验并维护自定义标记。直接编辑托管工作区文件时，还需在同目录 `.classclaw-admin-customized.json` 的文件名数组中标记该文件，否则默认工作区生成流程可能覆盖它；备份时连同标记文件保存。网页“恢复系统默认”会移除对应标记，Main 不提供恢复系统默认。
+
+单班配置的业务作用域仅限该班，但运行参数/主模型保存所请求的 **Gateway 重启会短暂影响所有班级 AI 服务**。图片/语音配置和提示词文件保存不触发该重启。运行参数表单只提交实际改动，保留未修改的继承设置和暂时不在模型目录中的现有值。
 
 ## 文件与优先级
 
@@ -21,6 +58,7 @@ ClassClaw 的部署配置采用“非敏感 TOML + 密钥环境变量”两层�
 | 字段 | 用途 | 修改注意事项 |
 | --- | --- | --- |
 | `database_url` | SQLite 数据库位置 | 只支持 `sqlite:///`；迁移路径前应停机并复制数据库及 `-wal`/`-shm` 状态，推荐先执行备份 |
+| `usage_database_url` | 独立 AI 用量库，默认 `data/usage.db` | 只支持 `sqlite:///`，不可与业务库使用同一文件；环境变量为 `CLASSCLAW_USAGE_DATABASE_URL`。首次拆分会迁移业务库中的旧用量表，之后仅修改路径不会自动搬迁已有独立库，应停机备份后搬迁 |
 | `attachment_dir` | 网页上传附件目录 | 修改路径不会自动搬迁旧附件，应连同数据库记录指向的文件整体迁移 |
 | `max_attachment_bytes` | 单附件大小上限 | 1 字节至 1 GiB |
 | `class_workspace_root` | 班级 OpenClaw Agent 工作区根目录 | 修改路径不会自动搬迁已创建的工作区，应停机整体迁移 |
@@ -36,6 +74,7 @@ ClassClaw 的部署配置采用“非敏感 TOML + 密钥环境变量”两层�
 | `log_level` | `DEBUG`、`INFO`、`WARNING`、`ERROR` 或 `CRITICAL` |
 | `log_file` | 后端轮转 JSON 日志位置 |
 | `auth_session_hours` | 网页登录会话有效小时数 |
+| `analysis_cache_max_entries` | 确定性分析缓存的最大条数，超过后清理最旧记录 |
 
 ### 服务监听 `[server]`
 
@@ -51,6 +90,8 @@ ClassClaw 的部署配置采用“非敏感 TOML + 密钥环境变量”两层�
 
 `default_admin_username` 只影响首次创建管理员或“完整初始化”后重新创建的管理员，不会重命名现有账号。初始密码只放在 `.env` 的 `CLASSCLAW_DEFAULT_ADMIN_PASSWORD` 中，并应在首次登录后修改。
 
+忘记管理员密码时，在项目目录执行 `.venv/bin/python scripts/reset_admin_password.py`，即可将现有管理员密码重置为该配置值，并撤销其旧登录会话；仅修改 `.env` 不会自动覆盖现有密码。命令不要求旧密码，不显示新密码，不清空业务数据；建议先停服，详情见 [本地密码重置](accounts-admin.md#本地终端重置管理员密码)。
+
 ### OpenClaw `[openclaw]`
 
 | 字段 | 用途 |
@@ -59,11 +100,18 @@ ClassClaw 的部署配置采用“非敏感 TOML + 密钥环境变量”两层�
 | `agent_id` | 默认 Main Agent ID |
 | `extractor_agent_id` | 一次性结构化提取 Agent ID |
 | `extractor_enabled` | 是否使用独立提取 Agent；关闭后回退 Main Agent |
+| `class_agent_thinking` | 班级 Agent 在所有场景下的统一默认思考强度；默认 `off`，可选 `off/minimal/low/medium/high/xhigh/adaptive/max`，实际模型须支持所选档位。环境覆盖：`CLASSCLAW_OPENCLAW_CLASS_AGENT_THINKING` |
 | `timeout_seconds` | 后端请求 Gateway 的超时，上限 120 秒 |
 | `session_cleanup_hours` | 一次性会话清理间隔；`0` 关闭 |
 | `cli` | 后端执行会话清理时使用的 OpenClaw CLI 命令 |
 
 Gateway 管理 Token 只放在 `.env` 的 `CLASSCLAW_OPENCLAW_GATEWAY_TOKEN` 中。ClassClaw API Token 同样只放在 `.env`，并与 OpenClaw ClassClaw 插件配置保持一致。
+
+班级默认思考强度不按查询、写入、图片等任务自动改变；网页、微信、提醒等班级 Agent 入口均继承该默认。独立提取 Agent 仍使用其自己的配置。ClassClaw 启动时批量同步已绑定班级的 Agent 默认值，创建新班级时也应用；只有值发生变化才请求 Gateway 配置重启，已有 OpenClaw 会话的显式覆盖不被清除。请在无进行中对话时重启部署。
+
+管理端班级运行参数面板中的思考强度显示为只读配置值，避免在此保存后又被默认配置同步覆盖；Main/提取 Agent 原有思考设置入口不变。班级模型、回复风格和其他参数仍可按原流程配置。
+
+网页对话栏提供“本会话思考强度”：默认“跟随默认”，也可单独选择强度。设置只影响当前账号、班级和对话 UUID 的后续消息，不改变其他会话、其他渠道或 Agent 默认配置；正在回复时不能修改，新对话不会继承上一对话的覆盖值。选择“跟随默认”后下一轮重新应用配置默认值。网页会话设置随对话保留在标签页内存，刷新/关闭后的恢复边界不变；模型不支持设置时返回明确错误，不悄悄改用其他档位。
 
 ### 功能开关 `[features]`
 
@@ -74,7 +122,7 @@ Gateway 管理 Token 只放在 `.env` 的 `CLASSCLAW_OPENCLAW_GATEWAY_TOKEN` 中
 | `wechat_binding` | 班级 Agent 微信二维码启动、等待与绑定入口 |
 | `reminders` | 提醒查询和发送接口；关闭不会删除已有提醒 |
 
-开关同时在网页和后端接口生效，不能仅靠隐藏按钮绕过。管理端“静态配置”页只读显示实际启动值和 TOML 路径，不再写数据库或在线修改。
+开关同时在网页和后端接口生效，不能仅靠隐藏按钮绕过。管理端“系统配置”页只读显示实际启动值、TOML 路径及环境变量来源，不再写数据库或在线修改部署参数。
 
 ### 网页 `[web]` 与 `[web.brand]`
 
@@ -115,7 +163,7 @@ sudo systemctl start classclaw
 curl --fail http://127.0.0.1:8000/health
 ```
 
-备份脚本覆盖 SQLite 与附件；班级 Agent 工作区和 OpenClaw 状态目录应另外使用服务器文件备份工具保存。如果只改品牌、功能开关或超时，也仍需完整重启进程。不要使用管理端页面替代配置文件修改。
+备份脚本覆盖业务 SQLite、独立用量 SQLite 与附件，并保存双库清单；各库快照单独一致，不是跨库原子快照。班级 Agent 工作区和 OpenClaw 状态目录应另外使用服务器文件备份工具保存。如果只改品牌、功能开关或超时，也仍需完整重启进程。不要使用管理端页面替代配置文件修改。
 
 ## 校验行为
 

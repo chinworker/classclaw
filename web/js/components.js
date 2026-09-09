@@ -420,6 +420,7 @@ export function qrBindingPanel(classId, { onDone = null, compact = false } = {})
   const startBtn = el("button", { class: "primary", type: "button" }, "绑定微信 / 重新生成二维码");
   box.append(statusLine, img, errLine, el("div", { class: "row-gap" }, startBtn));
   let pollTimer = null; let inFlight = false; let deadline = 0; let currentQr = null;
+  let disposed = false;
 
   if (!featureEnabled("wechat_binding")) {
     startBtn.disabled = true;
@@ -456,15 +457,17 @@ export function qrBindingPanel(classId, { onDone = null, compact = false } = {})
   }
 
   async function start(force = true) {
-    if (!featureEnabled("wechat_binding")) return;
+    if (disposed || !featureEnabled("wechat_binding")) return;
     stopPoll();
     deadline = Date.now() + appConfig.wechat.qr_binding_timeout_seconds * 1000;
     startBtn.disabled = true;
     statusLine.textContent = "正在启动微信登录会话…";
     try {
       const result = await api(`/classes/${classId}/agent-binding/start`, { method: "POST", body: { force } });
+      if (disposed) return;
       if (!showResult(result)) schedule(appConfig.wechat.qr_initial_poll_ms);
     } catch (error) {
+      if (disposed) return;
       statusLine.textContent = `无法开始绑定：${error.message}`;
       if (error.code === "WECHAT_QR_UNAVAILABLE") { errLine.textContent = "二维码不可用，请重新生成。"; errLine.classList.remove("hidden"); }
       if (error.code === "OPENCLAW_CONNECTION_REQUIRED" || error.code === "OPENCLAW_ADMIN_UNAVAILABLE") {
@@ -474,21 +477,23 @@ export function qrBindingPanel(classId, { onDone = null, compact = false } = {})
   }
 
   async function poll() {
-    if (inFlight) return;
+    if (disposed || inFlight) return;
     if (Date.now() >= deadline) { stopPoll(); statusLine.textContent = "自动等待扫码已超时，需要时请重新生成二维码。"; return; }
     inFlight = true;
     try {
       // 轮询不重复提交大 PNG：仅在第一次发送二维码内容，此后传 null
       const result = await api(`/classes/${classId}/agent-binding/wait`, { method: "POST", body: { current_qr_data_url: null } });
+      if (disposed) return;
       if (!showResult(result)) schedule(appConfig.wechat.qr_poll_ms);
     } catch (error) {
+      if (disposed) return;
       statusLine.textContent = `自动确认暂未完成：${error.message}，页面会继续重试。`;
       schedule(appConfig.wechat.qr_retry_ms);
     } finally { inFlight = false; }
   }
 
   startBtn.addEventListener("click", () => start(true));
-  return { el: box, start, stop: stopPoll };
+  return { el: box, start, stop: stopPoll, dispose: () => { disposed = true; stopPoll(); } };
 }
 
 /* ---------------- ProposalReview（仅 onboarding 最终创建 / 聊天 proposal） ---------------- */

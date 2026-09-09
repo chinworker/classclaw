@@ -150,7 +150,11 @@ def test_gateway_chat_uses_persistent_class_session_and_prestaged_files(db, tmp_
     async def connected(force: bool = False):
         return {"gateway_live": True, "plugin_ready": True}
 
+    async def thinking(key, level):
+        captured["thinking"] = {"key": key, "level": level}
+
     monkeypatch.setattr(openclaw_bridge, "connection_status", connected)
+    monkeypatch.setattr(openclaw_provisioning, "set_web_session_thinking", thinking)
     monkeypatch.setattr(openclaw_bridge, "get_http_client", lambda: Client())
     monkeypatch.setattr(openclaw_bridge, "record_openclaw_usage", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
@@ -160,6 +164,7 @@ def test_gateway_chat_uses_persistent_class_session_and_prestaged_files(db, tmp_
             openclaw_gateway_url="http://gateway.test",
             openclaw_gateway_token="secret",
             openclaw_timeout_seconds=120,
+            openclaw_class_agent_thinking="high",
             attachment_dir=attachment_root,
             max_attachment_bytes=20 * 1024 * 1024,
         ),
@@ -187,6 +192,8 @@ def test_gateway_chat_uses_persistent_class_session_and_prestaged_files(db, tmp_
     assert "不要再次调用 classclaw_upload_file" in captured["json"]["instructions"]
     assert captured["headers"]["x-openclaw-message-channel"] == "web"
     assert captured["headers"]["x-openclaw-model"] == "provider/vision-model"
+    assert captured["thinking"]["level"] == "high"
+    assert captured["headers"]["x-openclaw-session-key"] == captured["thinking"]["key"]
 
 
 def test_class_agent_models_are_scoped_validated_and_persisted(client, db, sample, tmp_path, monkeypatch):
@@ -309,13 +316,16 @@ def test_model_voice_transcription_uses_temporary_file_and_selected_model(client
 def test_agent_chat_page_has_chatbot_voice_file_and_cancel_controls(client):
     app = client.get("/app/app.js").text
     page = client.get("/app/js/pages/agent.js").text
+    store = client.get("/app/js/agentChatStore.js").text
     styles = client.get("/app/styles.css").text
 
     assert "班级 Agent 对话" in app
     assert "SpeechRecognition" in page and "webkitSpeechRecognition" in page
     assert "MediaRecorder" in page and "agent-chat/transcriptions" in page
-    assert "FormData" in page and 'body.append("files", file)' in page
-    assert "createAiTaskId" in page and "activeController?.abort()" in page
+    assert "FormData" in store and 'body.append("files", file)' in store
+    assert "createAiTaskId" in store and "activeController?.abort()" in store
+    assert "agent-conversation-list" in page and "agentChatStore.stopMessage(conversation)" in page
+    assert 'addEventListener("hashchange"' not in page
     assert "新对话" in page and "Shift+Enter 换行" in page
     assert "模型设置" in page and "agentModelSettings" in page
     assert ".agent-chat-panel" in styles and ".agent-chat-composer" in styles

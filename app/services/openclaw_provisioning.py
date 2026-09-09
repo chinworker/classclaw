@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.core.errors import AppError, not_found
+from app.database import reader_session, suspend_writer
 from app.models.entities import ClassAgentBinding, ClassRoom
 from app.services.common import audit, entity_dict
 from app.services.http_client import get_http_client
@@ -31,6 +32,11 @@ EDITABLE_WORKSPACE_FILES = {
     "HEARTBEAT.md": {"label": "Heartbeat", "description": "心跳任务说明；默认不启用定时心跳。"},
 }
 _CUSTOMIZED_FILES_META = ".classclaw-admin-customized.json"
+_CHAT_LOOP_DETECTION = {
+    "enabled": True, "historySize": 32, "warningThreshold": 3,
+    "criticalThreshold": 6, "globalCircuitBreakerThreshold": 12,
+    "detectors": {"genericRepeat": True, "knownPollNoProgress": True, "pingPong": True},
+}
 
 
 def _headers() -> dict[str, str]:
@@ -666,15 +672,16 @@ async def start_wechat_binding(db: Session, class_id: str, force: bool = False) 
     await _ensure_agent(db, cls, binding)
     account_alias = binding.channel_account_id or f"class-{re.sub(r'[^a-zA-Z0-9_-]', '-', class_id)[:36]}"
     try:
-        login = await admin_rpc(
-            "web.login.start",
-            {
-                "accountId": account_alias,
-                "force": force,
-                "timeoutMs": settings.wechat.gateway_start_timeout_seconds * 1000,
-                "verbose": False,
-            },
-        )
+        async with suspend_writer(db):
+            login = await admin_rpc(
+                "web.login.start",
+                {
+                    "accountId": account_alias,
+                    "force": force,
+                    "timeoutMs": settings.wechat.gateway_start_timeout_seconds * 1000,
+                    "verbose": False,
+                },
+            )
         binding.channel_account_id = str(login.get("accountId") or account_alias)
         qr_content = _login_qr_content(login)
         binding.status = "linked" if login.get("connected") else "awaiting_qr"
@@ -718,6 +725,8 @@ def _runtime_is_configured(config: dict[str, Any], binding: ClassAgentBinding) -
         and agent.get("skills") == ["classclaw-manager"]
         and (agent.get("tools") or {}).get("profile") == "minimal"
         and (not binding.main_model or configured_model == binding.main_model)
+        and agent.get("thinkingDefault") == settings.openclaw_class_agent_thinking
+        and (agent.get("tools") or {}).get("loopDetection") == _CHAT_LOOP_DETECTION
         and agent_classes.get(binding.openclaw_agent_id) == binding.class_id
     )
 
@@ -736,11 +745,12 @@ async def _configure_runtime(binding: ClassAgentBinding, snapshot: dict[str, Any
         "skills": ["classclaw-manager"],
         "skillsLimits": {"maxSkillsPromptChars": 5000},
         "memorySearch": {"enabled": False},
-        "thinkingDefault": "off",
+        "thinkingDefault": settings.openclaw_class_agent_thinking,
         "verboseDefault": "off",
         "reasoningDefault": "off",
         "tools": {
             "profile": "minimal",
+            "loopDetection": _CHAT_LOOP_DETECTION,
             "alsoAllow": [
                 "classclaw_health",
                 "classclaw_analyze_interaction",
@@ -814,6 +824,64 @@ async def _ensure_runtime(binding: ClassAgentBinding) -> None:
         await _configure_runtime(binding, snapshot, include_route=False)
 
 
+async def sync_class_agent_thinking_defaults() -> None:
+    """One startup patch for existing class agents, including non-web ingress.
+
+    Update the agent default and loop safety; explicit session overrides are kept.
+    Do not hold a business connection across the Gateway request.
+    """
+    def bound_agents() -> set[str]:
+        with reader_session() as db:
+            return set(db.scalars(select(ClassAgentBinding.openclaw_agent_id).where(ClassAgentBinding.openclaw_agent_id.is_not(None))))
+
+    ids = await asyncio.to_thread(bound_agents)
+    if not ids:
+        return
+    snapshot = await admin_rpc("config.get")
+    agents = ((snapshot.get("config") or {}).get("agents") or {}).get("list") or []
+    updated = [
+        {**row, "thinkingDefault": settings.openclaw_class_agent_thinking,
+         "tools": {**(row.get("tools") or {}), "loopDetection": _CHAT_LOOP_DETECTION}}
+        if isinstance(row, dict) and row.get("id") in ids else row
+        for row in agents
+    ]
+    if updated == agents:
+        return
+    params = {
+        "raw": json.dumps({"agents": {"list": updated}}), "replacePaths": ["agents.list"],
+        "note": "Apply configured ClassClaw class-agent thinking default", "restartDelayMs": 500,
+    }
+    if snapshot.get("hash"):
+        params["baseHash"] = snapshot["hash"]
+    await admin_rpc("config.patch", params)
+    # config.patch restarts the Gateway; let the following extractor warm-up
+    # use the new configuration instead of racing against a pending restart.
+    await asyncio.sleep(1)
+
+
+async def set_web_session_thinking(session_key: str, thinking_level: str) -> None:
+    """Patch only the authenticated caller's generated session, never agent config.
+
+    Current Gateway Responses accepts but ignores payload.reasoning; use the
+    supported session RPC and explicitly target the same key in Responses.
+    """
+    try:
+        response = await get_http_client().post(
+            f"{settings.openclaw_gateway_url}/api/v1/classclaw/web-session-thinking", headers=_headers(),
+            json={"key": session_key, "thinkingLevel": thinking_level}, timeout=15,
+        )
+    except Exception as exc:
+        raise AppError("CHAT_THINKING_UNAVAILABLE", "无法设置本会话思考强度，请检查 OpenClaw 连接", 503) from exc
+    if response.status_code == 404:
+        raise AppError("CHAT_PLUGIN_UPDATE_REQUIRED", "请重新构建 ClassClaw 插件并重启 OpenClaw Gateway，以启用独立会话思考设置", 503)
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise AppError("CHAT_THINKING_UNAVAILABLE", "会话思考设置接口返回了无效响应", 502) from exc
+    if response.status_code != 200 or not isinstance(payload, dict) or payload.get("ok") is not True:
+        raise AppError("CHAT_THINKING_UNAVAILABLE", "无法应用所选思考强度，请检查模型支持的档位或 Gateway 插件配置", 502)
+
+
 async def ensure_class_agent_runtime(db: Session, class_id: str) -> ClassAgentBinding:
     """Refresh one existing class agent's scoped tools and workspace before web chat."""
     binding = get_binding(db, class_id)
@@ -824,20 +892,21 @@ async def ensure_class_agent_runtime(db: Session, class_id: str) -> ClassAgentBi
         raise not_found("班级", class_id)
     _prepare_workspace(cls, binding)
     try:
-        snapshot = await admin_rpc("config.get")
-        if not _runtime_is_configured(snapshot.get("config") or {}, binding):
-            await _configure_runtime(binding, snapshot, include_route=False)
-            # config.patch schedules a Gateway restart. Wait until the private
-            # admin surface is responsive before forwarding the chat turn.
-            await asyncio.sleep(1)
-            for attempt in range(20):
-                try:
-                    await admin_rpc("health")
-                    break
-                except AppError:
-                    if attempt == 19:
-                        raise
-                    await asyncio.sleep(0.25)
+        async with suspend_writer(db):
+            snapshot = await admin_rpc("config.get")
+            if not _runtime_is_configured(snapshot.get("config") or {}, binding):
+                await _configure_runtime(binding, snapshot, include_route=False)
+                # config.patch schedules a Gateway restart. Wait until the private
+                # admin surface is responsive before forwarding the chat turn.
+                await asyncio.sleep(1)
+                for attempt in range(20):
+                    try:
+                        await admin_rpc("health")
+                        break
+                    except AppError:
+                        if attempt == 19:
+                            raise
+                        await asyncio.sleep(0.25)
         binding.last_error = None
         db.commit()
         return binding
@@ -890,7 +959,8 @@ async def wait_wechat_binding(db: Session, class_id: str, current_qr_data_url: s
         # the provider's raw QR content, so normalize it here for compatibility.
         params["currentQrDataUrl"] = _render_qr_data_url(current_qr_data_url)
     try:
-        login = await admin_rpc("web.login.wait", params)
+        async with suspend_writer(db):
+            login = await admin_rpc("web.login.wait", params)
         if login.get("connected"):
             binding.channel_account_id = str(login.get("accountId") or binding.channel_account_id)
             await _bind_route(db, binding)

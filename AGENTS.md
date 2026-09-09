@@ -24,6 +24,7 @@ ClassClaw 是供 OpenClaw 智能体和网页端共用的轻量班级管理系统
 - `app/main.py`：FastAPI 入口，注入 request_id、统一异常处理、挂载路由与 `web/` 静态目录
 - `app/config.py`：基于环境变量的 frozen dataclass `Settings`（`.env` 经 python-dotenv 加载）
 - `app/database.py`：读写双引擎构建（SQLite 自动启用 `foreign_keys=ON`、`busy_timeout=5000`、WAL、`synchronous=NORMAL`；写引擎为单连接并由线程锁串行化）。`get_db` 按 HTTP 方法选择会话（GET/HEAD/OPTIONS 走读连接池，其余走单写者），非请求上下文用 `writer_session()` / `reader_session()`；不要直接新建 Session
+- `app/usage_database.py` / `app/models/usage.py`：独立 AI 用量库 `usage.db`，独立 metadata、读写连接与写锁，不参与业务事务；用量写入必须使用此模块的会话，不能用业务 `get_db`。迁移 `0014` 复制校验历史记录后移除业务库旧表
 - `app/api/v1/`：按领域拆分的路由（`classes_students`、`seating_duty`、`academic`、`timetable`、`operations`、`analytics`、`approval`、`interactions`、`auth_admin`），由 `router.py` 聚合；除登录等公共路由外全部经过 `require_authenticated`
 - `app/services/`：业务逻辑层（`class_student`、`seating`、`duty`、`academic`、`timetable`、`operations`、`approval`、`interactions`、`accounts`、`openclaw_bridge`、`openclaw_provisioning` 等）
 - `app/analytics/service.py`：仅基于数据库事实生成结构化指标和证据的分析服务
@@ -33,7 +34,10 @@ ClassClaw 是供 OpenClaw 智能体和网页端共用的轻量班级管理系统
 - `app/utils/time.py`：时区感知的 `now()`
 - `alembic/versions/`：迁移（当前到 `0006_simplify_runtime_and_storage`）
 - `scripts/`：`init_db.py`、`seed_demo.py`、`backup.py`、`restore.py`、`cleanup_attachments.py`
+- `scripts/reset_admin_password.py`：仅限本地终端将现有唯一管理员密码重置为 `.env` 的 `CLASSCLAW_DEFAULT_ADMIN_PASSWORD`；不输出密码，事务性撤销旧会话并审计，不允许新增 HTTP/Agent 重置入口
 - `web/`：网页前端（`index.html` 班级创建引导 + 业务页面；`test.html` 后端综合验收台）
+- `web/js/agentChatStore.js`：按用户/班级隔离的内存对话列表与在途请求；新建/切换对话、站内页面卸载不能取消已发送聊天请求，原文不写入浏览器持久存储。页面 `dispose()` 只释放视图和输入设备资源；退出登录须清空对话并取消请求
+- 班级思考强度统一来自 `openclaw.class_agent_thinking` / `CLASSCLAW_OPENCLAW_CLASS_AGENT_THINKING`，网页会话可独立覆盖，禁止用修改 Agent 全局配置实现会话覆盖。网页默认 SSE，断流不得视为成功；Gateway 私有会话设置端点只允许已绑定班级网页 key 和 `thinkingLevel`，不得扩为任意 RPC
 - `integrations/openclaw/`：OpenClaw 原生插件与兼容层
 - `tests/`：pytest 测试（内存 SQLite）
 - `docs/`：详细设计文档（架构、数据库、分析、账户、onboarding、OpenClaw 集成等），改动涉及对应领域时应同步更新
@@ -65,6 +69,7 @@ npm install && npm run build && npm test && npm run plugin:validate
 
 ```bash
 pytest        # pyproject.toml 已配置 testpaths=["tests"]、addopts="-q"、pythonpath=["."]
+node --test tests/web/*.test.mjs  # 对话状态、页面交互与登录切换回归；不需要安装前端依赖
 ```
 
 - 测试使用独立内存 SQLite（`StaticPool`），通过 `app.dependency_overrides[get_db]` 注入；OpenClaw 连接状态在 `tests/conftest.py` 中被 monkeypatch 掉，测试不依赖 OpenClaw 在线。
@@ -105,7 +110,7 @@ python scripts/restore.py ./backups/classclaw-backup-YYYYMMDD-HHMMSS
 python scripts/cleanup_attachments.py   # 默认只报告无引用附件，不自动删除
 ```
 
-备份用 SQLite Backup API 获得一致性副本并复制附件目录；恢复会覆盖当前数据库和附件，必须先停服务。
+备份用 SQLite Backup API 分别保存业务库和独立用量库，复制附件并写入清单；各库单独一致而非跨库原子快照。恢复会覆盖两个库和附件，必须先停服务；旧单库备份恢复后会重新迁移旧用量表。详见 `docs/database-splitting.md`。
 
 ## OpenClaw 集成
 

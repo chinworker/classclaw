@@ -17,6 +17,18 @@ def test_default_admin_login(client):
     assert logged_in.json()["data"]["user"]["role"] == "admin"
 
 
+def test_login_reports_missing_account_and_wrong_password(client):
+    missing = client.post("/api/v1/auth/login", json={"username": "nobody", "password": "anything"})
+    assert missing.status_code == 401
+    assert missing.json()["error"]["code"] == "ACCOUNT_NOT_FOUND"
+    assert missing.json()["error"]["message"] == "账号不存在，请检查用户名"
+
+    wrong = client.post("/api/v1/auth/login", json={"username": "admin", "password": "wrong-password"})
+    assert wrong.status_code == 401
+    assert wrong.json()["error"]["code"] == "INVALID_PASSWORD"
+    assert wrong.json()["error"]["message"] == "密码错误，请检查密码"
+
+
 def test_backend_acceptance_console_is_served(client):
     page = client.get("/app/test.html")
     assert page.status_code == 200

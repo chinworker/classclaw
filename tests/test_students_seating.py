@@ -1,10 +1,9 @@
 from sqlalchemy import func, select
-from sqlalchemy.exc import IntegrityError
 
 from app.core.errors import AppError
-from app.models.entities import AuditLog, SeatingSnapshot, Student
-from app.schemas.domain import SeatingCreate, SeatingSwap, StudentCreate
-from app.services import class_student, seating
+from app.models.entities import AuditLog, Student
+from app.schemas.domain import SeatingCreate, SeatingSwap, StudentCreate, StudentUpdate
+from app.services import approval, class_student, seating
 
 
 def test_student_number_unique_but_same_name_allowed(db, sample):
@@ -19,6 +18,32 @@ def test_student_number_unique_but_same_name_allowed(db, sample):
         assert exc.code == "STUDENT_NO_CONFLICT"
     else:
         raise AssertionError("重复学号应被拒绝")
+
+
+def test_student_update_proposal_partial_changes(db, sample):
+    student = sample[2][0]
+    normalized, _preview = approval.normalize_and_preview(
+        "student.update",
+        {"student_id": student.id, "changes": {"gender": "男", "name": "张三", "student_no": "001"}},
+    )
+    assert normalized["changes"] == {"gender": "男", "name": "张三", "student_no": "001"}
+    changes = StudentUpdate.model_validate(normalized["changes"])
+    updated = class_student.update_student(db, normalized["student_id"], changes)
+    assert updated.gender == "男"
+    assert updated.tags == []
+    assert updated.status == "active"
+    assert updated.phone is None
+
+
+def test_student_update_integrity_error_is_not_reported_as_no_conflict(db, sample):
+    student = sample[2][0]
+    class_student.update_student(db, student.id, StudentUpdate.model_validate({"gender": "男"}))
+    try:
+        class_student.update_student(db, student.id, StudentUpdate(status=None))
+    except AppError as exc:
+        assert exc.code == "STUDENT_SAVE_FAILED"
+    else:
+        raise AssertionError("非唯一约束失败应报保存失败")
 
 
 def test_soft_delete_keeps_audit(db, sample):

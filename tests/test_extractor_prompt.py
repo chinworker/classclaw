@@ -35,9 +35,9 @@ def test_slim_prompt_used_when_extractor_ready(monkeypatch):
     assert "ClassClaw 输入清洗规范" in prompt
 
 
-def test_responses_json_targets_extractor_when_ready(monkeypatch):
+def test_responses_json_targets_extractor_when_ready(monkeypatch, db):
     captured: dict = {}
-    request_db = object()
+    request_db = db
 
     async def fake_post(url, **kwargs):
         captured["url"] = url
@@ -69,15 +69,15 @@ def test_responses_json_targets_extractor_when_ready(monkeypatch):
 
     monkeypatch.setattr(bridge, "get_http_client", lambda: FakeClient())
 
-    def record_usage(payload, *, user, model, db=None):
-        captured["usage_db"] = db
+    def record_usage(payload, *, user, model):
+        captured["usage_model"] = model
 
     monkeypatch.setattr(bridge, "record_openclaw_usage", record_usage)
     result = asyncio.run(bridge._responses_json("测试", user="test", db=request_db))
     assert result["status"] == "no_action"
     body = captured["json"]
     assert body["model"] == "openclaw/classclaw-extractor"
-    assert captured["usage_db"] is request_db
+    assert captured["usage_model"] == body["model"]
 
 
 def test_extractor_agents_md_contains_full_rules():

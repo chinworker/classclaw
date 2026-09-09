@@ -3,14 +3,14 @@ from __future__ import annotations
 import hashlib
 
 from fastapi import APIRouter, Body, Depends, Query, Request
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.core.errors import AppError
 from app.core.responses import ok
 from app.core.security import Principal, require_admin, require_authenticated
-from app.database import Base, get_db
+from app.database import get_db
 from app.models.entities import ClassAgentBinding, ClassRoom, User, UserSession
 from app.schemas.auth import LoginRequest, PasswordChange, UserCreate, UserUpdate
 from app.services import accounts, admin_console, openclaw_provisioning
@@ -122,23 +122,9 @@ async def agent_wechat_start(request: Request, class_id: str, force: bool = Body
     return ok(request, await openclaw_provisioning.start_wechat_binding(db, class_id, force), "智能体配置已刷新，请扫码绑定微信")
 
 
-def _redact_row(table_name: str, row: dict) -> dict:
-    sensitive = {
-        "users": {"password_hash"},
-        "user_sessions": {"token_hash"},
-        "system_settings": set(),
-    }
-    hidden = sensitive.get(table_name, set())
-    return {key: "***" if key in hidden and value is not None else value for key, value in row.items()}
-
-
 @admin_router.get("/database/overview")
 def database_overview(request: Request, db: Session = Depends(get_db)):
-    tables = []
-    for name, table in sorted(Base.metadata.tables.items()):
-        count = db.scalar(select(func.count()).select_from(table)) or 0
-        tables.append({"name": name, "row_count": count})
-    return ok(request, {"dialect": db.bind.dialect.name if db.bind else None, "tables": tables})
+    return ok(request, admin_console.database_overview(db))
 
 
 @admin_router.get("/database/tables/{table_name}")
@@ -150,13 +136,4 @@ def database_table(
     db: Session = Depends(get_db),
 ):
     limit = limit or int(admin_console.setting_value("admin.database_page_size"))
-    table = Base.metadata.tables.get(table_name)
-    if table is None:
-        raise AppError("NOT_FOUND", "数据库表不存在", 404, {"table": table_name})
-    primary_keys = list(table.primary_key.columns)
-    statement = select(table)
-    if primary_keys:
-        statement = statement.order_by(*primary_keys)
-    rows = db.execute(statement.offset(offset).limit(limit)).mappings().all()
-    total = db.scalar(select(func.count()).select_from(table)) or 0
-    return ok(request, {"table": table_name, "columns": [column.name for column in table.columns], "items": [_redact_row(table_name, dict(row)) for row in rows], "total": total, "offset": offset, "limit": limit})
+    return ok(request, admin_console.database_table(db, table_name, offset, limit))

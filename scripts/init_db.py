@@ -5,7 +5,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.database import init_db
 
-
 if __name__ == "__main__":
-    init_db()
-    print("数据库初始化完成")
+    init_db(strict_usage=True)
+    print("业务库和用量库初始化完成")

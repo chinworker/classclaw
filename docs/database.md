@@ -7,7 +7,8 @@
 - 值日：`duty_rules`、`duty_schedules`、`duty_assignments`、`duty_score_items`、`duty_evaluations`、`duty_evaluation_details`
 - 教学：`homework`、`homework_student_statuses`、`student_events`、`attendance_records`、`exams`、`exam_subjects`、`scores`；确定性分析缓存保存在 `analysis_cache`（以数据指纹为键，超上限自动清理最旧条目，删除考试时同步清理）
 - 课表：`class_periods`、`base_timetable`、`lesson_overrides`
-- 工作流与运维：`arrangements`、`reminders`、`attachments`、`attachment_links`、`interaction_analyses`、`audit_logs`、`write_proposals`、`class_onboarding_sessions`、`class_agent_bindings`、`ai_usage_records`
+- 工作流与运维（业务库）：`arrangements`、`reminders`、`attachments`、`attachment_links`、`interaction_analyses`、`audit_logs`、`write_proposals`、`class_onboarding_sessions`、`class_agent_bindings`
+- AI 用量（独立 `usage.db`）：`ai_usage_records`，实体和 metadata 位于 `app/models/usage.py`
 
 所有主键为 UUID 字符串。主要唯一约束包括：班级+学号、学生+日期+考勤时段、考试+学生+科目、班级+星期+节次、班级+`lesson_key`、外部消息 ID。学生和学生事件支持软删除；班级采用停用。历史记录通过学生 UUID 关联，不靠姓名。
 
@@ -19,6 +20,8 @@ SQLite 不保存附件 BLOB。`attachments.stored_path` 是相对附件父目录
 
 `interaction_analyses` 只保存渠道、外部消息 ID、附件 IDs、上下文班级、OpenClaw agent、结构化输出、置信度、澄清问题、警告和 proposal IDs；不保存消息原文。`idempotency_key` 防止同一微信或网页事件重复分析；正式业务幂等仍由 proposal 和各领域唯一约束共同保证。
 
-`ai_usage_records` 只保存 OpenClaw Responses API 返回的模型、调用类型和 input/output/cached/total Token 数，不保存 prompt、回复或用户消息。该表用于管理员控制台统计，从迁移 `0009` 后开始累计。
+`ai_usage_records` 只保存 OpenClaw Responses API 返回的模型、响应 ID、调用类型、时间和 input/output/cached/total Token 数，不保存 prompt、回复或用户消息。该表从迁移 `0009` 后开始累计，`0014` 将已有记录保留原 UUID、时间及全部字段复制并校验，再删除业务库旧表。后续记录仅写入独立库，使用独立锁，SQLite busy 与连接池等待各上限 250ms；失败时告警并放弃该条统计，不影响 AI 回答与业务事务。
+
+用量库使用 `storage.usage_database_url`（兼容 `CLASSCLAW_USAGE_DATABASE_URL`），默认 `data/usage.db`，不能与业务库指向同一文件。统计库初始化/迁移失败时业务服务仍可启动，统计接口返回 503 `USAGE_DATABASE_UNAVAILABLE`，不会伪装为零用量。修复后停服重新运行迁移并重启。备份、恢复和完整初始化覆盖两个库，具体升级和兼容旧备份流程见 [数据库拆分](database-splitting.md)。
 
 迁移入口为 `alembic upgrade head`。首版迁移从 SQLAlchemy metadata 创建完整 schema，后续版本应使用 Alembic revision 明确记录增量变化；已发布迁移 `0010` 保留在历史中，其动态值日字段由 `0011` 安全移除。

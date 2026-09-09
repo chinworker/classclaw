@@ -23,8 +23,11 @@ def _filesystem_checks(summary: dict) -> list[dict]:
     database_path = None
     if database_url.startswith("sqlite:///") and not database_url.endswith(":memory:"):
         database_path = Path(database_url.removeprefix("sqlite:///"))
+    usage_url = storage["usage_database_url"]
+    usage_path = None if usage_url.endswith(":memory:") else Path(usage_url.removeprefix("sqlite:///"))
     targets = [
         ("database", database_path, "file"),
+        ("usage_database", usage_path, "file"),
         ("attachments", Path(storage["attachment_dir"]), "directory"),
         ("class_workspace", Path(storage["class_workspace_root"]), "directory"),
         ("openclaw_state", Path(storage["openclaw_state_dir"]), "directory"),

@@ -145,7 +145,27 @@ ClassClaw 不直接连接微信；微信连接器属于 OpenClaw。只要微信�
 
 每次 AI 请求都带随机 `X-ClassClaw-AI-Task-ID`。按钮取消或前端超时时，网页会在终止原请求之外调用 `POST /api/v1/ai/tasks/{task_id}/cancel`；后端以当前登录主体校验任务归属，设置进程内取消事件，并取消正在执行的 HTTPX 请求。OpenClaw Responses API 会在上游连接关闭时中止对应 run。取消端点只改变进程内任务状态，特意使用只读数据库会话，避免被原 AI POST 长时间占用的单写者锁阻塞。这个机制依赖项目规定的单进程、单 Uvicorn worker；改为多 worker 前必须换成跨进程任务注册表。
 
-班级对话页的“停止”按钮也使用同一取消机制。ClassClaw 数据库不保存网页聊天原文；只保存用户明确上传的附件，以及 Agent 按既有流程产生的结构化 analysis/proposal。页面内消息仅在当前前端运行周期中保留，刷新页面后不从数据库恢复。
+班级对话页的“停止”按钮也使用同一取消机制，只停止选中对话的当前请求。新建对话会立即加入列表，可查看处理中、已回复、失败和未读回复状态。每个对话保留独立 UUID、消息、输入草稿、待发送附件与请求控制器；同一对话同时只允许一个请求，不同对话可以分别等待，乱序回复只写回原对话。
+
+网页聊天 POST 支持 multipart 字段 `stream=true`（网页默认使用）及可选 `thinking_level`。省略思考强度时使用 `openclaw.class_agent_thinking`；显式设置仅属于本会话，详见 [配置说明](configuration.md)。后端生成 `agent:{agent_id}:openresponses-user:classclaw-web-chat:{class_id}:{sender_id}:{conversation_id}`，通过 `x-openclaw-session-key` 精确关联会话；客户端不能自行指定 Gateway key。
+
+当前 Gateway 的 Responses `reasoning` 字段未传给执行器，管理员 HTTP RPC 也不放行 `sessions.patch`。因此 ClassClaw 插件提供固定、Gateway 鉴权的私有 `POST /api/v1/classclaw/web-session-thinking`：仅接受 `key` 和 `thinkingLevel`，校验 key 是已绑定班级的网页会话后固定分派 `sessions.patch`；不开放会话删除、任意 RPC 或任意 Agent 配置。浏览器只调用 ClassClaw，绝不获取 Gateway Token。更新版本后须重新构建插件，并在无进行中对话时重启 Gateway 和 ClassClaw；缺少新插件端点会返回 `CHAT_PLUGIN_UPDATE_REQUIRED`。
+
+流式响应为 SSE：`delta` 帧使用统一成功 envelope，`data.text` 为公开回复片段；`done` 的 `data` 与旧 JSON 回复一致；`error` 使用统一错误 envelope 和 `request_id`。心跳仅使用 SSE 注释，不展示推理文本或工具参数。仅收到完整 `response.completed` 才算完成，断流/超时保留并标记部分回复，不能据此声称业务已执行。旧客户端不传 `stream` 仍返回 JSON。取消和超时覆盖整个响应体读取周期，任务归属与站内切页行为不变。新增隐私安全的流式总耗时与首片段耗时日志。
+
+插件将工具执行结果与业务状态分离：`details={success:true,data:...}`，读取/取消一个 `cancelled` 预览不再被误判为执行失败。发送给模型的结果删除预览中重复的原始/归一化 payload，并保留完整预览、ID、revision、有效期及澄清证据；原数据库记录不变，不自动清除历史会话或未确认预览。
+
+工具读取按 resource 校验必填 ID。可信 runId 内通过参数摘要去重，最多允许 24 次不同的 ClassClaw 工具调用；新用户轮次独立，成功写入/取消后允许重新读取。明确提交失败或需要澄清的分析禁止在同轮重建并绕过复核提交。失败/进行中的同消息幂等分析返回 409，不当作成功重复返回，也不重新调用模型。规则仍保留后端的整批事务、班级隔离和一次性确认边界。
+
+班级运行配置同时启用 Gateway 原生 `tools.loopDetection`，对无进展重复和工具来回调用进行告警/阻断，避免模型不断消耗被插件拒绝的调用轮次。安全检测阈值为 warning=3、critical=6、globalCircuitBreaker=12（不是总工具调用次数），不影响正常批量领域接口。
+
+对话请求由 `web/js/agentChatStore.js` 按登录用户和班级隔离管理，与页面 DOM 生命周期分离。新建/切换对话或前往站内其他页面不会取消已发送请求；返回后恢复原对话的消息、草稿与处理中状态，不重复发送请求。页面卸载只清理订阅、麦克风、尚未提交为消息的语音转写和二维码轮询；后台完成不会抢占其他页面的输入焦点。退出登录/切换身份会清空内存对话并取消未完成请求，取消请求使用原任务所属凭据，迟到的旧身份 401 不会退出新身份。
+
+此处“离开页面”指同一浏览器标签页内的站内路由切换，不包括刷新、关闭标签页、跳转外站或断网。主动停止、退出登录、请求超时和连接断开仍会走取消机制；没有引入脱离浏览器的后台任务或消息队列。ClassClaw 数据库不保存网页聊天原文；只保存用户明确上传的附件，以及 Agent 按既有流程产生的结构化 analysis/proposal。对话列表和消息只保留在当前标签页内存，不写入 localStorage/sessionStorage，刷新后不从数据库恢复。
+
+聊天、文件/文本提取和语音转写在外部 I/O 期间会归还 SQLite 单写者锁与连接，Agent 工具回调可以正常执行分析、预览和用户确认后的提交；响应落库前会重新取得写锁，并重新读取可能变化的草稿版本。微信二维码生成与等待同样不跨轮询持有数据库写锁。
+
+Responses 读取/连接超时返回 `504 OPENCLAW_TIMEOUT`，连接失败返回 `502 OPENCLAW_CONNECTION_FAILED`，响应无法解析返回 `502 OPENCLAW_INVALID_RESPONSE`。日志记录异常类型、耗时和请求编号，不记录请求正文或凭据；网页聊天显示可定位日志的问题编号。超时不能被当成“业务肯定未执行”，涉及写入时应先核对结果，不自动重试有副作用的聊天请求。语音转写被取消时会回收子进程和临时录音。
 
 ```text
 POST  /api/v1/class-onboarding/sessions

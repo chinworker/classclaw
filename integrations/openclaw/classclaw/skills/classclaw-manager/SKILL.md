@@ -18,7 +18,7 @@ Use `classclaw_*` tools as the only path to ClassClaw. Never use generic HTTP, S
 ## Non-negotiable input and write workflow
 
 1. Preserve each original attachment with `classclaw_upload_file` and retain its attachment id. When trusted ClassClaw web-ingress instructions explicitly provide attachment ids that the backend has already saved, use those ids directly and do not upload the same files again.
-2. Natural language, WeChat, pasted content, OCR, audio transcription, and files are non-deterministic. Send the unmodified current input to `classclaw_analyze_interaction`, along with the bound class id, channel, stable external message id, sender, and attachment ids.
+2. Natural language, WeChat, pasted content, OCR, audio transcription, and files that may cause a business write are non-deterministic. Send the unmodified current input to `classclaw_analyze_interaction`, along with the bound class id, channel, stable external message id, sender, and attachment ids. Pure queries use read tools directly; ordinary questions and summaries without a write do not need analysis.
 3. Treat every analysis as fresh. Do not blend facts from older turns into a corrected or replacement file unless the user explicitly includes those facts again.
 4. If the result needs clarification, tell the user every item in `analysis.structured_json.rejected_reasons` in plain language, then ask only the returned clarification questions. Low-confidence data was not accepted and must not be previewed or written. Re-analyze the corrected current facts with a new idempotency key; do not guess.
 5. If the result is `no_action`, answer without a write proposal.
@@ -31,6 +31,15 @@ Use `classclaw_*` tools as the only path to ClassClaw. Never use generic HTTP, S
 12. Say that a write succeeded only after the commit tool returns `completed`. Do not silently retry an expired, conflicting, or failed commit.
 
 `classclaw_propose_write` is only for already deterministic structured operations inside an approved workflow. It must never bypass analysis for prose, WeChat, OCR, or file content.
+
+## Bounded tool use
+
+- Use returned IDs and required resource parameters. Never call a read with a missing ID; ask for the missing information instead.
+- Read only the resources needed now. Reuse a result within the current turn unless a successful write changed it; do not enumerate students repeatedly or poll a completed/failed tool.
+- Analysis already creates validated proposals. Display those previews directly, without recreating the same proposals or copying their payloads into another tool call.
+- `needs_clarification`, `no_action`, `failed` or an analysis error must never be bypassed with `classclaw_propose_write`.
+- A successful cancellation has a cancelled business status, not an execution failure. Stop on validation errors, conflicts, denied access and missing resources; explain the problem and wait for a new user message. Do not silently retry commits, create replacement proposals and commit them without fresh user review.
+- Tool results contain compact validated previews; raw and normalized payload duplicates are deliberately omitted. Never infer that omitted internal data is missing business information.
 
 Read [references/use-cases.md](references/use-cases.md) whenever deciding how a real request maps to a read/write operation or formatting a preview/result. Read [references/operations.md](references/operations.md) only when exact payload fields are needed. Read [references/onboarding.md](references/onboarding.md) only when explaining why class creation must continue in the web app.
 
