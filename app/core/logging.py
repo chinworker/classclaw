@@ -8,7 +8,6 @@ from typing import Any
 
 from app.config import settings
 
-
 LOGGER_NAME = "classclaw"
 
 

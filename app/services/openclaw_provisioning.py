@@ -17,10 +17,12 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.core.errors import AppError, not_found
+from app.core.logging import get_logger
 from app.database import reader_session, suspend_writer
 from app.models.entities import ClassAgentBinding, ClassRoom
+from app.services import wechat_login
 from app.services.common import audit, entity_dict
-from app.services.http_client import get_http_client
+from app.services.http_client import gateway_headers, get_http_client
 from app.utils.time import now
 
 EDITABLE_WORKSPACE_FILES = {
@@ -37,13 +39,6 @@ _CHAT_LOOP_DETECTION = {
     "criticalThreshold": 6, "globalCircuitBreakerThreshold": 12,
     "detectors": {"genericRepeat": True, "knownPollNoProgress": True, "pingPong": True},
 }
-
-
-def _headers() -> dict[str, str]:
-    headers = {"Content-Type": "application/json"}
-    if settings.openclaw_gateway_token:
-        headers["Authorization"] = f"Bearer {settings.openclaw_gateway_token}"
-    return headers
 
 
 def agent_name_for_class(class_id: str) -> str:
@@ -118,7 +113,7 @@ async def admin_rpc(method: str, params: dict[str, Any] | None = None) -> Any:
     try:
         response = await get_http_client().post(
             f"{settings.openclaw_gateway_url}/api/v1/admin/rpc",
-            headers=_headers(),
+            headers=gateway_headers(),
             json={"method": method, "params": params or {}},
             timeout=settings.openclaw_timeout_seconds,
         )
@@ -362,11 +357,6 @@ async def cleanup_all_class_agent_resources(db: Session) -> dict[str, Any]:
     }
 
 
-def class_id_for_agent(db: Session, agent_id: str) -> str | None:
-    binding = db.scalar(select(ClassAgentBinding).where(ClassAgentBinding.openclaw_agent_id == agent_id))
-    return binding.class_id if binding else None
-
-
 def _workspace_files(cls: ClassRoom, binding: ClassAgentBinding) -> dict[str, str]:
     identity = {
         "role": "class",
@@ -386,14 +376,15 @@ def _workspace_files(cls: ClassRoom, binding: ClassAgentBinding) -> dict[str, st
 用户改动预览时取消旧 proposal 并重新分析。成功只能以后端 completed 为准。不得创建班级。回答简短。
 回复格式：标题 + 1至5行关键数据 + 下一步；成功通常一句话。最多一句善意小幽默，严肃、健康、家庭、安全和隐私场景不玩笑。
 不主动解释 UUID、proposal、工具、数据库或审批流程，不自我介绍，不问用户怎么称呼，不加无关提醒。
+直接调用工具，省略自述；工具完成后再给预览、结果或澄清问题。
 事项最多3个提醒；未指定时默认开始时间（无则截止时间）前3小时提醒一次，并在事项当天早报的 today_reminders 中照常展示。
 所有临近提醒统一由本 Agent 主动发给用户，后端不代发。系统触发提醒任务时，先读 reminder_delivery；无效或未到期只回复 NO_REPLY，有效且到期则调用 classclaw_mark_reminder_sent，再用一句话提醒用户，不展示预览、不要求确认。
 """
     soul = "# Soul\n准确、克制、可靠；回复短而清楚，可以温和幽默一句。严肃事项不玩笑；保护隐私，不虚构，不越权。\n"
     identity_md = f"# Identity\nName: {display_name}\nRole: 班级事务助理\nEmoji: 🏫\n"
     tools = """# Tools
-普通输入：`classclaw_analyze_interaction`；查询：`classclaw_read`。
-附件先 `classclaw_upload_file`，再带着 attachment_ids 分析。`classclaw_propose_write` 仅限确定性结构化写入，不得绕过分析。聊天明确确认后单条用 `classclaw_commit_write`、多条用 `classclaw_commit_writes`；无需额外审批。放弃时用 `classclaw_cancel_write`。系统提醒任务先读 `reminder_delivery`，有效且到期时用 `classclaw_mark_reminder_sent` 后主动发一句提醒。
+写入意图：`classclaw_analyze_interaction`；查询：`classclaw_read`。
+附件用 `classclaw_upload_file`；`classclaw_propose_write` 不得绕过分析。聊天确认后单条用 `classclaw_commit_write`、多条用 `classclaw_commit_writes`；放弃用 `classclaw_cancel_write`。系统提醒先读 `reminder_delivery`，有效且到期时用 `classclaw_mark_reminder_sent` 后回复。
 """
     user = f"# User\n班级：{cls.name}（`{cls.id}`）\n主要用户：班主任\n时区：Asia/Shanghai\n"
     return {
@@ -649,10 +640,10 @@ def _render_qr_data_url(content: str | None) -> str | None:
     return f"data:image/png;base64,{encoded}"
 
 
-def _wechat_login_result(binding: ClassAgentBinding, login: dict[str, Any]) -> dict[str, Any]:
+def _wechat_login_result(binding: ClassAgentBinding, login: dict[str, Any], *, require_qr: bool = True) -> dict[str, Any]:
     connected = bool(login.get("connected"))
     qr_content = _login_qr_content(login)
-    if not connected and not qr_content:
+    if require_qr and not connected and not qr_content and not login.get("restartRequired"):
         raise AppError("WECHAT_QR_UNAVAILABLE", "微信登录未返回可用二维码，请重新生成", 503)
     return {
         "binding": binding,
@@ -660,6 +651,11 @@ def _wechat_login_result(binding: ClassAgentBinding, login: dict[str, Any]) -> d
         "route_ready": connected and binding.status == "linked" and not binding.last_error,
         "qr_data_url": _render_qr_data_url(qr_content),
         "qr_content": qr_content,
+        "restart_required": login.get("restartRequired") is True,
+        "login_id": login.get("loginId"),
+        "login_state": login.get("state"),
+        "verification_required": login.get("verificationRequired") is True,
+        "challenge_id": login.get("challengeId"),
         "message": login.get("message"),
     }
 
@@ -669,30 +665,26 @@ async def start_wechat_binding(db: Session, class_id: str, force: bool = False) 
     if not cls:
         raise not_found("班级", class_id)
     binding = ensure_binding(db, cls)
+    attempt = wechat_login.begin(class_id)
     await _ensure_agent(db, cls, binding)
-    account_alias = binding.channel_account_id or f"class-{re.sub(r'[^a-zA-Z0-9_-]', '-', class_id)[:36]}"
+    await ensure_class_agent_runtime(db, class_id)
+    wechat_login.require_current(class_id, attempt)
     try:
         async with suspend_writer(db):
-            login = await admin_rpc(
-                "web.login.start",
-                {
-                    "accountId": account_alias,
-                    "force": force,
-                    "timeoutMs": settings.wechat.gateway_start_timeout_seconds * 1000,
-                    "verbose": False,
-                },
-            )
-        binding.channel_account_id = str(login.get("accountId") or account_alias)
+            login = await wechat_login.call(class_id, "start", force=force, ttlMs=settings.wechat.qr_binding_timeout_seconds * 1000)
+        wechat_login.require_current(class_id, attempt)
+        wechat_login.accept(class_id, attempt, login["loginId"])
         qr_content = _login_qr_content(login)
-        binding.status = "linked" if login.get("connected") else "awaiting_qr"
+        binding.status = "awaiting_qr"
         binding.qr_generated_at = now() if qr_content else binding.qr_generated_at
         binding.linked_at = now() if login.get("connected") else binding.linked_at
         binding.last_error = None
         db.commit()
         if login.get("connected"):
-            await _bind_route(db, binding)
+            await _complete_wechat_binding(db, binding, login, attempt)
         return _wechat_login_result(binding, login)
     except Exception as exc:
+        wechat_login.require_current(class_id, attempt)
         binding.status = "failed"
         binding.last_error = str(exc)[:1000]
         db.commit()
@@ -805,6 +797,11 @@ async def _configure_runtime(binding: ClassAgentBinding, snapshot: dict[str, Any
             )
         ]
         raw["bindings"] = [*filtered, route]
+        if binding.channel_id == "openclaw-weixin":
+            # A bindings-only patch refreshes routing but does not start the
+            # newly saved account. Bump the upstream channel reload marker in
+            # the same patch, so the listener starts with the correct route.
+            raw["channels"] = {binding.channel_id: {"channelConfigUpdatedAt": now().isoformat()}}
         replace_paths.insert(0, "bindings")
         note = f"Bind {binding.agent_name} to its WeChat account"
     patch_params: dict[str, Any] = {
@@ -867,7 +864,7 @@ async def set_web_session_thinking(session_key: str, thinking_level: str) -> Non
     """
     try:
         response = await get_http_client().post(
-            f"{settings.openclaw_gateway_url}/api/v1/classclaw/web-session-thinking", headers=_headers(),
+            f"{settings.openclaw_gateway_url}/api/v1/classclaw/web-session-thinking", headers=gateway_headers(),
             json={"key": session_key, "thinkingLevel": thinking_level}, timeout=15,
         )
     except Exception as exc:
@@ -879,7 +876,27 @@ async def set_web_session_thinking(session_key: str, thinking_level: str) -> Non
     except ValueError as exc:
         raise AppError("CHAT_THINKING_UNAVAILABLE", "会话思考设置接口返回了无效响应", 502) from exc
     if response.status_code != 200 or not isinstance(payload, dict) or payload.get("ok") is not True:
-        raise AppError("CHAT_THINKING_UNAVAILABLE", "无法应用所选思考强度，请检查模型支持的档位或 Gateway 插件配置", 502)
+        error = payload.get("error") if isinstance(payload, dict) else None
+        error = error if isinstance(error, dict) else {}
+        labels = {"off": "关闭", "minimal": "极低", "low": "低", "medium": "中", "high": "高", "xhigh": "极高",
+                  "adaptive": "自适应", "max": "最高"}
+        # Older plugin builds forward this Gateway validation message verbatim.
+        unsupported = re.fullmatch(r'thinkingLevel "[^"]+" is not supported for [\w./:-]+ \(use ([^)]+)\)', str(error.get("message", "")))
+        raw_levels = unsupported.group(1).split("|") if unsupported else error.get("supported_levels", [])
+        raw_levels = [level for level in raw_levels if isinstance(level, str)] if isinstance(raw_levels, list) else []
+        supported = list(dict.fromkeys("low" if level == "on" else level for level in raw_levels if level in labels or level == "on"))
+        gateway_labels = error.get("supported_level_labels")
+        binary_on = "on" in raw_levels or isinstance(gateway_labels, dict) and gateway_labels.get("low") == "on"
+        supported_labels = {level: "开启" if level == "low" and binary_on else labels[level] for level in supported}
+        code = "CHAT_THINKING_UNSUPPORTED" if unsupported or error.get("code") == "CHAT_THINKING_UNSUPPORTED" else "CHAT_THINKING_UNAVAILABLE"
+        details = {"thinking_level": thinking_level, "supported_levels": supported,
+                   "supported_level_labels": supported_labels, "gateway_status": response.status_code}
+        get_logger("openclaw").warning("Session thinking update rejected: code=%s level=%s gateway_status=%s", code, thinking_level, response.status_code)
+        if code == "CHAT_THINKING_UNSUPPORTED":
+            message = f"当前模型不支持“{labels.get(thinking_level, thinking_level)}”思考强度"
+            message += f"；请选择：{'、'.join(supported_labels.values())}" if supported else "；请选择该模型支持的档位"
+            raise AppError(code, message, 422, details)
+        raise AppError(code, "会话思考设置失败，请检查 Gateway 连接及 ClassClaw 插件状态", 503, details)
 
 
 async def ensure_class_agent_runtime(db: Session, class_id: str) -> ClassAgentBinding:
@@ -916,9 +933,13 @@ async def ensure_class_agent_runtime(db: Session, class_id: str) -> ClassAgentBi
         raise
 
 
-async def _bind_route(db: Session, binding: ClassAgentBinding, snapshot: dict[str, Any] | None = None) -> None:
+async def _bind_route(db: Session, binding: ClassAgentBinding, snapshot: dict[str, Any] | None = None, *, attempt: str | None = None) -> None:
     snapshot = snapshot or await admin_rpc("config.get")
+    if attempt is not None:
+        wechat_login.require_current(binding.class_id, attempt)
     await _configure_runtime(binding, snapshot, include_route=True)
+    if attempt is not None:
+        wechat_login.require_current(binding.class_id, attempt)
     binding.status = "linked"
     binding.linked_at = now()
     binding.last_error = None
@@ -936,9 +957,26 @@ async def _ensure_route(db: Session, binding: ClassAgentBinding) -> None:
     await _bind_route(db, binding, snapshot)
 
 
-async def wait_wechat_binding(db: Session, class_id: str, current_qr_data_url: str | None = None) -> dict[str, Any]:
+async def _complete_wechat_binding(db: Session, binding: ClassAgentBinding, login: dict[str, Any], attempt: str | None) -> None:
+    account_id = login.get("accountId")
+    if not isinstance(account_id, str) or not account_id:
+        raise AppError("WECHAT_RESPONSE_INVALID", "微信登录未返回有效账号，尚未完成绑定", 502)
+    claimed = db.scalar(select(ClassAgentBinding).where(
+        ClassAgentBinding.channel_account_id == account_id, ClassAgentBinding.class_id != binding.class_id,
+    ))
+    if claimed:
+        raise AppError("WECHAT_ACCOUNT_CONFLICT", "该微信账号已绑定其他班级，不能覆盖", 409)
+    binding.channel_account_id = account_id
+    db.commit()
+    await _bind_route(db, binding, attempt=attempt)
+
+
+async def wait_wechat_binding(
+    db: Session, class_id: str, current_qr_data_url: str | None = None, *, login_id: str | None = None,
+    challenge_id: str | None = None, code: str | None = None,
+) -> dict[str, Any]:
     binding = get_binding(db, class_id)
-    if binding.status == "linked":
+    if binding.status == "linked" and login_id is None and code is None:
         if not binding.channel_account_id or not binding.openclaw_agent_id:
             raise AppError("VALIDATION_ERROR", "微信绑定记录不完整，请重新生成二维码", 409)
         try:
@@ -948,28 +986,33 @@ async def wait_wechat_binding(db: Session, class_id: str, current_qr_data_url: s
             db.commit()
             raise
         return {"binding": binding, "connected": True, "route_ready": True, "message": "微信已绑定，消息路由已就绪"}
-    if not binding.channel_account_id or not binding.openclaw_agent_id:
+    if not binding.openclaw_agent_id or not login_id:
         raise AppError("VALIDATION_ERROR", "请先创建智能体并生成二维码", 409)
-    params: dict[str, Any] = {
-        "accountId": binding.channel_account_id,
-        "timeoutMs": settings.wechat.gateway_wait_timeout_seconds * 1000,
-    }
-    if current_qr_data_url:
-        # OpenClaw validates this field as a PNG data URL. Older web clients sent
-        # the provider's raw QR content, so normalize it here for compatibility.
-        params["currentQrDataUrl"] = _render_qr_data_url(current_qr_data_url)
+    attempt = wechat_login.capture(class_id)
+    wechat_login.require_login(class_id, login_id)
+    params = {"loginId": login_id}
+    if code is not None:
+        params.update(challengeId=challenge_id, code=code)
     try:
         async with suspend_writer(db):
-            login = await admin_rpc("web.login.wait", params)
+            login = await wechat_login.call(class_id, "verify" if code is not None else "wait", **params)
+        wechat_login.require_current(class_id, attempt)
+        if login.get("loginId") != login_id:
+            raise AppError("WECHAT_LOGIN_STALE", "二维码已被重新生成，请使用最新二维码", 409)
         if login.get("connected"):
-            binding.channel_account_id = str(login.get("accountId") or binding.channel_account_id)
-            await _bind_route(db, binding)
+            await _complete_wechat_binding(db, binding, login, attempt)
         elif _login_qr_content(login):
             binding.status = "awaiting_qr"
             binding.qr_generated_at = now()
             db.commit()
-        return _wechat_login_result(binding, login)
+        # The provider normally returns only connected/message while waiting.
+        # No replacement QR means the browser should keep the current image;
+        # it is not a failed login and does not require storing QR content here.
+        return _wechat_login_result(binding, login, require_qr=False)
     except Exception as exc:
+        wechat_login.require_current(class_id, attempt)
+        if isinstance(exc, AppError) and exc.code in {"WECHAT_LOGIN_STALE", "WECHAT_CHALLENGE_STALE"}:
+            raise
         binding.last_error = str(exc)[:1000]
         db.commit()
         raise

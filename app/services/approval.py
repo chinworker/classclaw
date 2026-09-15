@@ -47,7 +47,8 @@ from app.schemas.domain import (
     WriteProposalConfirm,
     WriteProposalCreate,
 )
-from app.services import academic, class_student, duty, operations, seating, timetable
+from app.schemas.student_batch import StudentBatchUpdate
+from app.services import academic, class_student, duty, operations, seating, student_batch, timetable
 from app.services.common import audit, entity_dict
 from app.services.openclaw_provisioning import agent_name_for_class
 from app.utils.time import now
@@ -56,6 +57,7 @@ SUPPORTED_OPERATIONS = {
     "class.onboarding.commit",
     "student.create",
     "student.update",
+    "student.update.batch",
     "seating.update",
     "attendance.set",
     "homework.create",
@@ -99,7 +101,7 @@ def ensure_class_name_available(db: Session, class_name: str) -> None:
 
 
 def _validation_error(exc: ValidationError) -> AppError:
-    return AppError("VALIDATION_ERROR", "写入草稿字段校验失败", details={"errors": exc.errors(include_url=False)})
+    return AppError("VALIDATION_ERROR", "写入草稿字段校验失败", details={"errors": exc.errors(include_url=False, include_context=False)})
 
 
 def _model(model, payload: dict, *, exclude_unset: bool = False) -> dict:
@@ -220,6 +222,14 @@ def normalize_and_preview(operation_type: str, payload: dict, evidence: list[dic
         model, title = specs[operation_type]
         normalized = _model(model, payload, exclude_unset=operation_type == "attendance.set")
         return normalized, {"ready": True, "title": title, "summary": normalized, "missing_fields": [], "validation_errors": [], "confirmation_message": f"即将{title}，请核对字段后确认。"}
+    if operation_type == "student.update.batch":
+        normalized = _model(StudentBatchUpdate, payload, exclude_unset=True)
+        return normalized, {
+            "ready": True, "title": "批量修改学生档案",
+            "summary": {"class_id": normalized["class_id"], "record_count": len(normalized["student_ids"]),
+                        "changes": normalized["changes"], "only_if_empty": normalized.get("only_if_empty", [])},
+            "missing_fields": [], "validation_errors": [], "confirmation_message": "即将批量修改学生档案，请核对完整名单和变更字段。",
+        }
     if operation_type == "student.update":
         if not payload.get("student_id"):
             raise AppError("VALIDATION_ERROR", "student.update缺少student_id")
@@ -256,13 +266,17 @@ def normalize_and_preview(operation_type: str, payload: dict, evidence: list[dic
     raise AppError("VALIDATION_ERROR", "操作类型尚未实现")
 
 
-def create_proposal(db: Session, data: WriteProposalCreate) -> WriteProposal:
+def create_proposal(db: Session, data: WriteProposalCreate, *, bound_class_id: str | None = None) -> WriteProposal:
     if data.idempotency_key:
         existing = db.scalar(select(WriteProposal).where(WriteProposal.idempotency_key == data.idempotency_key))
         if existing:
+            if bound_class_id and _proposal_class_ids(db, existing) != {bound_class_id}:
+                raise AppError("CLASS_SCOPE_VIOLATION", "写入预览不属于本次分析的班级", 403)
             return existing
     evidence = [item.model_dump(mode="json") for item in data.evidence]
     normalized, preview = normalize_and_preview(data.operation_type, data.payload, evidence)
+    if data.operation_type == "student.update.batch":
+        normalized, preview = student_batch.prepare(db, normalized, preview)
     obj = WriteProposal(
         operation_type=data.operation_type,
         payload_json=data.payload,
@@ -275,6 +289,8 @@ def create_proposal(db: Session, data: WriteProposalCreate) -> WriteProposal:
         expires_at=now() + timedelta(minutes=data.expires_in_minutes),
         onboarding_session_id=data.onboarding_session_id,
     )
+    if bound_class_id and _proposal_class_ids(db, obj) != {bound_class_id}:
+        raise AppError("CLASS_SCOPE_VIOLATION", "写入预览不属于本次分析的班级", 403)
     db.add(obj)
     db.flush()
     if data.onboarding_session_id:
@@ -304,6 +320,8 @@ def _proposal_class_ids(db: Session, proposal: WriteProposal) -> set[str]:
         student = db.get(Student, payload["student_id"])
         if student:
             result.add(student.class_id)
+    if payload.get("student_ids"):
+        result.update(db.scalars(select(Student.class_id).where(Student.id.in_(payload["student_ids"]))))
     if payload.get("homework_id"):
         homework = db.get(Homework, payload["homework_id"])
         if homework:
@@ -361,6 +379,8 @@ def _execute(db: Session, proposal: WriteProposal) -> Any:
         return class_student.create_student(db, StudentCreate.model_validate(p), commit=False)
     if op == "student.update":
         return class_student.update_student(db, p["student_id"], StudentUpdate.model_validate(p["changes"]), commit=False)
+    if op == "student.update.batch":
+        return student_batch.execute(db, p)
     if op == "seating.update":
         return seating.create_snapshot(db, p["class_id"], SeatingCreate.model_validate(p), commit=False)
     if op == "attendance.set":

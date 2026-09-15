@@ -7,7 +7,6 @@ from typing import Any
 
 from app.config import settings
 
-
 _SECRET_PATTERNS = (
     re.compile(r"(?i)(authorization\s*[:=]\s*bearer\s+)[^\s\"']+"),
     re.compile(r"(?i)((?:api[_-]?key|token|password)\s*[:=]\s*)[^\s,;\"']+"),

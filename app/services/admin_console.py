@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import shutil
 import time
 from collections import Counter, defaultdict
@@ -38,6 +39,8 @@ from app.services import (
     openclaw_usage,
     openclaw_workspaces,
 )
+
+logger = logging.getLogger(__name__)
 from app.services import (
     logs as log_service,
 )
@@ -642,6 +645,7 @@ async def openclaw_agent_usage(db: Session, days: int) -> list[dict[str, Any]]:
     try:
         scanned = await scan_task
     except Exception as exc:
+        logger.warning("Agent usage scan unavailable: %s: %s", type(exc).__name__, exc, exc_info=exc)
         scanned = {agent_id: {"available": False, "error": str(exc)[:500], "calls": 0, "messages": {}, "latency": None, "daily": []} for agent_id in agent_ids}
     result_iter = iter(results)
     output = []

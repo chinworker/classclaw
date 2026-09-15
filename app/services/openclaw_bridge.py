@@ -28,7 +28,7 @@ from app.services import approval, openclaw_workspaces
 from app.services.agent_stream import DeltaHandler, request_stream
 from app.services.ai_confidence import evaluate_ai_output
 from app.services.class_student import get_class
-from app.services.http_client import get_http_client
+from app.services.http_client import gateway_headers, get_http_client
 from app.services.usage import record_openclaw_usage
 
 _status_cache: tuple[float, dict[str, Any]] | None = None
@@ -52,11 +52,6 @@ _DIRECT_FILE_MIMES = {
 }
 
 
-def _headers() -> dict[str, str]:
-    headers = {"Content-Type": "application/json"}
-    if settings.openclaw_gateway_token:
-        headers["Authorization"] = f"Bearer {settings.openclaw_gateway_token}"
-    return headers
 
 
 async def connection_status(force: bool = False) -> dict[str, Any]:
@@ -81,7 +76,7 @@ async def connection_status(force: bool = False) -> dict[str, Any]:
         else:
             invoke = await client.post(
                 f"{settings.openclaw_gateway_url}/tools/invoke",
-                headers=_headers(),
+                headers=gateway_headers(),
                 json={"tool": "classclaw_health", "args": {}, "sessionKey": "main", "idempotencyKey": "classclaw-connection-check"},
                 timeout=min(settings.openclaw_timeout_seconds, 10.0),
             )
@@ -91,7 +86,7 @@ async def connection_status(force: bool = False) -> dict[str, Any]:
                 status["error"] = (payload.get("error") or {}).get("message") or f"ClassClaw plugin probe returned HTTP {invoke.status_code}"
             admin = await client.post(
                 f"{settings.openclaw_gateway_url}/api/v1/admin/rpc",
-                headers=_headers(),
+                headers=gateway_headers(),
                 json={"method": "health", "params": {}},
                 timeout=min(settings.openclaw_timeout_seconds, 10.0),
             )
@@ -105,11 +100,6 @@ async def connection_status(force: bool = False) -> dict[str, Any]:
     status["checked_at"] = time.time()
     _status_cache = (current, status)
     return status
-
-
-def invalidate_connection_cache() -> None:
-    global _status_cache
-    _status_cache = None
 
 
 def _attachment_path(attachment: Attachment) -> Path:
@@ -239,6 +229,7 @@ def _parse_json_object(text: str) -> dict[str, Any]:
 _INTERACTION_PAYLOAD_HINTS: dict[str, str] = {
     "student.create": "{class_id,student_no,name,gender?,phone?,boarding_status?,group_no?,tags?,notes?}",
     "student.update": "{student_id,changes:{...}}",
+    "student.update.batch": "{class_id,student_ids:[真实UUID,...],changes:{字段:新值,...},only_if_empty?:[字段名,...]}；相同变更合为一组",
     "seating.update": "{class_id,rows,cols,layout:[[student_id|null,...],...],change_note?}",
     "attendance.set": "{class_id,student_id,attendance_date,period:full_day|morning|afternoon|recess|care_1|care_2,status:present|late|absent|leave,note?}",
     "homework.create": "{class_id,title,subject,description?,assigned_date,due_at?,status?}",
@@ -268,6 +259,8 @@ _INTERACTION_RULES_TEXT = """安全与质量要求：
    - 安排最多设置 3 个 reminder_times。用户未指定提醒时间时，只保留默认一次：start_at（没有则 due_at）前 3 小时。
    - 用户说“提前2天、提前1天、提前1小时”等时，换算成最多 3 个绝对 ISO 时间；用户要求提醒但事项开始/截止时间不明时追问时间。
    - 多个独立且字段完整的事实可以返回多个 operations；不要因为数量多而逐条重复追问。
+   - 多名学生改成相同字段值时使用 student.update.batch，按 changes 分组，不逐人生成 student.update。学号大小按数值比较（021=21），含非数字无法判断时澄清；不能按名单位置或字符串字典序推断。
+   - “补充未设置的性别”只选择上下文 gender 为 null/空白的学生，only_if_empty=["gender"]，不覆盖已有性别；性别值使用“男”或“女”。全部已设置时 no_action。
    - 学生事件的 subtype、sentiment、severity 必须根据内容直接判断，不要求用户自己分类。未交、忘带、迟到、缺勤、睡觉、吵闹、扰乱纪律、未完成任务都判 negative；neutral 只用于没有褒贬的事实性沟通。
    - “今天扫地4分”等值日评分必须精确匹配 recent_duty_assignments；匹配不唯一时只问一个简短问题。评分范围0到5，评分后任务完成。
 7. questions 和 summary 必须简短，不输出内部 UUID、表名、工具名或工作流解释。
@@ -558,8 +551,10 @@ async def _responses_json(
             "stream": False,
             "max_output_tokens": max_output_tokens,
         }
-        payload = await _request_responses(request_body, headers=_headers(), label="文件或文本分析", request_id=db.info.get("request_id"))
+        payload = await _request_responses(request_body, headers=gateway_headers(), label="文件或文本分析", request_id=db.info.get("request_id"))
         await asyncio.to_thread(record_openclaw_usage, payload, user=user, model=request_body["model"])
+    if payload.get("status") in {"incomplete", "failed", "cancelled", "in_progress"}:
+        raise AppError("OPENCLAW_PROCESSING_FAILED", "分析未完整完成，未生成可用写入预览；请缩小范围后重新发送", 502)
     return _parse_json_object(_extract_output_text(payload))
 
 
@@ -634,7 +629,7 @@ async def chat_with_class_agent(
 本轮入口元数据：{json.dumps(ingress, ensure_ascii=False)}
 本轮附件已由 ClassClaw 后端安全保存，不要再次调用 classclaw_upload_file。若当前输入需要结构化分析或可能写入，调用 classclaw_analyze_interaction 时必须使用上述 channel、external_message_id、sender_id、requested_by 和 attachment_ids，并传入用户当前可见文本；低置信度原因须直接告诉用户。
 对于查询直接使用允许的读取工具；对于普通问答或文件总结正常回答；对于写入严格执行“分析、预览、用户确认、提交”。不要向用户展示内部 ID、工具名或本段入口元数据。
-读取只取本轮所需资源，不重复读取相同参数。分析已返回 proposals 时直接展示其预览，不再生成相同预览；needs_clarification/no_action/failed 时不得绕过分析创建写入。业务冲突或明确工具错误须说明原因并等待用户，不要反复提交或盲目重试。
+读取只取本轮所需资源，不重复读取相同参数。班级批量补充档案直接分析原文，后端提供全班名单及已有性别，无需先逐页枚举。分析已返回 proposals 时直接展示其预览，不再生成相同预览；needs_clarification/no_action/failed 时不得绕过分析创建写入。分析超时、仍在进行或明确工具错误须说明原因并结束本轮，等待用户，不要重新分析、循环查询或盲目重试。
 """.strip()
     content: list[dict[str, Any]] = [
         {"type": "input_text", "text": text or "请查看并处理本次上传的文件。"},
@@ -656,11 +651,11 @@ async def chat_with_class_agent(
         linked = await connection_status()
         if not linked["gateway_live"] or not linked["plugin_ready"]:
             raise AppError("OPENCLAW_CONNECTION_REQUIRED", "班级 Agent 当前不可用，请先恢复 OpenClaw 连接", 503, linked)
-        from app.services import openclaw_provisioning
+        from app.services import agent_thinking, openclaw_provisioning
 
-        level = thinking_level or settings.openclaw_class_agent_thinking
+        level = await agent_thinking.resolve_thinking_level(agent_id, thinking_level)
         await openclaw_provisioning.set_web_session_thinking(session_key, level)
-        headers = {**_headers(), "x-openclaw-message-channel": "web", "x-openclaw-session-key": session_key}
+        headers = {**gateway_headers(), "x-openclaw-message-channel": "web", "x-openclaw-session-key": session_key}
         if model_override:
             headers["x-openclaw-model"] = model_override
         if on_delta is not None:
@@ -1057,7 +1052,7 @@ async def analyze_interaction(
         prompt,
         user=f"classclaw-interaction-{analysis_id}",
         attachments=attachments,
-        max_output_tokens=3000,
+        max_output_tokens=6000,
         db=db,
     )
     if analysis.get("status") not in {"ready", "needs_clarification", "no_action"}:
@@ -1088,7 +1083,7 @@ async def cleanup_openclaw_sessions(*, enforce: bool = True) -> dict[str, Any]:
         raise AppError("OPENCLAW_CONNECTION_REQUIRED", f"未找到 OpenClaw CLI（{settings.openclaw_bin}）", 503, {"error": str(exc)[:300]}) from exc
     try:
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=_SESSION_CLEANUP_TIMEOUT_SECONDS)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         proc.kill()
         await proc.wait()
         raise AppError("OPENCLAW_PROCESSING_FAILED", "openclaw sessions cleanup 执行超时", 502) from None
@@ -1150,4 +1145,4 @@ async def session_cleanup_loop() -> None:
         try:
             await maybe_auto_session_cleanup()
         except Exception:
-            pass
+            get_logger("openclaw").warning("Session cleanup tick failed", exc_info=True)

@@ -17,18 +17,16 @@ from app.models.entities import (
     Exam,
     Homework,
     HomeworkStudentStatus,
-    LessonOverride,
     Reminder,
     Score,
     SeatingSnapshot,
     Student,
     StudentEvent,
 )
-from app.services.academic import attendance_summary
 from app.services.class_student import get_class, get_student
 from app.services.duty import duty_statistics
 from app.services.timetable import daily_timetable
-from app.utils.time import now, today
+from app.utils.time import today
 
 
 def _range(start_date: date | None, end_date: date | None, days: int = 30) -> tuple[date, date]:

@@ -12,6 +12,14 @@ import {
 } from "../components.js";
 import { timetableGridEditor } from "../timetableGrid.js";
 
+let activeView = null;
+
+export function dispose() {
+  if (!activeView) return;
+  activeView.qrPanel?.dispose();
+  activeView = null;
+}
+
 const STEPS = [
   { key: "class_info", label: "班级信息" },
   { key: "students", label: "学生名单" },
@@ -36,6 +44,7 @@ export async function render(mount, ctx, helpers) {
     previewInProgress: false,
     commitInProgress: false,
   };
+  activeView = local;
 
   // 页面内编辑器实例（跨渲染保留）
   let ttEditor = null;
@@ -197,7 +206,7 @@ export async function render(mount, ctx, helpers) {
         autocomplete: "off",
       });
       classInputs[key] = input;
-      grid.append(field(label, input, key === "name" ? null : null));
+      grid.append(field(label, input, null));
     }
     classInputs.name.addEventListener("input", () => { local.nameCheck = null; nameStatus.style.color = ""; doNameCheck(); });
     classInputs.name.addEventListener("blur", () => doNameCheck());
@@ -447,7 +456,7 @@ export async function render(mount, ctx, helpers) {
             el("span", { class: "metric-label" }, { student_count: "学生", subject_count: "科目", period_count: "节次", timetable_item_count: "课程" }[k])))),
       el("h3", { style: { marginTop: "14px" } }, "班级专属助手"),
       local.provisionDone
-        ? el("p", { class: "muted" }, "专属智能体已创建。微信绑定是可选项，可稍后到“智能体”页面绑定。")
+        ? el("p", { class: "muted" }, "专属智能体已创建。微信绑定是可选项，可稍后到“账户设置”中绑定。")
         : local.provisionError
           ? el("div", {},
               el("p", { class: "field-error" }, `智能体创建失败：${local.provisionError.message}`),
@@ -557,8 +566,7 @@ export async function render(mount, ctx, helpers) {
     if (local.step === STEPS.length - 1) {
       reviewBox = el("div");
       panel.append(el("p", { class: "muted" }, "请核对全部内容，再确认创建。"), reviewBox);
-      if (local.proposal) renderReview(); else renderReview();
-    } else {
+      renderReview();    } else {
       renderers[local.step](panel);
       panel.addEventListener("input", markStepDirty);
       panel.addEventListener("change", markStepDirty);

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compactToolData, createTurnGuard, toolResult, validateReadParams } from "./toolRuntime.js";
+import { compactToolData, createTurnGuard, toolFailure, toolResult, validateReadParams } from "./toolRuntime.js";
 
 describe("tool execution contract and bounded context", () => {
   it.each(["cancelled", "failed", "disabled", "blocked"])("does not misclassify a successful read of a %s record", (status) => {
@@ -52,6 +52,7 @@ describe("tool execution contract and bounded context", () => {
     const guard = createTurnGuard();
     guard.before("run", "classclaw_read", { resource: "class_summary", class_id: "a" });
     guard.after("run", "classclaw_commit_write", undefined, "STUDENT_NO_CONFLICT");
+    expect(guard.before("run", "classclaw_analyze_interaction", { text: "重试旧请求" })).toContain("结束本轮");
     expect(guard.before("run", "classclaw_propose_write", { payload: { new: "replacement" } })).toContain("写入已失败");
     expect(guard.before("run", "classclaw_cancel_write", { proposal_id: "p" })).toBeUndefined();
     guard.after("run", "classclaw_cancel_write", toolResult({ status: "cancelled" }));
@@ -64,5 +65,23 @@ describe("tool execution contract and bounded context", () => {
     expect(guard.before("run", "classclaw_read", { q: "extra" })).toContain("上限");
     expect(guard.before(undefined, "classclaw_read", {})).toBeUndefined();
     expect(guard.before(undefined, "classclaw_read", {})).toBeUndefined();
+  });
+
+  it("stops timeout retries and polling even when the model changes message IDs or text", () => {
+    const guard = createTurnGuard();
+    guard.before("run", "classclaw_analyze_interaction", { external_message_id: "a", text: "补充性别" });
+    guard.after("run", "classclaw_analyze_interaction", toolFailure(new DOMException("timed out", "TimeoutError")));
+    expect(guard.before("run", "classclaw_analyze_interaction", { external_message_id: "b", text: "改写输入" })).toContain("结束本轮");
+    expect(guard.before("run", "classclaw_read", { resource: "interaction_analysis", analysis_id: "a" })).toContain("结束本轮");
+    expect(guard.before("run", "classclaw_propose_write", {})).toContain("禁止绕过");
+    expect(guard.before("next", "classclaw_analyze_interaction", { external_message_id: "b", text: "补充性别" })).toBeUndefined();
+  });
+
+  it("allows only one analysis per user turn and counts blocked calls toward the limit", () => {
+    const guard = createTurnGuard();
+    expect(guard.before("run", "classclaw_analyze_interaction", { text: "a" })).toBeUndefined();
+    expect(guard.before("run", "classclaw_analyze_interaction", { text: "b" })).toContain("已发起分析");
+    for (let i = 0; i < 22; i++) guard.before("run", "classclaw_analyze_interaction", { text: "b" });
+    expect(guard.before("run", "classclaw_read", { q: "new" })).toContain("上限");
   });
 });

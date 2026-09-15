@@ -11,7 +11,6 @@ from sqlalchemy.orm import Session
 from app.core.errors import AppError
 from app.services.common import audit
 
-
 EDITABLE_FILES = {
     "AGENTS.md": {"label": "系统提示词", "description": "核心行为、工作流和回复规则。"},
     "SOUL.md": {"label": "Soul", "description": "人格、语气、价值取向与边界。"},

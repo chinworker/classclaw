@@ -115,7 +115,6 @@ button:disabled { opacity: 0.55; cursor: not-allowed; }
 }
 .user-menu-pop button { display: block; width: 100%; text-align: left; padding: 8px 10px; border-radius: 8px; }
 .user-menu-pop button:hover { background: var(--primary-soft); }
-.menu-backdrop { position: fixed; inset: 0; z-index: 40; }
 
 .content { padding: 22px; max-width: 1280px; width: 100%; margin: 0 auto; }
 .hamburger { display: none; }
@@ -499,6 +498,8 @@ input[type="date"]::-webkit-calendar-picker-indicator, input[type="datetime-loca
 .agent-chat-bar > div { display: flex; align-items: center; gap: 9px; }
 .agent-thinking-control { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12px; }
 .agent-thinking-select { width: auto; max-width: 190px; min-height: 32px; font-size: 12px; }
+.agent-chat-bar > .agent-thinking-settings { flex-direction: column; align-items: flex-end; gap: 4px; min-width: 0; }
+.agent-thinking-note { max-width: 32rem; font-size: 12px; line-height: 1.5; }
 .agent-online {
   display: inline-flex; align-items: center; gap: 5px; color: var(--success); font-size: 12px; font-weight: 600;
 }
@@ -580,18 +581,7 @@ input[type="date"]::-webkit-calendar-picker-indicator, input[type="datetime-loca
 .agent-chat-send:hover { background: var(--primary-dark); }
 .agent-chat-stop { border: 1px solid #E3B6B1; background: #FFF7F6; color: var(--danger); }
 .agent-chat-compose-foot { display: flex; justify-content: space-between; gap: 10px; padding: 6px 5px 0; font-size: 11px; }
-.agent-binding-card {
-  overflow: hidden; border: 1px solid var(--border); border-radius: 16px; background: rgba(255, 255, 255, .94); box-shadow: var(--shadow);
-}
-.agent-binding-card summary { display: grid; grid-template-columns: 1fr auto; gap: 7px; padding: 14px; cursor: pointer; list-style: none; }
-.agent-binding-card summary::-webkit-details-marker { display: none; }
-.agent-binding-card summary > .muted { grid-column: 1 / -1; font-size: 12px; }
-.agent-binding-card[open] summary { border-bottom: 1px solid var(--border); }
-.agent-binding-body { padding: 14px; }
-.agent-binding-actions { display: flex; margin-top: 12px; }
 .agent-model-button { width: 100%; }
-.agent-binding-body .qr-panel { margin-top: 14px; }
-.agent-binding-body .qr-img { width: 100%; height: auto; aspect-ratio: 1; }
 .agent-model-settings { display: grid; gap: 18px; }
 .agent-model-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; }
 .agent-model-summary > div { display: grid; gap: 5px; min-width: 0; padding: 11px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg); }

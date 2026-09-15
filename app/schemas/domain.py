@@ -413,3 +413,10 @@ class ClassOnboardingUpdate(BaseModel):
 
 class WechatLoginWait(BaseModel):
     current_qr_data_url: str | None = Field(default=None, max_length=20_000)
+    login_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+
+
+class WechatLoginVerify(BaseModel):
+    login_id: str = Field(pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+    challenge_id: str = Field(pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+    code: str = Field(pattern=r"^[0-9]{1,12}$", repr=False)

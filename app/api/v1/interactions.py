@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Annotated
+
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
@@ -9,12 +11,11 @@ from app.database import get_db
 from app.schemas.domain import InteractionAnalyzeCreate
 from app.services import interactions as service
 
-
 router = APIRouter(tags=["OpenClaw 统一输入分析"])
 
 
 @router.post("/interaction-analyses", status_code=201)
-async def interaction_analyze(request: Request, body: InteractionAnalyzeCreate, db: Session = Depends(get_db)):
+async def interaction_analyze(request: Request, body: InteractionAnalyzeCreate, db: Annotated[Session, Depends(get_db)]):
     principal = principal_from_request(request)
     if not principal.is_admin:
         if body.class_id:
@@ -27,8 +28,9 @@ async def interaction_analyze(request: Request, body: InteractionAnalyzeCreate, 
 
 
 @router.get("/interaction-analyses/{analysis_id}")
-def interaction_get(request: Request, analysis_id: str, db: Session = Depends(get_db)):
-    analysis = service.get(db, analysis_id)
+def interaction_get(request: Request, analysis_id: str, db: Annotated[Session, Depends(get_db)]):
+    result = service.get(db, analysis_id)
+    analysis = result["analysis"]
     if analysis.class_id:
         require_owned_class(request, analysis.class_id)
-    return ok(request, analysis)
+    return ok(request, result)

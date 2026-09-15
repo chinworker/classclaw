@@ -11,7 +11,6 @@ from zoneinfo import ZoneInfo
 
 from app.config import settings
 
-
 _SAFE_AGENT_ID = re.compile(r"^[A-Za-z0-9_-]+$")
 _ERROR_STOP_REASONS = {"error", "aborted", "timeout"}
 _MAX_FILES = 256

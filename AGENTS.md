@@ -37,7 +37,9 @@ ClassClaw 是供 OpenClaw 智能体和网页端共用的轻量班级管理系统
 - `scripts/reset_admin_password.py`：仅限本地终端将现有唯一管理员密码重置为 `.env` 的 `CLASSCLAW_DEFAULT_ADMIN_PASSWORD`；不输出密码，事务性撤销旧会话并审计，不允许新增 HTTP/Agent 重置入口
 - `web/`：网页前端（`index.html` 班级创建引导 + 业务页面；`test.html` 后端综合验收台）
 - `web/js/agentChatStore.js`：按用户/班级隔离的内存对话列表与在途请求；新建/切换对话、站内页面卸载不能取消已发送聊天请求，原文不写入浏览器持久存储。页面 `dispose()` 只释放视图和输入设备资源；退出登录须清空对话并取消请求
+- 教师网页“班级 Agent”只负责对话；创建、模型设置、微信绑定/重新绑定在 `web/js/pages/account.js` 的账户设置中。微信 account alias 不代表已绑定，等待结果未返回新二维码时必须保留当前图片；二维码只存视图内存，离页清理扫码轮询不能取消聊天请求
 - 班级思考强度统一来自 `openclaw.class_agent_thinking` / `CLASSCLAW_OPENCLAW_CLASS_AGENT_THINKING`，网页会话可独立覆盖，禁止用修改 Agent 全局配置实现会话覆盖。网页默认 SSE，断流不得视为成功；Gateway 私有会话设置端点只允许已绑定班级网页 key 和 `thinkingLevel`，不得扩为任意 RPC
+- 网页思考选项必须来自 Gateway `agents.list` 返回的本班模型 `thinkingLevels`，区分档位 ID 与显示标签（如 `low` / `on`）；发送前刷新并由后端复核，不得写死模型能力表。配置默认不兼容时使用 Gateway 有效默认并在网页提示，显式不支持的选择不得静默替换
 - `integrations/openclaw/`：OpenClaw 原生插件与兼容层
 - `tests/`：pytest 测试（内存 SQLite）
 - `docs/`：详细设计文档（架构、数据库、分析、账户、onboarding、OpenClaw 集成等），改动涉及对应领域时应同步更新
@@ -118,6 +120,7 @@ python scripts/cleanup_attachments.py   # 默认只报告无引用附件，不�
 - 轻量提取 agent 默认启用（`CLASSCLAW_OPENCLAW_EXTRACTOR_ENABLED=true`，无需设置）：JSON 提取走自动创建的 `classclaw-extractor`（无工具、清洗规范在其工作区 AGENTS.md），创建失败自动回退主智能体与完整内联提示词；`CLASSCLAW_OPENCLAW_EXTRACTOR_ENABLED=false` 可关闭。
 - 后端通过 Gateway `/tools/invoke` 验证插件可用（`classclaw_health`），用 `/v1/responses` 处理网页上传文件；连接失败时后端会阻止业务 API。
 - 微信二维码 provider discovery 兼容层位于 `integrations/openclaw/openclaw-weixin-compat`。
+- 微信兼容层 `.2` 为 ClassClaw 提供 Gateway 认证的私有网页登录端点：短轮询不销毁会话，新二维码同步返回网页，数字验证码通过本班 `/agent-binding/verify` 提交。`login_id` / `challenge_id` 隔离旧请求；二维码和验证码仅在内存中处理，禁止日志或持久存储。运行 `cd integrations/openclaw/openclaw-weixin-compat && npm test` 验证，官方消息收发与 CLI 登录不变
 - 提取会话（后端分析调用）是一次性设计：唯一 `user` 键、无记忆、不复用（避免原文累积与污染），治理用 OpenClaw session 容量上限与 `openclaw sessions cleanup`（后端按 `CLASSCLAW_OPENCLAW_SESSION_CLEANUP_HOURS` 定时经 CLI 触发，另有 `/api/v1/admin/openclaw/sessions/cleanup` 手动端点）；聊天会话长期复用，不要清理。详见 `docs/openclaw-integration.md` §8。
 - 安装与详细命令见 `docs/openclaw-integration.md` 和插件 README。
 

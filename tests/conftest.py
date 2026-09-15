@@ -83,6 +83,9 @@ def client(db: Session, monkeypatch):
     async def no_runtime_sync():
         return None
 
+    async def no_real_wechat(*_args, **_kwargs):
+        raise AssertionError("Tests must mock the private WeChat login transport")
+
     # TestClient runs the lifespan too: never initialize/migrate real local data.
     @contextmanager
     def startup_session():
@@ -91,6 +94,7 @@ def client(db: Session, monkeypatch):
     monkeypatch.setattr("app.main.init_db", lambda: None)
     monkeypatch.setattr("app.main.writer_session", startup_session)
     monkeypatch.setattr("app.services.openclaw_provisioning.sync_class_agent_thinking_defaults", no_runtime_sync)
+    monkeypatch.setattr("app.services.wechat_login.call", no_real_wechat)
     monkeypatch.setattr(openclaw_bridge, "connection_status", connected)
     monkeypatch.setattr(openclaw_bridge, "ensure_extractor_agent", extractor_off)
     app.dependency_overrides[get_db] = override
@@ -99,4 +103,4 @@ def client(db: Session, monkeypatch):
         headers["Authorization"] = f"Bearer {settings.api_token}"
     with TestClient(app, headers=headers) as value:
         yield value
-    app.dependency_overrides.clear()
+    app.dependency_overrides.pop(get_db, None)

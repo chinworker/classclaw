@@ -50,7 +50,7 @@ def record_openclaw_usage(payload: dict[str, Any], *, user: str, model: str) -> 
                 )
             )
             target_db.commit()
-    except Exception as exc:  # noqa: BLE001 -- telemetry must not fail a completed business operation
+    except Exception as exc:
         # Never commit or roll back a caller's business transaction. Telemetry
         # failures must not turn a successful model response into a failed call.
         logging.getLogger(__name__).warning("AI usage record skipped: %s", type(exc).__name__)

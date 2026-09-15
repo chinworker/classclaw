@@ -37,7 +37,7 @@ async def lifespan(_app: FastAPI):
     async def prepare_agents():
         try:
             await openclaw_provisioning.sync_class_agent_thinking_defaults()
-        except Exception as exc:  # noqa: BLE001 - Gateway startup failure must not block deterministic APIs
+        except Exception as exc:
             get_logger("startup").warning("Class-agent defaults sync failed: %s", type(exc).__name__)
         if settings.openclaw_extractor_enabled:
             await openclaw_bridge.prepare_extractor_agent()
@@ -99,7 +99,10 @@ async def app_error_handler(request: Request, exc: AppError):
 
 @app.exception_handler(RequestValidationError)
 async def validation_error_handler(request: Request, exc: RequestValidationError):
-    return JSONResponse(status_code=422, content={"success": False, "error": {"code": "VALIDATION_ERROR", "message": "请求参数校验失败", "details": {"errors": exc.errors()}}, "request_id": request.state.request_id})
+    errors = exc.errors()
+    if request.url.path.endswith("/agent-binding/verify"):
+        errors = [{key: value for key, value in error.items() if key in {"loc", "msg", "type"}} for error in errors]
+    return JSONResponse(status_code=422, content={"success": False, "error": {"code": "VALIDATION_ERROR", "message": "请求参数校验失败", "details": {"errors": errors}}, "request_id": request.state.request_id})
 
 
 @app.exception_handler(OperationalError)

@@ -139,6 +139,7 @@ def test_class_agent_can_be_provisioned_without_wechat(client, db, sample, tmp_p
     patch = next(params for method, params in calls if method == "config.patch")
     runtime = __import__("json").loads(patch["raw"])
     assert "bindings" not in runtime
+    assert "channels" not in runtime
     assert runtime["agents"]["list"][0]["skills"] == ["classclaw-manager"]
     assert runtime["plugins"]["entries"]["classclaw"]["config"]["agentClasses"][f"classclaw-{cls.id}"] == cls.id
     assert (tmp_path / cls.id / "SOUL.md").is_file()
@@ -384,17 +385,24 @@ def test_class_specific_agent_and_wechat_binding_flow(client, db, tmp_path, monk
             return {"ok": True, "agentId": "class-agent-1", "name": "高二一班专属智能体", "workspace": binding.workspace_path}
         if method == "agents.update":
             return {"ok": True}
-        if method == "web.login.start":
-            return {"connected": False, "accountId": "class-wx-1", "qrDataUrl": "https://weixin.example/login/session-1", "message": "请扫码"}
-        if method == "web.login.wait":
-            return {"connected": True, "accountId": "class-wx-1", "message": "已连接"}
+        if method == "health":
+            return {"ok": True}
         if method == "config.get":
             return {"hash": "config-hash", "config": {"bindings": []}}
         if method == "config.patch":
             return {"ok": True}
         raise AssertionError(method)
 
+    async def login_rpc(target_class, action, **params):
+        assert target_class == class_id
+        calls.append((f"login.{action}", params))
+        value = {"loginId": "22222222-2222-2222-2222-222222222222", "connected": action == "wait", "accountId": "class-wx-1"}
+        if action == "start":
+            value["qrDataUrl"] = "https://weixin.example/login/session-1"
+        return value
+
     monkeypatch.setattr(openclaw_provisioning, "admin_rpc", rpc)
+    monkeypatch.setattr("app.services.wechat_login.call", login_rpc)
     started_binding = client.post(f"/api/v1/classes/{class_id}/agent-binding/start", json={"force": False})
     assert started_binding.status_code == 200
     binding_result = started_binding.json()["data"]
@@ -407,7 +415,7 @@ def test_class_specific_agent_and_wechat_binding_flow(client, db, tmp_path, monk
     assert "Fill this in" not in (tmp_path / "class-agent" / "IDENTITY.md").read_text()
     assert sum((tmp_path / "class-agent" / name).stat().st_size for name in workspace_files) < 3000
     assert class_id in (tmp_path / "class-agent" / ".classclaw-agent.json").read_text()
-    waited = client.post(f"/api/v1/classes/{class_id}/agent-binding/wait", json={"current_qr_data_url": binding_result["qr_content"]})
+    waited = client.post(f"/api/v1/classes/{class_id}/agent-binding/wait", json={"login_id": binding_result["login_id"]})
     assert waited.status_code == 200
     assert waited.json()["data"]["connected"] is True
     assert waited.json()["data"]["route_ready"] is True
@@ -416,10 +424,10 @@ def test_class_specific_agent_and_wechat_binding_flow(client, db, tmp_path, monk
     create_call = next(params for method, params in calls if method == "agents.create")
     assert create_call["name"] == f"classclaw-{class_id}"
     assert "高二一班" not in create_call["name"]
-    patch = next(params for method, params in calls if method == "config.patch")
+    patch = next(params for method, params in reversed(calls) if method == "config.patch")
     assert '"agentId": "class-agent-1"' in patch["raw"]
-    wait_call = next(params for method, params in calls if method == "web.login.wait")
-    assert wait_call["currentQrDataUrl"].startswith("data:image/png;base64,")
+    wait_call = next(params for method, params in calls if method == "login.wait")
+    assert wait_call == {"loginId": binding_result["login_id"]}
     runtime_config = __import__("json").loads(patch["raw"])["agents"]["list"][0]
     assert runtime_config["contextInjection"] == "continuation-skip"
     assert runtime_config["thinkingDefault"] == "off"
@@ -499,11 +507,18 @@ def test_binding_recovers_agent_created_before_local_id_was_saved(client, db, tm
             return {"agents": [{"id": f"classclaw-{cls.id}", "name": f"classclaw-{cls.id}", "workspace": str(workspace)}]}
         if method == "agents.update":
             return {"ok": True}
-        if method == "web.login.start":
-            return {"connected": False, "accountId": f"class-{cls.id}", "qrDataUrl": "weixin://login/session-2"}
+        if method == "config.get":
+            return {"config": {}}
+        if method in {"config.patch", "health"}:
+            return {"ok": True}
         raise AssertionError(method)
 
+    async def login_rpc(_class_id, action, **_params):
+        assert action == "start"
+        return {"connected": False, "loginId": "22222222-2222-2222-2222-222222222222", "qrDataUrl": "weixin://login/session-2"}
+
     monkeypatch.setattr(openclaw_provisioning, "admin_rpc", rpc)
+    monkeypatch.setattr("app.services.wechat_login.call", login_rpc)
     response = client.post(f"/api/v1/classes/{cls.id}/agent-binding/start", json={"force": False})
     assert response.status_code == 200
     db.refresh(binding)

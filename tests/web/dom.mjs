@@ -63,10 +63,10 @@ class TestNode extends EventTarget {
 
 export function installDom() {
   globalThis.Node = TestNode;
-  globalThis.document = {
+  globalThis.document = Object.assign(new EventTarget(), {
     body: new TestNode("body"), activeElement: null,
     createElement: (tag) => new TestNode(tag), createTextNode: (text) => new TestNode("#text", text),
-  };
+  });
   const values = new Map();
   globalThis.sessionStorage = { getItem: (key) => values.get(key), setItem: (key, value) => values.set(key, value), removeItem: (key) => values.delete(key) };
   globalThis.window = Object.assign(new EventTarget(), { setTimeout, clearTimeout });

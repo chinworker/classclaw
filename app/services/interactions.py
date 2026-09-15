@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import timedelta
 from typing import Any
 
@@ -70,7 +71,8 @@ def _context(db: Session, class_id: str | None) -> dict[str, Any]:
             )
         )
         result["selected_class"] = {"id": cls.id, "name": cls.name, "grade": cls.grade}
-        result["students"] = [{"id": row.id, "student_no": row.student_no, "name": row.name} for row in students]
+        result["students"] = [{"id": row.id, "student_no": row.student_no, "name": row.name, "gender": row.gender,
+                               "status": row.status} for row in students]
         result["subjects"] = [{"name": row.name, "teacher": row.teacher, "default_full_score": row.default_full_score} for row in subjects]
         result["periods"] = [{"period_no": row.period_no, "name": row.name} for row in periods]
         result["homework"] = [{"id": row.id, "title": row.title, "subject": row.subject, "assigned_date": row.assigned_date.isoformat(), "status": row.status} for row in homework]
@@ -174,6 +176,7 @@ async def analyze(db: Session, data: InteractionAnalyzeCreate) -> dict[str, Any]
                         requested_by=data.requested_by,
                         idempotency_key=f"interaction:{analysis.id}:operation:{index}",
                     ),
+                    bound_class_id=data.class_id,
                 )
                 proposal_ids.append(proposal.id)
                 accepted_operations.append(operation)
@@ -202,12 +205,12 @@ async def analyze(db: Session, data: InteractionAnalyzeCreate) -> dict[str, Any]
         analysis.analyzed_at = now()
         db.commit()
         return _result(db, analysis)
-    except Exception as exc:
+    except (Exception, asyncio.CancelledError) as exc:
         db.rollback()
         failed = db.get(InteractionAnalysis, analysis.id)
         if failed:
             failed.status = "failed"
-            failed.error_message = str(exc)[:2000]
+            failed.error_message = "分析已取消，请重新发送" if isinstance(exc, asyncio.CancelledError) else str(exc)[:2000]
             failed.analyzed_at = now()
             db.commit()
         raise

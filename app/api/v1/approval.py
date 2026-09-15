@@ -12,6 +12,7 @@ from app.models.entities import ClassOnboardingSession, ClassSubject, WritePropo
 from app.schemas.domain import (
     ClassOnboardingCreate,
     ClassOnboardingUpdate,
+    WechatLoginVerify,
     WechatLoginWait,
     WriteProposalBatchConfirm,
     WriteProposalConfirm,
@@ -240,7 +241,17 @@ async def class_agent_binding_wait(request: Request, class_id: str, body: Wechat
     _require_web(request)
     require_owned_class(request, class_id)
     admin_console.require_feature("feature.wechat_binding")
-    return ok(request, await openclaw_provisioning.wait_wechat_binding(db, class_id, body.current_qr_data_url), "微信绑定状态已刷新")
+    return ok(request, await openclaw_provisioning.wait_wechat_binding(db, class_id, login_id=body.login_id), "微信绑定状态已刷新")
+
+
+@router.post("/classes/{class_id}/agent-binding/verify")
+async def class_agent_binding_verify(request: Request, class_id: str, body: WechatLoginVerify, db: Session = Depends(get_db)):
+    _require_web(request)
+    require_owned_class(request, class_id)
+    admin_console.require_feature("feature.wechat_binding")
+    return ok(request, await openclaw_provisioning.wait_wechat_binding(
+        db, class_id, login_id=body.login_id, challenge_id=body.challenge_id, code=body.code,
+    ), "微信验证状态已刷新")
 
 
 @router.get("/classes/{class_id}/subjects")

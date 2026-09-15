@@ -1,8 +1,9 @@
 {
   "name": "classclaw-openclaw-weixin-compat",
-  "version": "2.4.6-classclaw.1",
+  "version": "2.4.6-classclaw.2",
   "type": "module",
   "private": true,
+  "scripts": { "test": "node --test *.test.mjs" },
   "dependencies": {
     "@tencent-weixin/openclaw-weixin": "2.4.6"
   },

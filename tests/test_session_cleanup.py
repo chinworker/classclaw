@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 
 import pytest
 
 from app.config import settings
 from app.core.errors import AppError
 from app.services import openclaw_bridge as bridge
-from dataclasses import replace
 
 
 class FakeProc:

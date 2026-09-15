@@ -44,7 +44,7 @@ const TEACHER_NAV = [
     { path: "/workflow", label: "待确认记录" },
   ]},
   { group: "智能体", items: [
-    { path: "/agent", label: "班级 Agent 对话" },
+    { path: "/agent", label: "班级 Agent" },
   ]},
   { group: "账户", items: [
     { path: "/account", label: "账户设置" },
@@ -101,7 +101,7 @@ const routes = [
   { path: "/analytics/class", title: "班级分析", loader: () => import("./js/pages/analytics.js?v=20260901-analytics-fix"), requiresClass: true, section: "class" },
   { path: "/analytics/attention", title: "重点关注", loader: () => import("./js/pages/analytics.js?v=20260901-analytics-fix"), requiresClass: true, section: "attention" },
   { path: "/workflow", title: "待确认记录", loader: () => import("./js/pages/workflow.js") },
-  { path: "/agent", title: "班级 Agent 对话", loader: () => import("./js/pages/agent.js?v=20260909-conversations") },
+  { path: "/agent", title: "班级 Agent", loader: () => import("./js/pages/agent.js?v=20260910-account-binding") },
   { path: "/admin/overview", title: "运行概览", loader: () => import("./js/pages/adminOverview.js"), adminOnly: true },
   { path: "/admin/users", title: "用户管理", loader: () => import("./js/pages/adminUsers.js"), adminOnly: true },
   { path: "/admin/classes", title: "班级管理", loader: () => import("./js/pages/adminClasses.js"), adminOnly: true },
@@ -116,7 +116,7 @@ const routes = [
   { path: "/admin/audit", title: "审计日志", loader: () => import("./js/pages/adminAudit.js"), adminOnly: true },
   { path: "/admin/settings", title: "ClassClaw 系统配置", loader: () => import("./js/pages/adminSettings.js"), adminOnly: true },
   { path: "/admin/maintenance", title: "备份与系统维护", loader: () => import("./js/pages/adminMaintenance.js"), adminOnly: true },
-  { path: "/account", title: "账户设置", loader: () => import("./js/pages/account.js") },
+  { path: "/account", title: "账户设置", loader: () => import("./js/pages/account.js?v=20260911-wechat-verification") },
   { path: "/welcome", title: "创建班级", loader: () => import("./js/pages/welcome.js"), bare: true },
   { path: "/onboarding", title: "班级创建向导", loader: () => import("./js/pages/onboarding.js?v=20260901-onboarding-actions") },
   { path: "/onboarding/:id", title: "班级创建向导", loader: () => import("./js/pages/onboarding.js?v=20260901-onboarding-actions") },
@@ -217,10 +217,11 @@ function buildShell() {
     el("span", { class: "muted", style: { fontSize: "12px" } }, state.user?.role === "admin" ? "管理员" : "班主任"));
   const menuBox = el("div", { class: "user-menu" }, menuBtn);
   menuBtn.addEventListener("click", () => {
-    if (menuBox.querySelector(".user-menu-pop")) { menuBox.querySelector(".user-menu-pop").remove(); return; }
+    const existing = menuBox.querySelector(".user-menu-pop");
+    if (existing) { existing.remove(); document.removeEventListener("mousedown", dismiss); return; }
     const pop = el("div", { class: "user-menu-pop", role: "menu" },
       el("button", { type: "button", onclick: () => { navigate("/account"); pop.remove(); } }, "账户设置"),
-      el("button", { type: "button", onclick: async () => { pop.remove(); await logout(); renderLogin("已退出登录"); } }, "退出登录"));
+      el("button", { type: "button", onclick: async () => { pop.remove(); document.removeEventListener("mousedown", dismiss); await logout(); renderLogin("已退出登录"); } }, "退出登录"));
     menuBox.append(pop);
     const dismiss = (e) => { if (!menuBox.contains(e.target)) { pop.remove(); document.removeEventListener("mousedown", dismiss); } };
     document.addEventListener("mousedown", dismiss);
@@ -244,12 +245,17 @@ function openSidebar() {
   backdrop.addEventListener("click", closeSidebar);
   document.body.append(backdrop);
   shell.backdrop = backdrop;
-  const onKey = (e) => { if (e.key === "Escape") { closeSidebar(); document.removeEventListener("keydown", onKey); } };
+  const onKey = (e) => { if (e.key === "Escape") closeSidebar(); };
+  shell.sidebarOnKey = onKey;
   document.addEventListener("keydown", onKey);
 }
 function closeSidebar() {
   shell?.sidebar.classList.remove("open");
   shell?.backdrop?.remove();
+  if (shell?.sidebarOnKey) {
+    document.removeEventListener("keydown", shell.sidebarOnKey);
+    shell.sidebarOnKey = null;
+  }
 }
 
 async function refreshOpenclawDot({ force = false } = {}) {

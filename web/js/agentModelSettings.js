@@ -19,14 +19,15 @@ function selectModel(items, selected, emptyLabel, { speech = false } = {}) {
   return select;
 }
 
-export async function openAgentModelSettings(classId, { onSaved = null } = {}) {
+export async function openAgentModelSettings(classId, { onSaved = null, isActive = () => true, onClosed = null } = {}) {
   let settings;
   try {
     settings = await api(`/classes/${classId}/agent-chat/models`);
   } catch (error) {
-    toast(error.message, "error");
+    if (isActive()) toast(error.message, "error");
     return;
   }
+  if (!isActive()) return;
   const current = settings.configured;
   const main = selectModel(settings.models, current.main_model, `继承默认模型（${settings.effective.main_model || "未配置"}）`);
   const image = selectModel(settings.image_models, current.image_model, "跟随主模型 / OpenClaw 全局图片模型");
@@ -48,6 +49,7 @@ export async function openAgentModelSettings(classId, { onSaved = null } = {}) {
     title: `模型设置 · ${settings.agent_name}`,
     body,
     wide: true,
+    onClose: onClosed,
     actions: [
       { label: "取消", kind: "secondary" },
       {
@@ -55,6 +57,7 @@ export async function openAgentModelSettings(classId, { onSaved = null } = {}) {
         kind: "primary",
         closeOnDone: false,
         onClick: async ({ setSubmitting }) => {
+          if (!isActive()) { modal.close(); return false; }
           const values = { main_model: main.value || null, image_model: image.value || null, speech_model: speech.value || null };
           const changes = Object.fromEntries(Object.entries(values).filter(([key, value]) => value !== (current[key] || null)));
           if (!Object.keys(changes).length) {
@@ -64,11 +67,12 @@ export async function openAgentModelSettings(classId, { onSaved = null } = {}) {
           setSubmitting(true);
           try {
             const result = await api(`/classes/${classId}/agent-chat/models`, { method: "PATCH", body: changes });
+            if (!isActive()) { modal.close(); return false; }
             toast(result.restart_requested ? "模型设置已保存，Gateway 正在重启" : "模型设置已保存", "success");
             modal.close();
             if (onSaved) await onSaved(result);
           } catch (error) {
-            toast(error.message, "error");
+            if (isActive()) toast(error.message, "error");
             setSubmitting(false);
           }
           return false;
@@ -76,4 +80,5 @@ export async function openAgentModelSettings(classId, { onSaved = null } = {}) {
       },
     ],
   });
+  return modal;
 }

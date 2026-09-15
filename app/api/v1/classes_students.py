@@ -8,8 +8,8 @@ from app.core.responses import ok
 from app.core.security import principal_from_request, require_owned_class, require_owned_student
 from app.database import get_db
 from app.schemas.domain import ClassCreate, ClassUpdate, StudentCreate, StudentUpdate
-from app.services import class_student as service, openclaw_provisioning
-
+from app.services import class_student as service
+from app.services import openclaw_provisioning
 
 router = APIRouter(tags=["班级与学生"])
 

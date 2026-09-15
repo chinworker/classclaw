@@ -37,13 +37,17 @@ openclaw config set plugins.entries.classclaw.config.timeoutMs 120000
 openclaw gateway restart
 ```
 
-`/tools/invoke` 用于验证 ClassClaw 插件确实已加载，`/v1/responses` 用于处理网页上传文件。两者都保持在本机或可信内网，不要暴露到公网。`timeoutMs` 是智能体调用 `classclaw_analyze_interaction` 等工具的等待上限，必须不小于 ClassClaw TOML 的 `openclaw.timeout_seconds`，否则分析较慢时工具调用会先超时失败。
+`/tools/invoke` 用于验证 ClassClaw 插件确实已加载，`/v1/responses` 用于处理网页上传文件。两者都保持在本机或可信内网，不要暴露到公网。`timeoutMs` 是智能体调用 `classclaw_analyze_interaction` 等工具的等待上限，默认 120000 毫秒，必须不小于 ClassClaw TOML 的 `openclaw.timeout_seconds`，否则分析较慢时工具调用会先超时失败。网页整轮另有 120 秒上限，分析需要的读操作应保持最少；分析超时或返回进行中时结束本轮，不反复请求或轮询。
 
-网页“班级 Agent 对话”同样由 ClassClaw 后端代理到 `/v1/responses`，后端根据班级绑定选择 `openclaw/<class-agent-id>`，Gateway Token 永不发送到浏览器。每个“新对话”使用独立稳定的会话键，连续消息保留上下文。语音由浏览器先转成可编辑文字；文件先保存为本班附件，再以已保存的 attachment ids 和文件内容交给 Agent，禁止重复上传。
+网页“班级 Agent”同样由 ClassClaw 后端代理到 `/v1/responses`，后端根据班级绑定选择 `openclaw/<class-agent-id>`，Gateway Token 永不发送到浏览器。每个“新对话”使用独立稳定的会话键，连续消息保留上下文。语音由浏览器先转成可编辑文字；文件先保存为本班附件，再以已保存的 attachment ids 和文件内容交给 Agent，禁止重复上传。
 
-对话页提供班级独立模型设置。主模型写入该班 `agents.list` runtime，网页和微信共用；图片模型只在该班网页图片消息上通过受控 `x-openclaw-model` 覆盖生效，避免修改全局 `agents.defaults.imageModel` 而影响其他班；语音识别模型使用 `provider/model` 调用 `openclaw infer audio transcribe`。浏览器录音只写入临时文件，转写结束后立即删除，文字仍需在输入框复核后发送。未选择服务端 STT 时继续使用 Web Speech API，不上传录音。候选来自 Gateway `models.list` 和 OpenClaw 音频 Provider 目录；不可用的主/图片模型及未配置凭据的 STT Provider 会被后端拒绝。
+`GET /api/v1/classes/{class_id}/agent-chat/thinking` 经登录和班级归属校验后，只投影 Gateway `agents.list` 中本班 Agent 的当前模型、`thinkingLevels` 和有效默认档位，并禁止缓存。网页据此生成本会话思考选项，二态模型的 `on` 标签显示为“开启”，请求仍发送原 ID。发送前网页刷新、后端复核，防止模型切换后继续提交旧档位；能力读取失败不会回退到写死的档位表。私有会话写端点仍只接收已绑定班级网页 `key` 和 `thinkingLevel`，无新增 Gateway 写入口或全局配置修改。
+
+“账户设置 → 班级 Agent · 绑定与设置”提供班级独立模型设置和微信绑定，对话页仅保留会话级思考设置。主模型写入该班 `agents.list` runtime，网页和微信共用；图片模型只在该班网页图片消息上通过受控 `x-openclaw-model` 覆盖生效，避免修改全局 `agents.defaults.imageModel` 而影响其他班；语音识别模型使用 `provider/model` 调用 `openclaw infer audio transcribe`。浏览器录音只写入临时文件，转写结束后立即删除，文字仍需在输入框复核后发送。未选择服务端 STT 时继续使用 Web Speech API，不上传录音。候选来自 Gateway `models.list` 和 OpenClaw 音频 Provider 目录；不可用的主/图片模型及未配置凭据的 STT Provider 会被后端拒绝。
 
 JSON 提取默认走自动创建的轻量提取智能体（详见 [专属智能体与微信使用说明](class-agent-onboarding.md) §5.1）：服务启动和首次分析时，后端会通过 admin RPC 创建并校正 `classclaw-extractor` 的独立 runtime。该 runtime 显式保存模型、开启 fast mode，关闭思考、推理、记忆与技能，并以 `minimal` profile 加 `deny: [session_status]` 将可调用工具降为零；不会继承 Main 的 coding profile。清洗规范自动写入 `data/openclaw-agents/_extractor/AGENTS.md`。管理员在 Agent Studio 保存的文件会记录为自定义内容，后续自动检查不会覆盖；需要跟随 ClassClaw 新默认规则时，可在管理端恢复系统默认。因此 OpenClaw 侧必须启用 `admin-http-rpc`；未启用时后端自动回退主智能体。
+
+回合守卫以 Agent、会话和 run ID 隔离，在进程内跨插件注册实例共享有时效的计数和参数哈希，防止嵌套提取加载插件后丢失状态。单条/批量提交失败会返回不可自动重试的结构化错误，本轮不允许重新分析、替换预览或重复提交；新预览仍需重新复核。班级默认工作区要求省略工具前自述，工具结束后再给结果。实际耗时和进一步优化方向见 [响应速度检查](agent-response-performance.md)。
 
 ## 2. 配置并启动 ClassClaw 后端
 
@@ -104,6 +108,14 @@ openclaw doctor
 8. 后端再次校验 revision、状态、有效期和班级归属；批量确认在一个事务中执行，任一条失败则全部回滚。
 
 `classclaw_register_message` 和 `classclaw_propose_write` 保留给兼容流程及已经确定的结构化操作。微信、自然语言、粘贴名单、OCR 和附件不得用它们绕过 `classclaw_analyze_interaction`。
+
+班级档案批量补充直接分析原文，上下文提供完整名单及现有 `gender`、`status`。相同变更用 `student.update.batch` 分组，例如按学号数值分别生成男女两组，仅补空值须带 `only_if_empty:["gender"]`。预览包含完整名单和变更字段旧值，确认时重新校验；任一组档案已变更则整批回滚。这样避免逐人生成大量 operation 导致输出截断或超过单次 10 个预览的限制。
+
+`classclaw_read` 的名单分页参数为 `page`、`page_size`，必须传到 REST 接口；分析查询返回 `{analysis, proposals}`，归属从 `analysis.class_id` 校验。分析取消会标记 `failed`，不会遗留永久 `analyzing`。工具分析错误保留真实 `analysis_id`（若已返回），并明确禁止本轮自动重试和绕过分析写入。
+
+会话思考档位被模型拒绝时返回 `CHAT_THINKING_UNSUPPORTED` 和过滤后的 `supported_levels`，提示用户选择可用档位；其他会话设置失败返回 `CHAT_THINKING_UNAVAILABLE`。错误日志仅记录档位、错误分类和 Gateway 状态码，不记录消息、Token 或完整会话内容。
+
+Gateway 拒绝信息中的可用档位可能是显示标签：例如本地 Kimi provider 2026.7.1 将 `low` 显示为 `on`，只支持 `off/low`（关闭/开启），不支持 `minimal`。错误解析必须把 `on` 还原为 `low` 并保留“开启”标签，不能丢掉这一可用选项；具体档位以安装版本的 provider profile 为准。
 
 ### 微信接入
 

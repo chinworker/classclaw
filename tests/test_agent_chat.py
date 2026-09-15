@@ -8,7 +8,8 @@ from typing import ClassVar
 
 from app.config import settings
 from app.models.entities import Attachment, AttachmentLink, ClassAgentBinding
-from app.services import agent_models, openclaw_bridge, openclaw_provisioning, operations
+from app.services import agent_models, agent_thinking, openclaw_bridge, openclaw_provisioning, operations
+from tests.helpers import teacher_for_class
 
 
 def _binding(db, class_id: str, workspace: Path) -> ClassAgentBinding:
@@ -88,18 +89,11 @@ def test_web_chat_rejects_empty_message_and_unprovisioned_agent(client, db, samp
 def test_web_chat_cannot_target_another_teachers_class(client, db, sample):
     owned, other, _ = sample
     admin_headers = {"Authorization": f"Bearer {settings.api_token}", "X-ClassClaw-Surface": "web"}
-    user = client.post(
-        "/api/v1/admin/users",
-        json={"username": "chatteacher"},
-        headers=admin_headers,
-    ).json()["data"]
-    owned.owner_user_id = user["id"]
-    db.commit()
-    token = client.post("/api/v1/auth/login", json={"username": "chatteacher", "password": "32767"}).json()["data"]["access_token"]
+    headers = teacher_for_class(client, owned, db, "chatteacher", admin_headers=admin_headers)
 
     response = client.post(
         f"/api/v1/classes/{other.id}/agent-chat/messages",
-        headers={"Authorization": f"Bearer {token}", "X-ClassClaw-Surface": "web"},
+        headers={"Authorization": f"Bearer {headers['Authorization'].split()[-1]}", "X-ClassClaw-Surface": "web"},
         data={"conversation_id": "97d646a7-153d-4370-aa17-bc49d3ba5593", "text": "查询其他班"},
     )
 
@@ -108,7 +102,7 @@ def test_web_chat_cannot_target_another_teachers_class(client, db, sample):
 
     models = client.get(
         f"/api/v1/classes/{other.id}/agent-chat/models",
-        headers={"Authorization": f"Bearer {token}", "X-ClassClaw-Surface": "web"},
+        headers={"Authorization": f"Bearer {headers['Authorization'].split()[-1]}", "X-ClassClaw-Surface": "web"},
     )
     assert models.status_code == 403
     assert models.json()["error"]["code"] == "CLASS_ACCESS_DENIED"
@@ -153,7 +147,12 @@ def test_gateway_chat_uses_persistent_class_session_and_prestaged_files(db, tmp_
     async def thinking(key, level):
         captured["thinking"] = {"key": key, "level": level}
 
+    async def thinking_options(agent_id):
+        assert agent_id == "class-agent-web"
+        return {"levels": [{"id": "high", "label": "高"}], "default_level": "high"}
+
     monkeypatch.setattr(openclaw_bridge, "connection_status", connected)
+    monkeypatch.setattr(agent_thinking, "agent_thinking_options", thinking_options)
     monkeypatch.setattr(openclaw_provisioning, "set_web_session_thinking", thinking)
     monkeypatch.setattr(openclaw_bridge, "get_http_client", lambda: Client())
     monkeypatch.setattr(openclaw_bridge, "record_openclaw_usage", lambda *_args, **_kwargs: None)
@@ -316,10 +315,12 @@ def test_model_voice_transcription_uses_temporary_file_and_selected_model(client
 def test_agent_chat_page_has_chatbot_voice_file_and_cancel_controls(client):
     app = client.get("/app/app.js").text
     page = client.get("/app/js/pages/agent.js").text
+    account = client.get("/app/js/pages/account.js").text
     store = client.get("/app/js/agentChatStore.js").text
     styles = client.get("/app/styles.css").text
 
-    assert "班级 Agent 对话" in app
+    assert 'label: "班级 Agent"' in app and 'title: "班级 Agent"' in app
+    assert "班级 Agent 对话" not in app
     assert "SpeechRecognition" in page and "webkitSpeechRecognition" in page
     assert "MediaRecorder" in page and "agent-chat/transcriptions" in page
     assert "FormData" in store and 'body.append("files", file)' in store
@@ -327,5 +328,7 @@ def test_agent_chat_page_has_chatbot_voice_file_and_cancel_controls(client):
     assert "agent-conversation-list" in page and "agentChatStore.stopMessage(conversation)" in page
     assert 'addEventListener("hashchange"' not in page
     assert "新对话" in page and "Shift+Enter 换行" in page
-    assert "模型设置" in page and "agentModelSettings" in page
+    assert "agentModelSettings" not in page and "qrBindingPanel" not in page
+    assert 'href: "#/account"' in page
+    assert "模型设置" in account and "agentModelSettings" in account and "qrBindingPanel" in account
     assert ".agent-chat-panel" in styles and ".agent-chat-composer" in styles

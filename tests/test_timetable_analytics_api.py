@@ -5,7 +5,6 @@ from pydantic import ValidationError
 from sqlalchemy import func, select
 
 from app.analytics.service import morning_briefing, student_comprehensive
-from app.core.errors import AppError
 from app.models.entities import LessonOverride, Reminder
 from app.schemas.domain import (
     ArrangementCreate,

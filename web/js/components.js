@@ -9,6 +9,30 @@ import { appConfig, featureEnabled } from "./config.js";
 
 const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
+// Modal / Drawer 共用的 overlay 统一封装：Escape、遮罩关闭、焦点恢复与 keydown 注册。
+function attachOverlay({ overlay, panel, closeBtn, onClose, escapeEnabled = () => true, tabTrap = null, focusTarget = null }) {
+  const previousFocus = document.activeElement;
+  let closed = false;
+  function close() {
+    if (closed) return;
+    closed = true;
+    overlay.remove();
+    document.removeEventListener("keydown", onKey, true);
+    if (previousFocus && previousFocus.focus) previousFocus.focus();
+    if (onClose) onClose();
+  }
+  function onKey(event) {
+    if (event.key === "Escape" && escapeEnabled()) { event.stopPropagation(); close(); }
+    if (event.key === "Tab" && tabTrap) tabTrap(event);
+  }
+  closeBtn?.addEventListener("click", close);
+  overlay.addEventListener("mousedown", (event) => { if (event.target === overlay && escapeEnabled()) close(); });
+  document.addEventListener("keydown", onKey, true);
+  document.body.append(overlay);
+  if (focusTarget) focusTarget.focus(); else closeBtn?.focus();
+  return { close };
+}
+
 export function openModal({ title, body, actions = [], wide = false, headClose = true, onClose = null, dismissible = true }) {
   const overlay = el("div", { class: "modal-overlay" });
   const modal = el("div", { class: `modal${wide ? " modal-wide" : ""}`, role: "dialog", "aria-modal": "true", "aria-label": title });
@@ -21,17 +45,6 @@ export function openModal({ title, body, actions = [], wide = false, headClose =
   overlay.append(modal);
 
   let submitting = false;
-  let closed = false;
-  const previousFocus = document.activeElement;
-
-  function close() {
-    if (closed) return;
-    closed = true;
-    overlay.remove();
-    document.removeEventListener("keydown", onKey, true);
-    if (previousFocus && previousFocus.focus) previousFocus.focus();
-    if (onClose) onClose();
-  }
 
   function setSubmitting(value) {
     submitting = value;
@@ -39,36 +52,36 @@ export function openModal({ title, body, actions = [], wide = false, headClose =
     foot.querySelectorAll("button").forEach((b) => { b.disabled = value; });
   }
 
-  function onKey(event) {
-    if (event.key === "Escape" && dismissible && !submitting) { event.stopPropagation(); close(); }
-    if (event.key === "Tab") {
-      const nodes = [...modal.querySelectorAll(FOCUSABLE)];
-      if (!nodes.length) return;
-      const first = nodes[0]; const last = nodes[nodes.length - 1];
-      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
-      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
-    }
-  }
+  const tabTrap = (event) => {
+    const nodes = [...modal.querySelectorAll(FOCUSABLE)];
+    if (!nodes.length) return;
+    const first = nodes[0]; const last = nodes[nodes.length - 1];
+    if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+    else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+  };
 
-  closeBtn?.addEventListener("click", close);
-  overlay.addEventListener("mousedown", (event) => { if (event.target === overlay && dismissible && !submitting) close(); });
-  document.addEventListener("keydown", onKey, true);
+  const shell = attachOverlay({
+    overlay,
+    panel: modal,
+    closeBtn,
+    onClose,
+    escapeEnabled: () => dismissible && !submitting,
+    tabTrap,
+    focusTarget: modal.querySelector("input, select, textarea") || modal.querySelector(FOCUSABLE),
+  });
 
   for (const action of actions) {
     const btn = el("button", { class: action.kind || "secondary", type: "button" }, action.label);
     btn.addEventListener("click", async () => {
       if (action.onClick) {
-        const result = await action.onClick({ close, setSubmitting, btn });
-        if (result !== false && action.closeOnDone) close();
-      } else close();
+        const result = await action.onClick({ close: shell.close, setSubmitting, btn });
+        if (result !== false && action.closeOnDone) shell.close();
+      } else shell.close();
     });
     foot.append(btn);
   }
 
-  document.body.append(overlay);
-  const firstInput = modal.querySelector("input, select, textarea") || modal.querySelector(FOCUSABLE);
-  if (firstInput) firstInput.focus();
-  return { close, setSubmitting, body: bodyBox, foot, modal };
+  return { close: shell.close, setSubmitting, body: bodyBox, foot, modal };
 }
 
 // 危险操作二次确认：写明对象与影响，可要求输入特定文本。
@@ -107,19 +120,7 @@ export function openDrawer({ title, body, wide = false }) {
   const closeBtn = el("button", { class: "modal-close", type: "button", "aria-label": "关闭" }, "关闭");
   drawer.append(el("div", { class: "modal-head" }, el("h3", {}, title), closeBtn), el("div", { class: "drawer-body" }, body));
   overlay.append(drawer);
-  let closed = false;
-  const previousFocus = document.activeElement;
-  function close() {
-    if (closed) return; closed = true;
-    overlay.remove(); document.removeEventListener("keydown", onKey, true);
-    if (previousFocus && previousFocus.focus) previousFocus.focus();
-  }
-  function onKey(event) { if (event.key === "Escape") { event.stopPropagation(); close(); } }
-  closeBtn.addEventListener("click", close);
-  overlay.addEventListener("mousedown", (event) => { if (event.target === overlay) close(); });
-  document.addEventListener("keydown", onKey, true);
-  document.body.append(overlay);
-  closeBtn.focus();
+  const { close } = attachOverlay({ overlay, panel: drawer, closeBtn });
   return { close, drawer };
 }
 
@@ -410,16 +411,24 @@ export function fileDropzone({
   return zone;
 }
 
-/* ---------------- QrBindingPanel（微信绑定，onboarding 与智能体页复用） ---------------- */
+/* ---------------- QrBindingPanel（微信绑定，onboarding、账户设置与管理端复用） ---------------- */
 
 export function qrBindingPanel(classId, { onDone = null, compact = false } = {}) {
   const box = el("div", { class: "qr-panel" });
-  const statusLine = el("p", { class: "muted" }, "尚未开始微信绑定");
+  const statusLine = el("p", { class: "muted" }, "点击下方按钮开始微信绑定或重新生成二维码。");
   const img = el("img", { class: "qr-img hidden", alt: "微信绑定二维码" });
   const errLine = el("p", { class: "field-error hidden", role: "alert" });
   const startBtn = el("button", { class: "primary", type: "button" }, "绑定微信 / 重新生成二维码");
   box.append(statusLine, img, errLine, el("div", { class: "row-gap" }, startBtn));
-  let pollTimer = null; let inFlight = false; let deadline = 0; let currentQr = null;
+  const codeInput = el("input", { type: "text", inputmode: "numeric", autocomplete: "one-time-code", maxlength: "12",
+    aria: { label: "微信数字验证码" } });
+  const verifyBtn = el("button", { class: "primary", type: "submit" }, "提交验证码");
+  const verifyForm = el("form", { class: "qr-verification hidden" },
+    field("手机微信显示的数字验证码", codeInput, "仅用于本次绑定，不会保存。请勿填写微信登录密码。"), verifyBtn);
+  box.append(verifyForm);
+  let pollTimer = null; let deadline = 0; let currentQr = null;
+  let generation = 0; let controller = null;
+  let loginId = null; let challengeId = null;
   let disposed = false;
 
   if (!featureEnabled("wechat_binding")) {
@@ -428,27 +437,54 @@ export function qrBindingPanel(classId, { onDone = null, compact = false } = {})
     statusLine.textContent = "管理员已在启动配置中关闭微信绑定。";
   }
 
-  function stopPoll() { clearTimeout(pollTimer); pollTimer = null; inFlight = false; }
-  function schedule(delay) { clearTimeout(pollTimer); pollTimer = setTimeout(poll, delay); }
+  function stopPoll() {
+    clearTimeout(pollTimer); pollTimer = null;
+    generation += 1;
+    controller?.abort(); controller = null;
+  }
+  const live = (run) => !disposed && run === generation;
+  function schedule(delay, run) {
+    clearTimeout(pollTimer);
+    if (live(run)) pollTimer = setTimeout(() => poll(run), delay);
+  }
+  function clearVerification() { challengeId = null; codeInput.value = ""; verifyForm.classList.add("hidden"); }
+  function clearQr() { currentQr = null; img.classList.add("hidden"); clearVerification(); }
 
   function showResult(result) {
     const binding = result.binding || {};
+    if (result.login_id) loginId = result.login_id;
+    if (result.restart_required) {
+      stopPoll(); clearQr(); startBtn.disabled = false;
+      statusLine.textContent = result.message || "本次微信登录已结束。";
+      errLine.textContent = "请点击重新生成二维码，再次扫码。";
+      errLine.classList.remove("hidden");
+      return true;
+    }
     if (result.connected && result.route_ready !== false) {
       stopPoll();
       statusLine.textContent = `绑定完成：智能体 ${binding.agent_name || ""} 已连接微信，消息路由已就绪。`;
-      img.classList.add("hidden"); errLine.classList.add("hidden");
+      clearQr(); errLine.classList.add("hidden"); startBtn.disabled = false;
       toast("微信绑定完成，消息路由已就绪");
       if (onDone) onDone(binding);
       return true;
     }
     statusLine.textContent = `${result.message || "请使用微信扫码。"} 页面正在自动等待扫码结果。`;
+    if (result.verification_required && result.challenge_id) {
+      if (challengeId !== result.challenge_id) codeInput.value = "";
+      challengeId = result.challenge_id;
+      verifyForm.classList.remove("hidden"); verifyBtn.disabled = false;
+      statusLine.textContent = result.message || "请在下方输入手机微信显示的数字验证码。";
+    } else clearVerification();
     if (result.qr_data_url) {
       currentQr = result.qr_data_url;
       errLine.classList.add("hidden");
-      img.onerror = () => { img.classList.add("hidden"); errLine.textContent = "二维码图片加载失败，请点击重新生成。"; errLine.classList.remove("hidden"); };
-      img.src = result.qr_data_url;
+      img.onerror = () => {
+        if (disposed) return;
+        clearQr(); errLine.textContent = "二维码图片加载失败，请点击重新生成。"; errLine.classList.remove("hidden");
+      };
+      if (img.src !== result.qr_data_url) img.src = result.qr_data_url;
       img.classList.remove("hidden");
-    } else {
+    } else if (!currentQr) {
       img.classList.add("hidden");
       errLine.textContent = "暂时没有拿到二维码，请点击重新生成。";
       errLine.classList.remove("hidden");
@@ -459,41 +495,86 @@ export function qrBindingPanel(classId, { onDone = null, compact = false } = {})
   async function start(force = true) {
     if (disposed || !featureEnabled("wechat_binding")) return;
     stopPoll();
+    const run = generation;
+    controller = new AbortController();
+    const previousQr = currentQr;
+    clearQr();
+    loginId = null;
+    errLine.classList.add("hidden");
     deadline = Date.now() + appConfig.wechat.qr_binding_timeout_seconds * 1000;
     startBtn.disabled = true;
     statusLine.textContent = "正在启动微信登录会话…";
     try {
-      const result = await api(`/classes/${classId}/agent-binding/start`, { method: "POST", body: { force } });
-      if (disposed) return;
-      if (!showResult(result)) schedule(appConfig.wechat.qr_initial_poll_ms);
+      const result = await api(`/classes/${classId}/agent-binding/start`, { method: "POST", body: { force }, signal: controller.signal });
+      if (!live(run)) return;
+      if (!box.isConnected) { stopPoll(); return; }
+      if (!showResult(result)) schedule(appConfig.wechat.qr_initial_poll_ms, run);
     } catch (error) {
-      if (disposed) return;
+      if (!live(run)) return;
       statusLine.textContent = `无法开始绑定：${error.message}`;
       if (error.code === "WECHAT_QR_UNAVAILABLE") { errLine.textContent = "二维码不可用，请重新生成。"; errLine.classList.remove("hidden"); }
       if (error.code === "OPENCLAW_CONNECTION_REQUIRED" || error.code === "OPENCLAW_ADMIN_UNAVAILABLE") {
         errLine.textContent = "智能服务暂时不可用，请稍后重试。"; errLine.classList.remove("hidden");
       }
-    } finally { startBtn.disabled = false; }
+      // 二维码只存视图内存：二维码本身不可用时不再回显；其他失败（如服务不可达）恢复旧图并提示。
+      if (previousQr && error.code !== "WECHAT_QR_UNAVAILABLE") {
+        currentQr = previousQr;
+        img.src = previousQr;
+        img.classList.remove("hidden");
+        errLine.textContent = "保留的是上次生成的二维码，可能已失效。";
+        errLine.classList.remove("hidden");
+      }
+    } finally { if (live(run)) startBtn.disabled = false; }
   }
 
-  async function poll() {
-    if (disposed || inFlight) return;
-    if (Date.now() >= deadline) { stopPoll(); statusLine.textContent = "自动等待扫码已超时，需要时请重新生成二维码。"; return; }
-    inFlight = true;
+  async function poll(run) {
+    if (!live(run)) return;
+    if (!box.isConnected) { stopPoll(); return; }
+    if (Date.now() >= deadline) { stopPoll(); clearQr(); statusLine.textContent = "自动等待扫码已超时，需要时请重新生成二维码。"; return; }
     try {
-      // 轮询不重复提交大 PNG：仅在第一次发送二维码内容，此后传 null
-      const result = await api(`/classes/${classId}/agent-binding/wait`, { method: "POST", body: { current_qr_data_url: null } });
-      if (disposed) return;
-      if (!showResult(result)) schedule(appConfig.wechat.qr_poll_ms);
+      // 当前二维码仅保留在视图内存；轮询只接收可能更新的二维码，不往返传输大 PNG。
+      const result = await api(`/classes/${classId}/agent-binding/wait`, {
+        method: "POST", body: { login_id: loginId }, signal: controller.signal,
+      });
+      if (!live(run)) return;
+      if (!box.isConnected) { stopPoll(); return; }
+      if (!showResult(result)) schedule(appConfig.wechat.qr_poll_ms, run);
     } catch (error) {
-      if (disposed) return;
+      if (!live(run)) return;
+      if (error.code === "WECHAT_LOGIN_STALE") {
+        stopPoll(); clearQr(); statusLine.textContent = "二维码已更新或过期，请重新生成。"; return;
+      }
       statusLine.textContent = `自动确认暂未完成：${error.message}，页面会继续重试。`;
-      schedule(appConfig.wechat.qr_retry_ms);
-    } finally { inFlight = false; }
+      schedule(appConfig.wechat.qr_retry_ms, run);
+    }
   }
+
+  verifyForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (disposed || !loginId || !challengeId || verifyBtn.disabled) return;
+    const code = codeInput.value.trim();
+    codeInput.value = "";
+    if (!/^[0-9]{1,12}$/.test(code)) { errLine.textContent = "请输入手机微信显示的数字验证码。"; errLine.classList.remove("hidden"); return; }
+    // Invalidate an older view poll, not the Gateway login attempt itself.
+    stopPoll(); const run = generation; controller = new AbortController();
+    verifyBtn.disabled = true; errLine.classList.add("hidden");
+    try {
+      const result = await api(`/classes/${classId}/agent-binding/verify`, {
+        method: "POST", body: { login_id: loginId, challenge_id: challengeId, code }, signal: controller.signal,
+      });
+      if (!live(run)) return;
+      if (!box.isConnected) { stopPoll(); return; }
+      if (!showResult(result)) schedule(appConfig.wechat.qr_poll_ms, run);
+    } catch (error) {
+      if (!live(run)) return;
+      errLine.textContent = error.message; errLine.classList.remove("hidden");
+      if (error.code === "WECHAT_LOGIN_STALE") { stopPoll(); clearQr(); }
+      else schedule(appConfig.wechat.qr_retry_ms, run);
+    } finally { if (live(run)) verifyBtn.disabled = false; }
+  });
 
   startBtn.addEventListener("click", () => start(true));
-  return { el: box, start, stop: stopPoll, dispose: () => { disposed = true; stopPoll(); } };
+  return { el: box, start, stop: stopPoll, dispose: () => { disposed = true; stopPoll(); clearQr(); } };
 }
 
 /* ---------------- ProposalReview（仅 onboarding 最终创建 / 聊天 proposal） ---------------- */

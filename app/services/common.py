@@ -7,7 +7,6 @@ from sqlalchemy.orm import Session
 
 from app.models.entities import AuditLog
 
-
 AUDITED_ACTIONS = {
     ("create", "class"),
     ("hard_delete", "class"),

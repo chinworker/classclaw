@@ -1,13 +1,124 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import entry, { createClient, resolveConfig, resolveReminderCronAt, scheduleCommittedReminders } from "./index.js";
+import { toolResult } from "./toolRuntime.js";
+
+type TestTool = { parameters: { properties: Record<string, unknown> }; execute: (id: string, params: object) => Promise<unknown> };
+function registeredTools() {
+  const tools: Record<string, TestTool> = {};
+  entry.register?.({
+    pluginConfig: { baseUrl: "http://example.test" }, registerHttpRoute() {}, on() {},
+    registerTool(tool: (TestTool & { name: string }) | ((context: object) => TestTool & { name: string })) {
+      const resolved = typeof tool === "function" ? tool({ agentId: "class-agent", sessionKey: "session-1" }) : tool;
+      tools[resolved.name] = resolved;
+    },
+  } as never);
+  return tools;
+}
+
+function registeredHooks() {
+  const hooks: Record<string, (event: Record<string, unknown>, context: Record<string, unknown>) => unknown> = {};
+  entry.register?.({
+    pluginConfig: { baseUrl: "http://example.test", agentClasses: { "agent-a": "class-a", "agent-b": "class-b" } },
+    registerHttpRoute() {}, registerTool() {},
+    on(name: string, hook: typeof hooks[string]) { hooks[name] = hook; },
+  } as never);
+  return hooks;
+}
+
+afterEach(() => vi.restoreAllMocks());
 
 describe("classclaw plugin", () => {
   it("uses safe configuration defaults", () => {
     const config = resolveConfig(undefined);
     expect(config.baseUrl).toBe("http://127.0.0.1:8000");
-    expect(config.timeoutMs).toBe(30_000);
+    expect(config.timeoutMs).toBe(120_000);
     expect(config.allowedUploadRoots.length).toBeGreaterThan(0);
+  });
+
+  it("fetches later roster pages and exposes pagination to the model", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = new URL(String(input));
+      const page = Number(url.searchParams.get("page") || 1);
+      return new Response(JSON.stringify({ success: true, data: { total: 42, page, page_size: 20,
+        items: [{ student_no: String((page - 1) * 20 + 1) }] } }));
+    });
+    const tool = registeredTools().classclaw_read;
+    expect(tool.parameters.properties).toHaveProperty("page");
+    expect(tool.parameters.properties).toHaveProperty("page_size");
+    const first = await tool.execute("1", { resource: "student_search", class_id: "class-a", page: 1, page_size: 20 });
+    const second = await tool.execute("2", { resource: "student_search", class_id: "class-a", page: 2, page_size: 20 });
+    expect(first).toMatchObject({ details: { data: { items: [{ student_no: "1" }] } } });
+    expect(second).toMatchObject({ details: { data: { items: [{ student_no: "21" }] } } });
+    expect(String(fetchMock.mock.calls[1][0])).toContain("page=2&page_size=20");
+    await expect(tool.execute("3", { resource: "student_search", class_id: "class-a", page: 0 })).rejects.toThrow("TOOL_ARGUMENT_INVALID");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("reads the nested analysis scope and rejects foreign analyses", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({ success: true,
+      data: { analysis: { id: "analysis-a", class_id: "class-a", status: "failed" }, proposals: [] },
+    })));
+    const tool = registeredTools().classclaw_read;
+    await expect(tool.execute("1", { resource: "interaction_analysis", analysis_id: "analysis-a", bound_class_id: "class-a" }))
+      .resolves.toMatchObject({ details: { data: { analysis: { status: "failed" } } } });
+    await expect(tool.execute("2", { resource: "interaction_analysis", analysis_id: "analysis-a", bound_class_id: "class-b" }))
+      .rejects.toThrow("CLASS_SCOPE_VIOLATION");
+  });
+
+  it("retains the actual analysis ID and ends the turn on an in-progress response", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({ success: false,
+      error: { code: "INTERACTION_ANALYSIS_IN_PROGRESS", message: "仍在分析", details: { analysis_id: "analysis-a", private: "hidden" } },
+    }), { status: 409 }));
+    const result = await registeredTools().classclaw_analyze_interaction.execute("1", { channel: "web", text: "补充性别" });
+    expect(result).toMatchObject({ isError: true, details: { success: false,
+      error: { code: "INTERACTION_ANALYSIS_IN_PROGRESS", analysis_id: "analysis-a", retryable: false },
+    } });
+    expect(JSON.stringify(result)).not.toContain("hidden");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["needs_clarification", "awaiting_review"])("keeps the turn guard across nested plugin registration: %s", async (status) => {
+    const original = registeredHooks();
+    const context = { agentId: "agent-a", sessionKey: "chat", runId: `nested-extraction-${status}` };
+    const event = { toolName: "classclaw_analyze_interaction", params: { text: "原文" } };
+    expect(await original.before_tool_call(event, context)).toEqual({ params: { text: "原文", class_id: "class-a" } });
+    // A nested extractor loads another plugin registry while the HTTP call waits.
+    const nested = registeredHooks();
+    await nested.after_tool_call({ ...event, result: toolResult({ analysis: { status }, proposals: [] }) }, context);
+    expect(await nested.before_tool_call({ ...event, params: { text: "改写重试", external_message_id: "new-id" } }, context))
+      .toMatchObject({ block: true });
+    if (status === "needs_clarification") {
+      expect(await original.before_tool_call({ toolName: "classclaw_propose_write", params: { payload: {} } }, context))
+        .toMatchObject({ block: true });
+    }
+    expect(await nested.before_tool_call(event, { ...context, runId: `${context.runId}-next` })).not.toHaveProperty("block");
+    expect(await nested.before_tool_call(event, { ...context, agentId: "agent-b" }))
+      .toEqual({ params: { text: "原文", class_id: "class-b" } });
+  });
+
+  it.each(["classclaw_commit_write", "classclaw_commit_writes"])("ends failed %s without re-analysis or replacement writes", async (name) => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ success: false,
+      error: { code: "PENDING_CONFIRMATION_REQUIRED", message: "写入预览已过期，请重新生成" },
+    }), { status: 409 }));
+    const hooks = registeredHooks();
+    const context = { agentId: "agent-a", sessionKey: "chat", runId: `expired-${name}` };
+    const params = name === "classclaw_commit_write"
+      ? { proposal_id: "expired", revision: 1, confirmed_by: "teacher" }
+      : { items: [{ proposal_id: "expired", revision: 1 }], confirmed_by: "teacher" };
+    const event = { toolName: name, params };
+    expect(await hooks.before_tool_call(event, context)).not.toHaveProperty("block");
+    const result = await registeredTools()[name].execute("call-1", params);
+    expect(result).toMatchObject({ isError: true, details: { success: false,
+      error: { code: "PENDING_CONFIRMATION_REQUIRED", retryable: false, instruction: expect.stringContaining("不要自行重新分析") },
+    } });
+    const reloaded = registeredHooks();
+    await reloaded.after_tool_call({ ...event, result }, context);
+    expect(await reloaded.before_tool_call({ toolName: "classclaw_analyze_interaction", params: { text: "重新分析" } }, context))
+      .toMatchObject({ block: true });
+    expect(await hooks.before_tool_call({ toolName: "classclaw_propose_write", params: { payload: {} } }, context))
+      .toMatchObject({ block: true });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("runs an already-due reminder promptly instead of creating an invalid past cron", () => {

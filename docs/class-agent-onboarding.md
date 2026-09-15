@@ -37,7 +37,7 @@ openclaw plugins enable classclaw
 
 ### 3. 启用 OpenClaw 管理 RPC
 
-ClassClaw 后端需要它来创建 agent、启动二维码登录和写入 channel binding。该接口权限很高，只应监听回环地址或可信私网，不要暴露到公网。
+ClassClaw 后端需要它来创建 agent 和写入 channel binding；二维码登录走下述微信兼容层的专用私有端点。管理接口权限很高，只应监听回环地址或可信私网，不要暴露到公网。
 
 ```bash
 openclaw plugins enable admin-http-rpc
@@ -54,9 +54,9 @@ openclaw config set plugins.entries.openclaw-weixin.enabled true
 openclaw gateway restart
 ```
 
-当前固定的腾讯插件 `2.4.6` 已实现二维码登录，但没有声明 OpenClaw 2026.7 用于 provider discovery 的 `gatewayMethods`，直接安装会在网页端返回 `web login provider is not available`。仓库中的兼容层仍使用腾讯官方实现，只补充 `web.login.start` 与 `web.login.wait` 两个声明。腾讯发布包含相同声明的新版本后，可以移除兼容层并恢复官方直装。
+当前固定的腾讯插件 `2.4.6` 缺少 OpenClaw 2026.7 的 provider discovery 声明，并且其 CLI 式登录在单次等待超时后删除会话、仅在终端显示刷新二维码、通过 stdin 读取数字验证码。仓库兼容层 `2.4.6-classclaw.2` 保留官方微信消息收发与 CLI 登录，另实现 ClassClaw 专用的网页登录状态机；不要只升级方法声明或直接移除兼容层。实现与测试见 [兼容层 README](../integrations/openclaw/openclaw-weixin-compat/README.md)。
 
-创建每个班级时，网页会为该班生成独立 account alias，并显示对应二维码。腾讯插件返回的是待编码的二维码内容，不一定是图片 URL；ClassClaw 后端会将它编码为 PNG Data URL 后再交给浏览器，轮询时只回传原始短内容。官方说明：<https://github.com/Tencent/openclaw-weixin>。
+每个班级的每次网页登录都有独立 `login_id`，仅在兼容层内存中存在，成功后才将微信账号标识写入班级绑定。二维码内容由后端编码为 PNG Data URL；轮询只携带登录标识，二维码刷新时立即返回新图片。出现手机数字验证时，账户设置会显示输入框，按原样输入数字（保留前导零），无需操作服务器终端。官方协议来源：<https://github.com/Tencent/openclaw-weixin>。
 
 ### 5. 配置 OpenClaw
 
@@ -111,6 +111,8 @@ python run.py
 
 绑定成功时，后端还会为该 agent 限制为 ClassClaw 所需工具和单个 Skill，关闭记忆搜索、思考/推理输出，并限制 bootstrap 大小；新会话仍注入必要规则，连续会话跳过重复上下文，以减少 token 与响应时间。
 
+微信凭据保存后，后端在同一次 `config.patch` 中写入班级消息路由并更新腾讯插件的 `channels.openclaw-weixin.channelConfigUpdatedAt`，触发微信监听重载。仅更新 `bindings` 不会启动新账号的消息监听，会等待后台健康检查补启动，表现为刚绑定后数分钟没有回复。重载标记不包含凭据，不替换其他账号或渠道设置。
+
 若第 9 步失败，班级不会被删除。修复 OpenClaw/微信插件后点击“重新生成二维码”即可重试；后端会按 workspace 识别并接管已经创建成功但尚未来得及写回本地 ID 的 agent，不会重复创建。
 
 ## 彻底删除班级
@@ -129,8 +131,8 @@ python run.py
 
 ## 日常使用
 
-1. 班主任可在网页“班级 Agent 对话”直接发送文字、使用浏览器语音转文字或上传文件，不需要先绑定微信。微信 account binding 则把微信消息送到同一个班级专属 agent。
-2. 对话页“模型设置”允许为本班选择主模型、网页图片理解模型和网页录音转写模型。主模型同时作用于网页与微信；图片和录音模型按网页入口隔离，避免一个班级改动 OpenClaw 全局媒体设置。只有 Gateway 当前可用的模型和已配置凭据的语音 Provider 才能保存。
+1. 班主任可在网页“班级 Agent”直接发送文字、使用浏览器语音转文字或上传文件，不需要先绑定微信。微信 account binding 则把微信消息送到同一个班级专属 agent。创建 Agent、微信绑定及重新绑定统一在“账户设置 → 班级 Agent · 绑定与设置”；对话页仅提供跳转入口。
+2. 账户设置中的“模型设置”允许为本班选择主模型、网页图片理解模型和网页录音转写模型。主模型同时作用于网页与微信；图片和录音模型按网页入口隔离，避免一个班级改动 OpenClaw 全局媒体设置。只有 Gateway 当前可用的模型和已配置凭据的语音 Provider 才能保存。会话思考强度仍在每个对话内独立选择，不随管理入口迁移；选项由 Gateway 按本班当前模型解析，切换模型后自动刷新，仅保留受支持的会话选择，详情见[配置说明](configuration.md)。
 3. Skill 要求附件先留证，非确定性输入调用 `classclaw_analyze_interaction`。网页附件已由后端保存并提供 attachment ids，Agent 直接使用这些 ids，不重复上传。
 4. 插件从可信 `agentId` 查到固定 `class_id`，覆盖模型提供的班级参数。
 5. 后端返回澄清问题或待复核 proposal；此时没有业务写入。
@@ -150,6 +152,10 @@ curl -sS http://127.0.0.1:8000/health
 - `web login provider is not available` 且插件显示 enabled：不要重复创建班级；按第 4 节链接 `openclaw-weixin-compat`，重启 Gateway 后在原页面点击“创建智能体并生成二维码”。
 - `WECHAT_QR_UNAVAILABLE`：微信插件没有返回二维码内容，点击“重新生成二维码”；若持续出现，运行 `openclaw channels status --probe` 检查插件登录状态。
 - 二维码过期：点击“重新生成二维码”，不要重复创建班级。
+- 有微信 account alias 不代表已经扫码成功：只有 `status=linked` 且有账号标识才显示已绑定。账户设置保留绑定/重新生成按钮，不因 `awaiting_qr`、`failed` 或已分配 alias 而隐藏。
+- 短轮询超时不会删除登录会话；总有效期由 `wechat.qr_binding_timeout_seconds` 控制，二维码最多自动刷新 3 次，数字验证最多尝试 5 次。过期/失败状态明确返回 `restart_required=true`，不再从供应商提示语猜测状态。
+- `WECHAT_PLUGIN_UPDATE_REQUIRED`：后端找不到新版私有端点。等待现有对话结束后加载/重启 Gateway，再重启 ClassClaw 并强制刷新网页；旧登录标识失效后重新生成二维码。
+- `WECHAT_LOGIN_STALE`：另一页或后续操作已经重新生成二维码。旧请求和旧验证码不能更新新登录；使用最新二维码，不要恢复旧页面的轮询。
 - 修改后旧内容回来：确认页面没有 textarea；重新上传必须完整替换列表。
 - `CLASS_SCOPE_VIOLATION`：当前智能体尝试确认不属于本班的 proposal，应取消并重新分析。
 - Gateway 断开：先恢复 OpenClaw，不要关闭门禁绕过。
@@ -158,5 +164,7 @@ curl -sS http://127.0.0.1:8000/health
 
 - Gateway 管理 token 只存后端 `.env`，浏览器只接触 ClassClaw API token。
 - ClassClaw 不保存微信登录凭据或二维码内容；凭据由微信 channel 插件保存在 OpenClaw。
+- 数字验证码只在提交请求的内存中处理，不写业务库、浏览器持久存储或日志；验证码校验错误响应也不回显提交内容。私有 `/api/v1/classclaw/wechat-login` 必须通过 Gateway 认证，只接受已绑定班级的 start/wait/verify，不接受 URL、路径或任意 RPC。API 的 `/agent-binding/verify` 同样执行班级归属与微信功能开关校验。
+- 账号凭据保存失败不报告成功；不会删除其他账号的凭据，也不能覆盖其他班级的微信路由。微信网络请求仅访问 HTTPS 微信域名，禁止跟随任意重定向。
 - `admin-http-rpc` 只放在回环地址/可信私网。
 - workspace/session 隔离不是数据库授权的替代；业务实体仍以 `class_id` 建索引/外键，proposal 确认还会校验班级归属。

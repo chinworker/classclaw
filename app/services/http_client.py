@@ -2,6 +2,14 @@ from __future__ import annotations
 
 import httpx
 
+from app.config import settings
+
+
+def gateway_headers() -> dict[str, str]:
+    headers = {"Content-Type": "application/json"}
+    if settings.openclaw_gateway_token:
+        headers["Authorization"] = f"Bearer {settings.openclaw_gateway_token}"
+    return headers
 
 _client: httpx.AsyncClient | None = None
 

@@ -8,6 +8,7 @@ For user prose, WeChat messages, pasted lists, OCR, or attachments, do not const
 |---|---|
 | `student.create` | `{class_id, student_no, name, gender?, phone?, boarding_status?, group_no?, tags?, ...}` |
 | `student.update` | `{student_id, changes:{...}}` |
+| `student.update.batch` | `{class_id, student_ids:[uuid,...], changes:{...}, only_if_empty?:[field,...]}`；同值变更按组，最多100人；仅补性别用 `only_if_empty:["gender"]` |
 | `seating.update` | `{class_id, rows, cols, layout, change_note?}` |
 | `attendance.set` | `{class_id, student_id, attendance_date, period, status, note?}` |
 | `homework.create` | `{class_id, title, subject, description?, assigned_date, due_at?, status?}` |

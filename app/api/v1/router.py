@@ -2,8 +2,8 @@ from fastapi import APIRouter, Depends
 
 from app.api.v1 import (
     academic,
-    agent_chat,
     admin_console,
+    agent_chat,
     ai_tasks,
     analytics,
     approval,

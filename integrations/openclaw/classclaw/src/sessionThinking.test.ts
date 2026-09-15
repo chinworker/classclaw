@@ -1,7 +1,7 @@
 import { Readable } from "node:stream";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { describe, expect, it, vi } from "vitest";
-import { sessionThinkingHandler, validateThinkingRequest } from "./sessionThinking.js";
+import { sessionThinkingHandler, thinkingFailure, validateThinkingRequest } from "./sessionThinking.js";
 
 const classId = "97d646a7-153d-4370-aa17-bc49d3ba5593";
 const conversation = "21d646a7-153d-4370-aa17-bc49d3ba5593";
@@ -9,6 +9,18 @@ const key = `agent:class-agent:openresponses-user:classclaw-web-chat:${classId}:
 const agentClasses = { "class-agent": classId };
 
 describe("private session thinking endpoint", () => {
+  it("reports supported levels without returning arbitrary Gateway diagnostics", () => {
+    expect(thinkingFailure({ message: 'thinkingLevel "xhigh" is not supported for kimi/kimi-for-coding (use off|low|medium|high)' }))
+      .toEqual({ code: "CHAT_THINKING_UNSUPPORTED", message: "The selected thinking level is not supported by this model",
+        model: "kimi/kimi-for-coding", supported_levels: ["off", "low", "medium", "high"] });
+    expect(JSON.stringify(thinkingFailure({ message: "private path or token" }))).not.toContain("private path");
+  });
+
+  it("preserves the enabled option when Kimi returns display labels off|on", () => {
+    expect(thinkingFailure({ message: 'thinkingLevel "minimal" is not supported for kimi/kimi-for-coding (use off|on)' }))
+      .toMatchObject({ code: "CHAT_THINKING_UNSUPPORTED", supported_levels: ["off", "low"], supported_level_labels: { low: "on" } });
+    expect(validateThinkingRequest({ key, thinkingLevel: "low" }, agentClasses)).toEqual({ key, thinkingLevel: "low" });
+  });
   it("accepts only a bound class's web session and the two allowed fields", () => {
     expect(validateThinkingRequest({ key, thinkingLevel: "high" }, agentClasses)).toEqual({ key, thinkingLevel: "high" });
     expect(validateThinkingRequest({ key, thinkingLevel: "off" }, agentClasses)).toEqual({ key, thinkingLevel: "off" });
@@ -26,17 +38,17 @@ describe("private session thinking endpoint", () => {
     expect(() => validateThinkingRequest(body, agentClasses)).toThrow();
   });
 
-  it("dispatches only sessions.patch and never returns private session metadata", async () => {
+  it.each(["low", "high"])("dispatches only sessions.patch for %s and never returns private session metadata", async (thinkingLevel) => {
     const dispatch = vi.fn().mockResolvedValue({ ok: true, payload: { path: "private-path", entry: { secret: "secret" } } });
     const handler = sessionThinkingHandler(agentClasses, dispatch);
-    const req = Readable.from([JSON.stringify({ key, thinkingLevel: "high" })]) as IncomingMessage;
+    const req = Readable.from([JSON.stringify({ key, thinkingLevel })]) as IncomingMessage;
     req.method = "POST";
     let body = "";
     const res = { statusCode: 0, setHeader: vi.fn(), end: (value: string) => { body = value; } };
     await handler(req, res as unknown as ServerResponse);
-    expect(dispatch).toHaveBeenCalledWith("sessions.patch", { key, thinkingLevel: "high" }, { timeoutMs: 10_000 });
+    expect(dispatch).toHaveBeenCalledWith("sessions.patch", { key, thinkingLevel }, { timeoutMs: 10_000 });
     expect(res.statusCode).toBe(200);
-    expect(JSON.parse(body)).toEqual({ ok: true, payload: { thinkingLevel: "high" } });
+    expect(JSON.parse(body)).toEqual({ ok: true, payload: { thinkingLevel } });
   });
 
   it.each(["GET", "DELETE"])("rejects %s without dispatch", async (method) => {

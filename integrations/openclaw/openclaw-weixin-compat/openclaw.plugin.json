@@ -1,8 +1,8 @@
 {
   "id": "openclaw-weixin",
   "name": "Weixin（ClassClaw 兼容层）",
-  "version": "2.4.6-classclaw.1",
-  "description": "Tencent Weixin 2.4.6 with OpenClaw web-login provider discovery compatibility.",
+  "version": "2.4.6-classclaw.2",
+  "description": "Tencent Weixin 2.4.6 with scoped ClassClaw browser QR login and verification.",
   "channels": [
     "openclaw-weixin"
   ],

@@ -18,9 +18,17 @@ from app.core.responses import ok
 from app.core.security import principal_from_request, require_owned_class
 from app.database import get_db
 from app.schemas.agent_chat import ClassAgentModelUpdate
-from app.services import admin_console, agent_chat, agent_models, ai_tasks
+from app.services import admin_console, agent_chat, agent_models, agent_thinking, ai_tasks
 
 router = APIRouter(tags=["班级 Agent 网页对话"])
+
+
+@router.get("/classes/{class_id}/agent-chat/thinking")
+async def class_agent_thinking(request: Request, class_id: str, db: Annotated[Session, Depends(get_db)]):
+    require_owned_class(request, class_id)
+    response = ok(request, await agent_thinking.class_thinking_options(db, class_id))
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @router.get("/classes/{class_id}/agent-chat/models")
@@ -127,7 +135,7 @@ async def class_agent_chat_message(
         except AppError as exc:
             outcome = exc.code
             yield frame("error", error=exc)
-        except Exception as exc:  # noqa: BLE001 - after SSE headers, errors must use a redacted error frame
+        except Exception as exc:
             outcome = "failed"
             get_logger("agent_chat").error("Chat stream failed: %s", type(exc).__name__, extra={"request_id": request_id})
             yield frame("error", error=AppError("INTERNAL_ERROR", "回复处理失败；涉及写入时请先核对结果再重试", 500))

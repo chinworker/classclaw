@@ -7,14 +7,14 @@ import { promisify } from "node:util";
 import { Type } from "typebox";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import type { OpenClawPluginDefinition } from "openclaw/plugin-sdk/plugin-entry";
-import { createTurnGuard, toolResult as result, validateReadParams } from "./toolRuntime.js";
+import { sharedTurnGuard, toolFailure, toolResult as result, validateReadParams } from "./toolRuntime.js";
 import { sessionThinkingHandler } from "./sessionThinking.js";
 
 type JsonObject = Record<string, unknown>;
 type ClassClawConfig = { baseUrl: string; apiToken?: string; timeoutMs: number; allowedUploadRoots: string[]; agentClasses: Record<string, string> };
 
 const operationTypes = [
-  "student.create", "student.update", "seating.update",
+  "student.create", "student.update", "student.update.batch", "seating.update",
   "attendance.set", "homework.create", "homework.status.batch", "student_event.create",
   "student_event.batch", "exam.create", "score.batch", "lesson_override.create", "arrangement.create",
   "duty.schedule.confirm", "duty.assignment.score",
@@ -53,7 +53,7 @@ export function resolveConfig(raw: Record<string, unknown> | undefined): ClassCl
   const baseUrl = typeof raw?.baseUrl === "string" ? raw.baseUrl.replace(/\/+$/, "") : "http://127.0.0.1:8000";
   const configuredToken = typeof raw?.apiToken === "string" && raw.apiToken.length > 0 ? raw.apiToken : undefined;
   const apiToken = configuredToken ?? process.env.CLASSCLAW_API_TOKEN;
-  const timeoutMs = typeof raw?.timeoutMs === "number" && raw.timeoutMs > 0 ? Math.min(raw.timeoutMs, 120_000) : 30_000;
+  const timeoutMs = typeof raw?.timeoutMs === "number" && raw.timeoutMs > 0 ? Math.min(raw.timeoutMs, 120_000) : 120_000;
   const configuredRoots = Array.isArray(raw?.allowedUploadRoots) ? raw.allowedUploadRoots.filter((item): item is string => typeof item === "string") : [];
   const allowedUploadRoots = (configuredRoots.length > 0 ? configuredRoots : [process.cwd(), tmpdir()]).map((item) => resolve(item));
   const agentClasses = raw?.agentClasses && typeof raw.agentClasses === "object" && !Array.isArray(raw.agentClasses)
@@ -84,7 +84,9 @@ export function createClient(config: ClassClawConfig) {
     catch { throw new Error(`ClassClaw returned HTTP ${response.status} without JSON`); }
     if (!response.ok || payload.success === false) {
       const error = payload.error as JsonObject | undefined;
-      throw new Error(`${String(error?.code ?? `HTTP_${response.status}`)}: ${String(error?.message ?? "ClassClaw request failed")}`);
+      throw Object.assign(new Error(`${String(error?.code ?? `HTTP_${response.status}`)}: ${String(error?.message ?? "ClassClaw request failed")}`), {
+        code: String(error?.code ?? `HTTP_${response.status}`), details: error?.details,
+      });
     }
     return payload.data;
   }
@@ -165,7 +167,7 @@ const plugin: OpenClawPluginDefinition = definePluginEntry({
       path: "/api/v1/classclaw/web-session-thinking", auth: "gateway", match: "exact",
       gatewayRuntimeScopeSurface: "trusted-operator", handler: sessionThinkingHandler(config.agentClasses),
     });
-    const guard = createTurnGuard();
+    const guard = sharedTurnGuard();
     const turnKey = (context: { agentId?: string; sessionKey?: string; runId?: string }, runId?: string) =>
       context.runId || runId ? JSON.stringify([context.agentId, context.sessionKey, context.runId || runId]) : undefined;
 
@@ -207,7 +209,7 @@ const plugin: OpenClawPluginDefinition = definePluginEntry({
     api.registerTool({
       name: "classclaw_analyze_interaction",
       label: "用 OpenClaw 清洗 ClassClaw 输入",
-      description: "Required gateway for natural-language, WeChat, pasted, or attachment-based input. The backend accepts only high-confidence validated data; low-confidence data is excluded and returned with concrete rejected_reasons for the user.",
+      description: "Analyze the original write request once. Includes the full class roster and current genders; no preliminary roster enumeration needed. Returns validated proposals or clarification. On timeout, in-progress or failure, explain once and end the turn; do not retry, poll or bypass analysis.",
       parameters: Type.Object({
         channel: Type.String(), external_message_id: Type.Optional(Type.String()), sender_id: Type.Optional(Type.String()),
         message_type: Type.Optional(Type.String()), text: Type.Optional(Type.String()),
@@ -215,7 +217,10 @@ const plugin: OpenClawPluginDefinition = definePluginEntry({
         class_id: Type.Optional(Type.String()), onboarding_session_id: Type.Optional(Type.String()),
         requested_by: Type.Optional(Type.String()), idempotency_key: Type.Optional(Type.String()),
       }),
-      async execute(_id, params) { return result(await client.post("/api/v1/interaction-analyses", params)); },
+      async execute(_id, params) {
+        try { return result(await client.post("/api/v1/interaction-analyses", params)); }
+        catch (error) { return toolFailure(error); }
+      },
     });
 
     api.registerTool({
@@ -232,7 +237,7 @@ const plugin: OpenClawPluginDefinition = definePluginEntry({
     api.registerTool({
       name: "classclaw_read",
       label: "读取 ClassClaw 数据",
-      description: "Read a whitelisted ClassClaw resource. Never use this tool for writes.",
+      description: "Read a whitelisted ClassClaw resource. Lists use page (from 1) and page_size (1–100); inspect total before declaring a roster complete. Use the returned analysis_id to read interaction_analysis, never a message or session ID. Never use this tool for writes.",
       parameters: Type.Object({
         resource: Type.Union(readResources.map((value) => Type.Literal(value))), class_id: Type.Optional(Type.String()),
         student_id: Type.Optional(Type.String()), proposal_id: Type.Optional(Type.String()), session_id: Type.Optional(Type.String()),
@@ -240,6 +245,7 @@ const plugin: OpenClawPluginDefinition = definePluginEntry({
         reminder_id: Type.Optional(Type.String()),
         bound_class_id: Type.Optional(Type.String()),
         q: Type.Optional(Type.String()), exact_name: Type.Optional(Type.Boolean()), date: Type.Optional(Type.String()),
+        page: Type.Optional(Type.Integer({ minimum: 1 })), page_size: Type.Optional(Type.Integer({ minimum: 1, maximum: 100 })),
         start_date: Type.Optional(Type.String()), end_date: Type.Optional(Type.String()),
       }),
       async execute(_id, params) {
@@ -247,9 +253,9 @@ const plugin: OpenClawPluginDefinition = definePluginEntry({
         validateReadParams(values);
         let path: string;
         switch (values.resource) {
-          case "classes": path = "/api/v1/classes"; break;
+          case "classes": path = `/api/v1/classes${query(values, ["page", "page_size"])}`; break;
           case "class_summary": path = `/api/v1/classes/${encodeURIComponent(String(values.class_id ?? ""))}/summary`; break;
-          case "student_search": path = `/api/v1/students${query(values, ["class_id", "q", "exact_name"])}`; break;
+          case "student_search": path = `/api/v1/students${query(values, ["class_id", "q", "exact_name", "page", "page_size"])}`; break;
           case "student_detail": path = `/api/v1/students/${encodeURIComponent(String(values.student_id ?? ""))}`; break;
           case "daily_timetable": path = `/api/v1/classes/${encodeURIComponent(String(values.class_id ?? ""))}/timetable/daily${query({ lesson_date: values.date }, ["lesson_date"])}`; break;
           case "morning_briefing": path = `/api/v1/briefings/morning${query(values, ["class_id", "date"])}`; break;
@@ -268,7 +274,7 @@ const plugin: OpenClawPluginDefinition = definePluginEntry({
           const student = await client.get(`/api/v1/students/${encodeURIComponent(studentId)}`) as JsonObject;
           if (student.class_id !== scopedClassId) throw new Error("CLASS_SCOPE_VIOLATION: student does not belong to this agent's class");
         }
-        if (scopedClassId && values.resource === "interaction_analysis" && (data as JsonObject).class_id !== scopedClassId) {
+        if (scopedClassId && values.resource === "interaction_analysis" && ((data as JsonObject).analysis as JsonObject | undefined)?.class_id !== scopedClassId) {
           throw new Error("CLASS_SCOPE_VIOLATION: analysis does not belong to this agent's class");
         }
         if (scopedClassId && values.resource === "reminder_delivery") {
@@ -282,7 +288,7 @@ const plugin: OpenClawPluginDefinition = definePluginEntry({
     api.registerTool({
       name: "classclaw_propose_write",
       label: "生成 ClassClaw 写入预览",
-      description: "Validate a prospective business write and return a human-readable preview. This never changes business data. Every mutation must start here.",
+      description: "Preview an already deterministic structured write without changing business data. Natural-language analysis already returns validated previews; display those directly and do not recreate them here.",
       parameters: Type.Object({
         operation_type: Type.Union(operationTypes.map((value) => Type.Literal(value))),
         payload: Type.Record(Type.String(), Type.Unknown()),
@@ -294,7 +300,7 @@ const plugin: OpenClawPluginDefinition = definePluginEntry({
     api.registerTool((context: ToolContext) => ({
         name: "classclaw_commit_write",
         label: "确认并执行 ClassClaw 写入",
-        description: "Execute one previously previewed write immediately after the user explicitly confirms that preview in chat. This tool does not open another approval card.",
+        description: "Execute one previously previewed write after explicit chat confirmation, without another approval card. On expiry, conflict or failure, explain and end the turn; do not re-analyze, replace the preview or retry.",
         parameters: Type.Object({
           proposal_id: Type.String(), revision: Type.Integer({ minimum: 1 }), confirmed_by: Type.String(),
           confirmation_note: Type.Optional(Type.String()), bound_class_id: Type.Optional(Type.String()),
@@ -302,9 +308,12 @@ const plugin: OpenClawPluginDefinition = definePluginEntry({
         async execute(_id, params) {
           const values = params as { proposal_id: string; revision: number; confirmed_by: string; confirmation_note?: string };
           const scoped = values as typeof values & { bound_class_id?: string };
-          const data = await client.post(`/api/v1/write-proposals/${encodeURIComponent(values.proposal_id)}/confirm`, {
-            revision: values.revision, confirmed_by: values.confirmed_by, confirmation_note: values.confirmation_note, bound_class_id: scoped.bound_class_id,
-          });
+          let data: unknown;
+          try {
+            data = await client.post(`/api/v1/write-proposals/${encodeURIComponent(values.proposal_id)}/confirm`, {
+              revision: values.revision, confirmed_by: values.confirmed_by, confirmation_note: values.confirmation_note, bound_class_id: scoped.bound_class_id,
+            });
+          } catch (error) { return toolFailure(error, "commit"); }
           const reminderSchedule = await scheduleCommittedReminders(api, context, data);
           return result({ data, reminder_schedule: reminderSchedule });
         },
@@ -313,7 +322,7 @@ const plugin: OpenClawPluginDefinition = definePluginEntry({
     api.registerTool((context: ToolContext) => ({
         name: "classclaw_commit_writes",
         label: "批量确认并执行 ClassClaw 写入",
-        description: "Atomically execute the current group of previews after the user explicitly confirms all of them in chat. If any item fails, none are written. This tool does not open another approval card.",
+        description: "Atomically execute the current preview group after explicit chat confirmation, without another approval card. If any item fails, none are written. On failure, explain and end the turn; do not re-analyze, replace previews or retry.",
         parameters: Type.Object({
           items: Type.Array(Type.Object({
             proposal_id: Type.String(),
@@ -330,7 +339,9 @@ const plugin: OpenClawPluginDefinition = definePluginEntry({
             confirmation_note?: string;
             bound_class_id?: string;
           };
-          const data = await client.post("/api/v1/write-proposals/confirm-batch", values);
+          let data: unknown;
+          try { data = await client.post("/api/v1/write-proposals/confirm-batch", values); }
+          catch (error) { return toolFailure(error, "commit"); }
           const reminderSchedule = await scheduleCommittedReminders(api, context, data);
           return result({ data, reminder_schedule: reminderSchedule });
         },

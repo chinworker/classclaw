@@ -15,6 +15,22 @@ export function validateThinkingRequest(body: unknown, agentClasses: Record<stri
   return { key: row.key as string, thinkingLevel: row.thinkingLevel };
 }
 
+export function thinkingFailure(error: { code?: string; message?: string } | undefined) {
+  const unsupported = /^thinkingLevel "[^"]+" is not supported for ([a-zA-Z0-9._:/-]+) \(use ([^)]+)\)$/.exec(error?.message || "");
+  if (unsupported) {
+    // Gateway formats display labels here. Binary providers label the low ID
+    // as "on"; returning only known IDs would otherwise lose the enabled option.
+    const labels = unsupported[2].split("|");
+    const supported = [...new Set(labels.map((label) => label === "on" ? "low" : label).filter((level) => levels.has(level)))];
+    return {
+      code: "CHAT_THINKING_UNSUPPORTED", message: "The selected thinking level is not supported by this model",
+      model: unsupported[1], supported_levels: supported,
+      ...(labels.includes("on") ? { supported_level_labels: { low: "on" } } : {}),
+    };
+  }
+  return { code: "CHAT_THINKING_REJECTED", message: "Gateway rejected the session thinking update" };
+}
+
 export function sessionThinkingHandler(agentClasses: Record<string, string>, dispatch = dispatchGatewayMethod) {
   return async (req: IncomingMessage, res: ServerResponse) => {
     const send = (status: number, body: unknown) => {
@@ -43,7 +59,7 @@ export function sessionThinkingHandler(agentClasses: Record<string, string>, dis
       }
       params = validateThinkingRequest(JSON.parse(Buffer.concat(chunks).toString("utf8")), agentClasses);
     } catch {
-      send(400, { ok: false, error: { message: "Invalid ClassClaw web-session thinking request" } });
+      send(400, { ok: false, error: { code: "CHAT_THINKING_INVALID_REQUEST", message: "Invalid ClassClaw web-session thinking request" } });
       return true;
     }
     try {
@@ -51,12 +67,12 @@ export function sessionThinkingHandler(agentClasses: Record<string, string>, dis
       // arbitrary session key, model, deletion or agent configuration mutation.
       const result = await dispatch("sessions.patch", params, { timeoutMs: 10_000 });
       if (!result.ok) {
-        send(400, { ok: false, error: { message: result.error?.message || "Session thinking update failed" } });
+        send(400, { ok: false, error: thinkingFailure(result.error) });
       } else {
         send(200, { ok: true, payload: { thinkingLevel: params.thinkingLevel } });
       }
     } catch {
-      send(503, { ok: false, error: { message: "Session thinking service unavailable" } });
+      send(503, { ok: false, error: { code: "CHAT_THINKING_UNAVAILABLE", message: "Session thinking service unavailable" } });
     }
     return true;
   };

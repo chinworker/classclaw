@@ -9,7 +9,7 @@
     "properties": {
       "baseUrl": { "type": "string", "description": "ClassClaw backend base URL" },
       "apiToken": { "type": "string", "description": "Bearer token matching CLASSCLAW_API_TOKEN" },
-      "timeoutMs": { "type": "number", "minimum": 1000, "maximum": 120000 },
+      "timeoutMs": { "type": "number", "minimum": 1000, "maximum": 120000, "default": 120000 },
       "allowedUploadRoots": {
         "type": "array",
         "items": { "type": "string" },

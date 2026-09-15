@@ -143,7 +143,10 @@ def test_web_chat_allows_nested_agent_analysis_and_other_writes(managed_database
     async def connected(*_args, **_kwargs):
         return {"gateway_live": True, "plugin_ready": True}
 
-    async def runtime(*_args, **_kwargs):
+    async def runtime(method, *_args, **_kwargs):
+        if method == "agents.list":
+            assert not database._write_lock.locked()
+            return {"agents": [{"id": "test-agent", "thinkingLevels": [{"id": "off", "label": "off"}], "thinkingDefault": "off"}]}
         return {"config": {}}
 
     async def extractor_off():
@@ -253,7 +256,10 @@ def test_stream_disconnect_closes_run_and_releases_writer(managed_database, monk
     async def connected(*args, **kwargs):
         return {"gateway_live": True, "plugin_ready": True}
 
-    async def rpc(*args, **kwargs):
+    async def rpc(method, *args, **kwargs):
+        if method == "agents.list":
+            assert not database._write_lock.locked()
+            return {"agents": [{"id": "test-agent", "thinkingLevels": [{"id": "off", "label": "off"}], "thinkingDefault": "off"}]}
         return {"config": {}}
 
     monkeypatch.setattr(openclaw_bridge, "connection_status", connected)
@@ -338,18 +344,18 @@ def test_wechat_poll_does_not_hold_writer(managed_database, monkeypatch):
         binding.channel_account_id = "test-account"
         db.commit()
 
-    async def rpc(method, _params):
-        assert method == "web.login.wait"
+    async def rpc(_class_id, action, **_params):
+        assert action == "wait"
         with database.request_writer_session() as other:
             other.get(ClassRoom, managed_database).name = "扫码期间可保存"
             other.commit()
-        return {"connected": False, "qrDataUrl": "weixin://test-login"}
+        return {"connected": False, "qrDataUrl": "weixin://test-login", "loginId": "22222222-2222-2222-2222-222222222222"}
 
-    monkeypatch.setattr(openclaw_provisioning, "admin_rpc", rpc)
+    monkeypatch.setattr("app.services.wechat_login.call", rpc)
 
     async def run():
         with database.request_writer_session() as db:
-            result = await openclaw_provisioning.wait_wechat_binding(db, managed_database)
+            result = await openclaw_provisioning.wait_wechat_binding(db, managed_database, login_id="22222222-2222-2222-2222-222222222222")
             assert result["connected"] is False
             assert db.get(ClassRoom, managed_database).name == "扫码期间可保存"
     asyncio.run(run())

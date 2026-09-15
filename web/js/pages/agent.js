@@ -1,11 +1,10 @@
-// 班级 Agent 网页对话、语音输入、文件上传与微信绑定。
+// 班级 Agent 网页对话、语音输入与文件上传；管理入口在账户设置。
 
 import { el, clear, fmtDateTime, toast } from "../util.js";
 import { api, AI_REQUEST_TIMEOUT_MS, createAiTaskId } from "../api.js";
 import { appConfig, featureEnabled } from "../config.js";
 import { state, refreshOpenclaw } from "../state.js";
-import { pageHeader, errorPanel, skeleton, statusBadge, qrBindingPanel, openclawBlocked, emptyState } from "../components.js";
-import { openAgentModelSettings } from "../agentModelSettings.js";
+import { pageHeader, errorPanel, skeleton, statusBadge, openclawBlocked, emptyState } from "../components.js";
 import { agentChatStore } from "../agentChatStore.js";
 
 const MAX_FILES = 8;
@@ -49,47 +48,9 @@ function welcomeNode(onSuggestion) {
       el("button", { class: "agent-chat-suggestion", type: "button", onclick: () => onSuggestion(prompt) }, prompt))));
 }
 
-function bindingPanel(binding, mount, ctx, helpers) {
-  let qr = null;
-  const modelButton = el("button", { class: "secondary agent-model-button", type: "button" }, "模型设置");
-  modelButton.addEventListener("click", () => openAgentModelSettings(state.classId, {
-    onSaved: (result) => {
-      window.setTimeout(() => { if (mount.isConnected) void render(mount, ctx, helpers); }, result.restart_requested ? 1600 : 0);
-    },
-  }));
-  const body = el("div", { class: "agent-binding-body" },
-    el("p", {}, el("b", {}, binding.agent_name)),
-    el("p", { class: "muted" }, binding.linked_at ? `微信绑定于 ${fmtDateTime(binding.linked_at)}` : "网页对话不要求绑定微信，需要时可在这里扫码。"),
-    binding.last_error ? el("p", { class: "field-error" }, `最近错误：${binding.last_error}`) : null,
-    el("div", { class: "agent-binding-actions" }, modelButton));
-  const details = el("details", { class: "agent-binding-card" },
-    el("summary", {},
-      el("span", {}, "Agent 与微信"),
-      statusBadge(binding.status),
-      el("span", { class: "muted" }, binding.channel_account_id ? "微信已连接" : "微信未绑定")),
-    body);
-  if (!binding.channel_account_id) {
-    qr = qrBindingPanel(state.classId, { compact: true, onDone: () => render(mount, ctx, helpers) });
-    body.append(qr.el);
-  }
-  return { el: details, dispose: () => qr?.dispose() };
-}
-
-function provisionPanel(mount, ctx, helpers, hint = "班级还没有可用于网页对话的专属 Agent。") {
-  const button = el("button", { class: "primary", type: "button" }, "创建班级 Agent");
-  button.addEventListener("click", async () => {
-    button.disabled = true;
-    button.textContent = "正在创建…";
-    try {
-      await api(`/classes/${state.classId}/agent-binding/provision`, { method: "POST", body: {} });
-      if (mount.isConnected) await render(mount, ctx, helpers);
-    } catch (error) {
-      button.parentElement?.append(errorPanel(error));
-      button.disabled = false;
-      button.textContent = "重新创建";
-    }
-  });
-  return el("div", { class: "card" }, emptyState("需要先创建班级 Agent", hint, button));
+function provisionPanel() {
+  return el("div", { class: "card" }, emptyState("需要先创建班级 Agent", "请到账户设置中创建本班专属 Agent；网页对话不要求绑定微信。",
+    el("a", { href: "#/account" }, "前往账户设置")));
 }
 
 function chatPanel(binding, scope, conversation) {
@@ -103,6 +64,8 @@ function chatPanel(binding, scope, conversation) {
   let renderedController;
   let renderedRevision = -1;
   let renderedTail = null;
+  let renderedThinkingOptions = null;
+  let renderedPendingThinking = null;
   const fileAnalysisEnabled = featureEnabled("file_analysis");
   const maxBytes = Number(appConfig.storage.max_attachment_bytes) || 20 * 1024 * 1024;
   const messages = el("div", { class: "agent-chat-messages", role: "log", aria: { live: "polite", label: "班级 Agent 对话消息" } });
@@ -138,17 +101,38 @@ function chatPanel(binding, scope, conversation) {
   const sendButton = el("button", { class: "agent-chat-send", type: "button", aria: { label: "发送消息" } }, "发送");
   const stopButton = el("button", { class: "agent-chat-stop hidden", type: "button" }, "停止");
   const statusLine = el("span", { class: "agent-composer-status muted", role: "status" }, "Enter 发送 · Shift+Enter 换行");
-  const thinkingLabels = { off: "关闭", minimal: "极低", low: "低", medium: "中", high: "高", xhigh: "极高", adaptive: "自适应", max: "最高" };
-  const defaultLevel = appConfig.agent_chat.default_thinking_level;
   const thinkingSelect = el("select", { class: "agent-thinking-select", aria: { label: "本会话思考强度" },
-    title: "仅影响本会话下一条消息，不修改其他对话、微信或默认配置；模型须支持所选档位。" },
-  el("option", { value: "" }, `跟随默认（${thinkingLabels[defaultLevel] || defaultLevel}）`),
-  Object.entries(thinkingLabels).map(([value, label]) => el("option", { value }, label)));
-  thinkingSelect.value = conversation.thinkingLevel || "";
+    title: "仅显示当前模型支持的选项，设置只影响本会话的后续消息。", disabled: true });
+  const thinkingNote = el("small", { class: "agent-thinking-note muted", role: "status" });
   thinkingSelect.addEventListener("change", () => {
     agentChatStore.setThinkingLevel(scope, conversation, thinkingSelect.value || null);
     thinkingSelect.value = conversation.thinkingLevel || "";
   });
+
+  function renderThinking() {
+    const profile = scope.thinkingOptions;
+    const defaultLabel = profile?.levels.find((item) => item.id === profile.default_level)?.label;
+    const pendingLevel = conversation.activeController && conversation.thinkingLevel
+      && !profile?.levels.some((item) => item.id === conversation.thinkingLevel) ? conversation.thinkingLevel : null;
+    if (profile !== renderedThinkingOptions || pendingLevel !== renderedPendingThinking || !thinkingSelect.children.length) {
+      renderedThinkingOptions = profile;
+      renderedPendingThinking = pendingLevel;
+      clear(thinkingSelect);
+      thinkingSelect.append(el("option", { value: "", disabled: Boolean(profile && !defaultLabel) },
+        profile ? defaultLabel ? `跟随默认（${defaultLabel}）` : "默认不适用，请选择" : "正在读取模型支持的选项…"));
+      for (const item of profile?.levels || []) thinkingSelect.append(el("option", { value: item.id }, item.label));
+      if (pendingLevel) {
+        thinkingSelect.append(el("option", { value: pendingLevel, disabled: true }, "本轮使用的原设置"));
+      }
+      thinkingSelect.title = profile?.model ? `当前模型：${profile.model}；仅影响本会话。` : "仅影响本会话的后续消息。";
+    }
+    const defaultNote = profile?.default_adjusted && conversation.thinkingLevel === null
+      ? defaultLabel ? `配置默认不受当前模型支持，默认采用${defaultLabel}。` : "配置默认不受当前模型支持，请选择可用档位。" : "";
+    thinkingNote.textContent = [conversation.thinkingNotice, defaultNote].filter(Boolean).join(" ");
+    thinkingNote.classList.toggle("hidden", !thinkingNote.textContent);
+    thinkingSelect.value = conversation.thinkingLevel || "";
+    thinkingSelect.disabled = Boolean(conversation.activeController || !profile);
+  }
 
   function scrollBottom() { requestAnimationFrame(() => { if (!disposed) messages.scrollTop = messages.scrollHeight; }); }
 
@@ -376,15 +360,15 @@ function chatPanel(binding, scope, conversation) {
   const panel = el("section", { class: "agent-chat-panel", aria: { label: `与 ${binding.agent_name} 对话` } },
     el("div", { class: "agent-chat-bar" },
       el("div", {}, el("b", {}, binding.agent_name), el("span", { class: "agent-online" }, "在线")),
-      el("label", { class: "agent-thinking-control" }, "本会话思考强度 ", thinkingSelect)),
+      el("div", { class: "agent-thinking-settings" },
+        el("label", { class: "agent-thinking-control" }, "本会话思考强度 ", thinkingSelect), thinkingNote)),
     messages,
     composer);
   function refresh() {
     if (disposed) return;
+    renderThinking();
     const sameLayout = renderedMessageCount === conversation.messages.length && renderedController === conversation.activeController;
     if (sameLayout && renderedRevision === conversation.revision) return;
-    thinkingSelect.disabled = Boolean(conversation.activeController);
-    thinkingSelect.value = conversation.thinkingLevel || "";
     renderedRevision = conversation.revision;
     if (sameLayout && renderedTail && conversation.messages.at(-1)?.streaming) {
       renderedTail.textContent = conversation.messages.at(-1).text;
@@ -393,6 +377,12 @@ function chatPanel(binding, scope, conversation) {
     }
     renderedMessageCount = conversation.messages.length;
     renderedController = conversation.activeController;
+    if (busy && !conversation.activeController && conversation.draft) {
+      textarea.value = conversation.draft;
+      selectedFiles = [...conversation.files];
+      renderFiles();
+      resizeInput();
+    }
     setBusy(Boolean(conversation.activeController));
     renderMessages();
   }
@@ -401,6 +391,11 @@ function chatPanel(binding, scope, conversation) {
   refresh();
   return {
     el: panel, conversationId: conversation.id, refresh,
+    thinkingError(error) {
+      if (disposed) return;
+      thinkingNote.textContent = `${error.message}；发送前会重新检查。`;
+      thinkingNote.classList.remove("hidden");
+    },
     dispose() {
       if (disposed) return;
       conversation.draft = textarea.value;
@@ -419,13 +414,13 @@ export async function render(mount, ctx, helpers) {
   if (!mount.isConnected) return;
   dispose();
   const view = {
-    disposed: false, panel: null, bindingPanel: null, unsubscribe: null,
+    disposed: false, panel: null, unsubscribe: null, onFocus: null,
     cleanup() {
       if (this.disposed) return;
       this.disposed = true;
       this.unsubscribe?.();
+      if (this.onFocus) window.removeEventListener("focus", this.onFocus);
       this.panel?.dispose();
-      this.bindingPanel?.dispose();
     },
   };
   activeView = view;
@@ -437,13 +432,30 @@ export async function render(mount, ctx, helpers) {
     if (scope && live()) agentChatStore.createConversation(scope);
   });
   clear(mount);
-  mount.append(pageHeader("班级 Agent 对话", "文字、语音和文件都可以直接交给本班专属 Agent。", newChatButton));
+  mount.append(pageHeader("班级 Agent", "文字、语音和文件都可以直接交给本班专属 Agent。", newChatButton));
   const host = el("div", { class: "agent-chat-main" }, skeleton(4));
   const list = el("div", { class: "agent-conversation-list", role: "region", aria: { label: "对话列表" } });
-  const sidebar = el("aside", { class: "agent-chat-sidebar" }, list);
+  const sidebar = el("aside", { class: "agent-chat-sidebar" }, list,
+    el("p", { class: "muted" }, el("a", { href: "#/account" }, "绑定与设置请前往账户设置")));
   mount.append(scope ? el("div", { class: "agent-chat-layout" }, sidebar, host) : host);
   let binding = null;
   let renderedListSignature = null;
+  let thinkingLoad = null;
+
+  async function reloadThinking() {
+    if (!thinkingLoad) thinkingLoad = api(`/classes/${scope.classId}/agent-chat/thinking`, { timeoutMs: 15_000 });
+    const pending = thinkingLoad;
+    try {
+      const profile = await pending;
+      if (live() && !scope.disposed) agentChatStore.setThinkingOptions(scope, profile);
+      return profile;
+    } catch (error) {
+      if (live() && !scope.disposed) agentChatStore.setThinkingOptions(scope, null);
+      throw error;
+    } finally {
+      if (thinkingLoad === pending) thinkingLoad = null;
+    }
+  }
 
   function refreshConversations() {
     if (!live()) return;
@@ -517,16 +529,18 @@ export async function render(mount, ctx, helpers) {
     const loadedBinding = await api(`/classes/${scope.classId}/agent-binding`);
     if (!live()) return;
     if (!loadedBinding.openclaw_agent_id) {
-      host.append(provisionPanel(mount, ctx, helpers));
+      host.append(provisionPanel());
       return;
     }
     binding = loadedBinding;
-    view.bindingPanel = bindingPanel(binding, mount, ctx, helpers);
-    sidebar.append(view.bindingPanel.el);
     refreshConversations();
+    view.onFocus = () => { void reloadThinking().catch((error) => { if (live()) view.panel?.thinkingError(error); }); };
+    window.addEventListener("focus", view.onFocus);
+    try { await reloadThinking(); }
+    catch (error) { if (live()) view.panel?.thinkingError(error); }
   } catch (error) {
     if (!live()) return;
-    if (error.code === "NOT_FOUND") host.append(provisionPanel(mount, ctx, helpers));
+    if (error.code === "NOT_FOUND") host.append(provisionPanel());
     else host.append(errorPanel(error, { onRetry: () => render(mount, ctx, helpers) }));
   }
 }

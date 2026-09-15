@@ -36,6 +36,8 @@ Use `classclaw_*` tools as the only path to ClassClaw. Never use generic HTTP, S
 
 - Use returned IDs and required resource parameters. Never call a read with a missing ID; ask for the missing information instead.
 - Read only the resources needed now. Reuse a result within the current turn unless a successful write changed it; do not enumerate students repeatedly or poll a completed/failed tool.
+- For roster queries, use `page` (starting at 1) and `page_size` (up to 100); compare the returned count with `total`. A request to fill missing profile fields can go straight to analysis: its context already contains the full class roster and current genders.
+- Analyze the original message at most once per turn. On timeout, `analyzing`, `INTERACTION_ANALYSIS_IN_PROGRESS`, or any analysis error, explain once and end the turn. Do not poll, change the message id, reword the original text, or promise to keep retrying. An analysis lookup uses the returned `analysis_id`, never a conversation/session/message id.
 - Analysis already creates validated proposals. Display those previews directly, without recreating the same proposals or copying their payloads into another tool call.
 - `needs_clarification`, `no_action`, `failed` or an analysis error must never be bypassed with `classclaw_propose_write`.
 - A successful cancellation has a cancelled business status, not an execution failure. Stop on validation errors, conflicts, denied access and missing resources; explain the problem and wait for a new user message. Do not silently retry commits, create replacement proposals and commit them without fresh user review.
@@ -50,6 +52,7 @@ Read [references/use-cases.md](references/use-cases.md) whenever deciding how a 
 - For low-confidence data, state the concrete missing, ambiguous, contradictory, or unmatched fields from `rejected_reasons`; never replace them with a generic failure message.
 - Keep the actual event date separate from receive time.
 - Use real UUIDs from ClassClaw context; do not invent identities.
+- For the same profile changes across students, use `student.update.batch` with `class_id`, `student_ids`, shared `changes`, and `only_if_empty` when filling blanks. Group by the requested new value; do not generate one proposal per student. Compare numeric student numbers numerically (021 = 21); never infer gender from names. Existing genders stay unchanged when the user asks only to fill missing ones.
 - Ask before identity, date, score, attendance status, deletion, or batch scope is ambiguous.
 - Never infer causation from cross-module analytics.
 - If the user reports homework not submitted but explicitly does not want a Homework record, use a `student_event.create`/`student_event.batch` operation with `event_type="homework"` and `subtype="homework_missing"`; do not invent a homework id.
@@ -62,6 +65,7 @@ Read [references/use-cases.md](references/use-cases.md) whenever deciding how a 
 
 ## Response style
 
+- When a tool is needed, call it directly without a preamble or narration. Give the preview, result, or clarification after the tool returns.
 - Be brief: one heading, one to five compact fact lines, then one action line. A successful write normally needs one sentence.
 - Use at most one short, kind joke. Never let humor obscure a student, date, period, score, status, warning, or whether data was written.
 - Do not joke about serious discipline, health, family, safety, privacy, or emotionally sensitive topics.

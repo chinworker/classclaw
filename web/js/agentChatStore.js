@@ -13,7 +13,7 @@ export function createChatStore({ request = api, newId = createAiTaskId, timesta
     const conversation = {
       id: newId(), title: "新对话", createdAt: timestamp(), messages: [],
       draft: "", files: [], status: "idle", unread: false, activeController: null,
-      thinkingLevel: null, revision: 0,
+      thinkingLevel: null, thinkingNotice: "", revision: 0,
     };
     scope.conversations.unshift(conversation);
     scope.selectedId = conversation.id;
@@ -25,7 +25,7 @@ export function createChatStore({ request = api, newId = createAiTaskId, timesta
     if (!ownerId || !classId) throw new Error("对话需要已登录的用户和班级");
     const key = JSON.stringify([ownerId, classId]);
     if (!scopes.has(key)) {
-      const scope = { ownerId, classId, conversations: [], selectedId: null, listeners: new Set(), disposed: false };
+      const scope = { ownerId, classId, conversations: [], selectedId: null, listeners: new Set(), disposed: false, thinkingOptions: null };
       scopes.set(key, scope);
       createConversation(scope);
     }
@@ -51,10 +51,27 @@ export function createChatStore({ request = api, newId = createAiTaskId, timesta
   function setThinkingLevel(scope, conversation, value) {
     if (scope.disposed || !scope.conversations.includes(conversation) || conversation.activeController) return false;
     if (value !== null && !["off", "minimal", "low", "medium", "high", "xhigh", "adaptive", "max"].includes(value)) return false;
+    if (value !== null && scope.thinkingOptions && !scope.thinkingOptions.levels.some((item) => item.id === value)) return false;
     conversation.thinkingLevel = value;
+    conversation.thinkingNotice = "";
     conversation.revision += 1;
     notify(scope);
     return true;
+  }
+
+  function reconcileThinking(scope, conversation) {
+    if (!scope.thinkingOptions || conversation.activeController || conversation.thinkingLevel === null) return;
+    if (scope.thinkingOptions.levels.some((item) => item.id === conversation.thinkingLevel)) return;
+    conversation.thinkingLevel = null;
+    conversation.thinkingNotice = "原思考强度不适用于当前模型，已恢复为跟随默认。";
+    conversation.revision += 1;
+  }
+
+  function setThinkingOptions(scope, profile) {
+    if (scope.disposed) return;
+    scope.thinkingOptions = profile;
+    for (const conversation of scope.conversations) reconcileThinking(scope, conversation);
+    notify(scope);
   }
 
   function time() {
@@ -80,15 +97,32 @@ export function createChatStore({ request = api, newId = createAiTaskId, timesta
     // Capture all ownership and request data before awaiting. Never look at a
     // global current class/conversation when a late response arrives.
     const body = new FormData();
+    const thinkingLevel = conversation.thinkingLevel;
     body.append("conversation_id", conversation.id);
     body.append("stream", "true");
-    if (conversation.thinkingLevel !== null) body.append("thinking_level", conversation.thinkingLevel);
+    if (thinkingLevel !== null) body.append("thinking_level", thinkingLevel);
     if (text) body.append("text", text);
     uploads.forEach((file) => body.append("files", file));
     const taskId = newId();
     let partial = null;
+    let thinkingLoaded = false;
+    let messageStarted = false;
     notify(scope);
     try {
+      // The preflight belongs to this conversation's request too: navigation
+      // must not cancel a message after the user has pressed Send.
+      const profile = await request(`/classes/${scope.classId}/agent-chat/thinking`, { signal: controller.signal, timeoutMs: 15_000 });
+      if (scope.disposed || controller.signal.aborted) throw Object.assign(new Error("cancelled"), { code: "REQUEST_CANCELLED" });
+      thinkingLoaded = true;
+      setThinkingOptions(scope, profile);
+      if (thinkingLevel !== null && !profile.levels.some((item) => item.id === thinkingLevel)) {
+        throw Object.assign(new Error("模型支持的思考选项已更新，请核对后再次发送。"), { code: "CHAT_THINKING_UNSUPPORTED" });
+      }
+      if (thinkingLevel === null && !profile.default_level) {
+        throw Object.assign(new Error("请选择当前模型支持的思考强度后再发送。"), { code: "CHAT_THINKING_UNSUPPORTED" });
+      }
+      if (scope.disposed || controller.signal.aborted) throw Object.assign(new Error("cancelled"), { code: "REQUEST_CANCELLED" });
+      messageStarted = true;
       const result = await request(`/classes/${scope.classId}/agent-chat/messages`, {
         method: "POST", body, timeoutMs: AI_REQUEST_TIMEOUT_MS, signal: controller.signal, aiTaskId: taskId,
         onDelta(delta) {
@@ -111,6 +145,8 @@ export function createChatStore({ request = api, newId = createAiTaskId, timesta
       }
     } catch (error) {
       if (!scope.disposed) {
+        if (!thinkingLoaded) scope.thinkingOptions = null;
+        if (!messageStarted) { conversation.draft = text; conversation.files = uploads; }
         if (partial) Object.assign(partial, { streaming: false, incomplete: true });
         const stopped = error.code === "REQUEST_CANCELLED";
         conversation.status = stopped ? "stopped" : "failed";
@@ -122,6 +158,7 @@ export function createChatStore({ request = api, newId = createAiTaskId, timesta
     } finally {
       conversation.activeController = null;
       if (!scope.disposed) {
+        reconcileThinking(scope, conversation);
         conversation.unread = true;
         notify(scope);
       }
@@ -136,13 +173,15 @@ export function createChatStore({ request = api, newId = createAiTaskId, timesta
       scope.disposed = true;
       for (const conversation of scope.conversations) stopMessage(conversation);
       scope.conversations = [];
+      scope.thinkingOptions = null;
       notify(scope);
       scope.listeners.clear();
     }
     scopes.clear();
   }
 
-  return { getScope, createConversation, selectedConversation, selectConversation, setThinkingLevel, subscribe, sendMessage, stopMessage, clear };
+  return { getScope, createConversation, selectedConversation, selectConversation, setThinkingLevel, setThinkingOptions,
+    subscribe, sendMessage, stopMessage, clear };
 }
 
 export const agentChatStore = createChatStore();

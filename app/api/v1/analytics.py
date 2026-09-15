@@ -1,18 +1,15 @@
 from __future__ import annotations
 
 from datetime import date
-
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.orm import Session
 
 from app.analytics import service
-from app.core.errors import AppError
 from app.core.responses import ok
 from app.core.security import require_owned_class, require_owned_student
 from app.database import get_db
-
 
 router = APIRouter(tags=["综合分析与早报"])
 

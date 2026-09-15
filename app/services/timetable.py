@@ -19,7 +19,6 @@ from app.schemas.domain import (
 from app.services.class_student import get_class
 from app.services.common import audit, entity_dict
 
-
 _CN_DIGITS = "零一二三四五六七八九"
 
 

@@ -1,14 +1,32 @@
-// 账户设置：资料展示与修改密码。
+// 账户设置：资料、密码，以及本班 Agent 的创建、模型设置和微信绑定。
 
 import { el, clear, toast, fmtDateTime } from "../util.js";
 import { changePassword } from "../auth.js";
 import { state } from "../state.js";
-import { pageHeader, field, fieldError, statusBadge } from "../components.js";
+import { api } from "../api.js";
+import { openAgentModelSettings } from "../agentModelSettings.js";
+import { pageHeader, field, fieldError, statusBadge, errorPanel, skeleton, qrBindingPanel } from "../components.js";
+
+let activeView = null;
+
+export function dispose() {
+  if (!activeView) return;
+  activeView.qr?.dispose();
+  activeView.modelDialog?.close();
+  window.clearTimeout(activeView.refreshTimer);
+  activeView = null;
+}
 
 export async function render(mount) {
+  if (!mount.isConnected) return;
+  dispose();
+  const view = { qr: null, modelDialog: null, refreshTimer: null, bindingRevision: 0 };
+  activeView = view;
   clear(mount);
   const user = state.user;
-  mount.append(pageHeader("账户设置", "查看账号信息并修改密码。"));
+  const classId = state.classId;
+  const live = () => activeView === view && mount.isConnected && state.user?.id === user.id && state.classId === classId;
+  mount.append(pageHeader("账户设置", user.role === "head_teacher" ? "管理账号、密码与本班 Agent 的绑定和设置。" : "查看账号信息并修改密码。"));
 
   mount.append(el("div", { class: "card" },
     el("h3", {}, "账号信息"),
@@ -37,14 +55,101 @@ export async function render(mount) {
     submit.disabled = true;
     try {
       await changePassword(currentInput.value, newInput.value);
+      if (!live()) return;
       currentInput.value = newInput.value = confirmInput.value = "";
       toast("密码修改成功", "success");
-      render(mount); // 刷新初始密码状态
+      void render(mount); // 刷新初始密码状态
     } catch (error) {
-      errorLine.append(fieldError(error.message));
+      if (live()) errorLine.append(fieldError(error.message));
     } finally {
       submit.disabled = false;
     }
   });
   mount.append(el("div", { class: "card" }, el("h3", {}, "修改密码"), form));
+
+  if (user.role !== "head_teacher") return;
+  const agentHost = el("div", { class: "account-agent-settings" });
+  mount.append(el("section", { class: "card", aria: { label: "班级 Agent 绑定与设置" } },
+    el("h3", {}, "班级 Agent · 绑定与设置"),
+    el("p", { class: "muted" }, "网页对话无需绑定微信。主模型、图片理解和语音识别在此设置；每个对话的思考强度仍在该对话内独立选择。"),
+    agentHost));
+  if (!classId) {
+    agentHost.append(el("p", { class: "muted" }, "尚未创建班级。创建班级后即可管理专属 Agent。"),
+      el("a", { href: "#/onboarding" }, "前往创建班级"));
+    return;
+  }
+
+  function showProvision() {
+    const button = el("button", { class: "primary", type: "button" }, "创建班级 Agent");
+    const errorHost = el("div");
+    button.addEventListener("click", async () => {
+      if (!live()) return;
+      button.disabled = true;
+      button.textContent = "正在创建…";
+      clear(errorHost);
+      try {
+        await api(`/classes/${classId}/agent-binding/provision`, { method: "POST", body: {} });
+        if (live()) await loadAgent();
+      } catch (error) {
+        if (live()) errorHost.append(errorPanel(error));
+      } finally {
+        button.disabled = false;
+        button.textContent = "创建班级 Agent";
+      }
+    });
+    agentHost.append(el("p", { class: "muted" }, "本班专属 Agent 尚未创建。"), button, errorHost);
+  }
+
+  async function loadAgent() {
+    if (!live()) return;
+    const revision = ++view.bindingRevision;
+    const current = () => live() && revision === view.bindingRevision;
+    view.qr?.dispose();
+    view.qr = null;
+    clear(agentHost).append(skeleton(3));
+    let binding;
+    try {
+      binding = await api(`/classes/${classId}/agent-binding`);
+    } catch (error) {
+      if (!current()) return;
+      clear(agentHost);
+      if (error.code === "NOT_FOUND") showProvision();
+      else agentHost.append(errorPanel(error, { onRetry: loadAgent }));
+      return;
+    }
+    if (!current()) return;
+    clear(agentHost);
+    if (!binding.openclaw_agent_id) { showProvision(); return; }
+    const linked = binding.status === "linked" && Boolean(binding.channel_account_id);
+    const modelButton = el("button", { class: "secondary agent-model-button", type: "button" }, "模型设置");
+    modelButton.addEventListener("click", async () => {
+      if (!live() || view.modelDialog) return;
+      modelButton.disabled = true;
+      try {
+        const dialog = await openAgentModelSettings(classId, {
+          isActive: live,
+          onClosed: () => { if (view.modelDialog === dialog) view.modelDialog = null; },
+          onSaved: (result) => {
+            if (!live()) return;
+            window.clearTimeout(view.refreshTimer);
+            view.refreshTimer = window.setTimeout(() => { if (live()) void loadAgent(); }, result.restart_requested ? 1600 : 0);
+          },
+        });
+        if (dialog) view.modelDialog = dialog;
+      } finally { modelButton.disabled = false; }
+    });
+    agentHost.append(
+      el("p", {}, el("b", {}, binding.agent_name), " ", statusBadge(binding.status)),
+      el("p", { class: "muted" }, linked
+        ? `微信已绑定${binding.linked_at ? ` · ${fmtDateTime(binding.linked_at)}` : ""}，需要时可重新扫码绑定。`
+        : "微信尚未绑定完成，请点击下方按钮生成二维码并扫码。"),
+      binding.last_error ? el("p", { class: "field-error" }, `最近错误：${binding.last_error}`) : null,
+      el("div", { class: "row-gap" }, modelButton, el("a", { href: "#/agent" }, "进入班级 Agent")));
+    // An account alias exists as soon as QR login starts; it is not proof of a
+    // completed binding. Always keep the explicit (re)binding action available.
+    view.qr = qrBindingPanel(classId, { onDone: () => { if (live()) void loadAgent(); } });
+    agentHost.append(view.qr.el);
+  }
+
+  await loadAgent();
 }

@@ -30,9 +30,10 @@ OpenClaw 对话式写入使用以下预览/确认入口；网页中的结构化�
 | class_list | GET `/classes` | page,page_size,status | 分页班级 | 否 |
 | class_summary | GET `/classes/{id}/summary` | id | 班级概览 | 否 |
 | class_delete | DELETE `/classes/{id}` | id | 彻底删除班级、关联业务数据及 Agent 运行配置 | 网页危险操作二次确认 |
-| student_search | GET `/students` | class_id,q,exact_name | 候选学生；同名标记 ambiguous | 否 |
+| student_search | GET `/students` | class_id,q,exact_name,page,page_size | 候选学生；分页 total；同名标记 ambiguous | 否 |
 | student_create | POST `/students` | class_id,student_no,name,… | 学生 | 否 |
 | student_update | PATCH `/students/{id}` | 可修改字段 | 学生 | 批量时是 |
+| student.update.batch proposal | POST `/write-proposals`，再确认 | class_id,student_ids,changes,only_if_empty? | 同值变更分组预览、完整名单；确认时旧值冲突则整批回滚 | 是 |
 | student_detail | GET `/students/{id}` | id | 档案聚合 | 否 |
 | seat_current_get | GET `/classes/{id}/seating/current` | class id | 最新快照 | 否 |
 | seat_history_list | GET `/classes/{id}/seating/history` | page,page_size | 快照历史 | 否 |
