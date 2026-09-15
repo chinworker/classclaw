@@ -66,6 +66,7 @@ export function installDom() {
   globalThis.document = Object.assign(new EventTarget(), {
     body: new TestNode("body"), activeElement: null,
     createElement: (tag) => new TestNode(tag), createTextNode: (text) => new TestNode("#text", text),
+    createElementNS: (_namespace, tag) => new TestNode(tag),
   });
   const values = new Map();
   globalThis.sessionStorage = { getItem: (key) => values.get(key), setItem: (key, value) => values.set(key, value), removeItem: (key) => values.delete(key) };

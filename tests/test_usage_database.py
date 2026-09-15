@@ -126,6 +126,24 @@ def test_stats_and_admin_browser_use_separate_database(client, db, usage_db, usa
     assert next(row for row in overview["tables"] if row["name"] == "ai_usage_records")["error"] == "USAGE_DATABASE_UNAVAILABLE"
 
 
+def test_database_overview_survives_usage_sql_error(client, monkeypatch):
+    from contextlib import contextmanager
+
+    from sqlalchemy.exc import SQLAlchemyError
+
+    @contextmanager
+    def broken_reader():
+        raise SQLAlchemyError("disk I/O error")
+        yield
+
+    monkeypatch.setattr(usage_database, "reader_session", broken_reader)
+    response = client.get("/api/v1/admin/database/overview")
+    assert response.status_code == 200
+    tables = response.json()["data"]["tables"]
+    assert any(row["database"] == "core" and row["row_count"] is not None for row in tables)
+    assert next(row for row in tables if row["name"] == "ai_usage_records")["error"] == "SQLAlchemyError"
+
+
 def test_core_startup_survives_usage_migration_failure(legacy_engine, usage_store, monkeypatch, caplog):
     _seed(legacy_engine)
     _seed(usage_store.engine, tokens=99)

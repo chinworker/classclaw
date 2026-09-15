@@ -1,20 +1,26 @@
 from __future__ import annotations
 
+from typing import Annotated
+
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.orm import Session
 
 from app.core.errors import AppError
 from app.core.responses import ok
-from app.core.security import require_admin
+from app.core.security import principal_from_request, require_admin
 from app.database import get_db
 from app.schemas.admin import (
     AdminClassOwnerUpdate,
     AdminInitializeRequest,
+    ConfigDocumentCheck,
+    ConfigDocumentRollback,
+    ConfigDocumentUpdate,
+    GatewayRawUpdate,
     OpenClawAgentUpdate,
     OpenClawGlobalUpdate,
     OpenClawWorkspaceFileUpdate,
 )
-from app.services import admin_console, openclaw_bridge
+from app.services import admin_console, config_document, openclaw_bridge
 
 router = APIRouter(prefix="/admin", tags=["管理员控制台"], dependencies=[Depends(require_admin)])
 
@@ -60,6 +66,40 @@ def class_create(request: Request):
     )
 
 
+@router.get("/settings/document")
+async def settings_document(request: Request):
+    response = ok(request, await config_document.read_document())
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@router.post("/settings/check")
+async def settings_check(request: Request, body: ConfigDocumentCheck):
+    return ok(request, await config_document.check_document(body))
+
+
+@router.patch("/settings/document")
+async def settings_update(request: Request, body: ConfigDocumentUpdate, db: Annotated[Session, Depends(get_db)]):
+    return ok(request, await config_document.update_document(db, principal_from_request(request), body))
+
+
+@router.post("/settings/rollback")
+async def settings_rollback(request: Request, body: ConfigDocumentRollback, db: Annotated[Session, Depends(get_db)]):
+    return ok(request, await config_document.rollback_document(db, principal_from_request(request), body))
+
+
+@router.get("/openclaw/config/raw")
+async def gateway_document(request: Request):
+    response = ok(request, await admin_console.openclaw_config_raw())
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@router.patch("/openclaw/config/raw")
+async def gateway_update(request: Request, body: GatewayRawUpdate, db: Annotated[Session, Depends(get_db)]):
+    return ok(request, await admin_console.update_openclaw_config_raw(db, principal_from_request(request), body))
+
+
 @router.patch("/classes/{class_id}/owner")
 def class_owner_update(request: Request, class_id: str, body: AdminClassOwnerUpdate, db: Session = Depends(get_db)):
     return ok(request, admin_console.update_class_owner(db, class_id, body.owner_user_id), "班级负责人已更新")
@@ -71,8 +111,8 @@ async def openclaw_config(request: Request):
 
 
 @router.patch("/openclaw/config")
-async def openclaw_config_update(request: Request, body: OpenClawGlobalUpdate):
-    return ok(request, await admin_console.update_openclaw_config(body), "OpenClaw 配置已提交")
+async def openclaw_config_update(request: Request, body: OpenClawGlobalUpdate, db: Annotated[Session, Depends(get_db)]):
+    return ok(request, await admin_console.update_openclaw_config(db, principal_from_request(request), body), "OpenClaw 配置已提交")
 
 
 @router.get("/openclaw/agents/catalog")
@@ -120,8 +160,12 @@ async def logs_tail(
     q: str | None = Query(None, max_length=200),
     limit: int = Query(100, ge=1, le=500),
     cursor: int | None = Query(None, ge=0),
+    request_id: str | None = Query(None, max_length=200),
+    since: str | None = Query(None, max_length=50),
+    file_id: str | None = Query(None, max_length=100),
 ):
-    return ok(request, await admin_console.logs_view(source=source, limit=limit, level=level, query=q, cursor=cursor))
+    return ok(request, await admin_console.logs_view(source=source, limit=limit, level=level, query=q, cursor=cursor,
+                                                   request_id=request_id, since=since, file_id=file_id))
 
 
 @router.post("/system/initialize")

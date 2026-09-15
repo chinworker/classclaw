@@ -75,7 +75,7 @@ cd <项目根目录>
 
 管理员登录后只进入 `/app/#/admin/*` 技术控制台，不加载班主任业务导航。控制台包含：
 
-导航按「ClassClaw 系统」「OpenClaw 配置与维护」「班级 Agent」「可观测性」分组。ClassClaw 启动配置在 `/admin/settings`，OpenClaw 连接与微信参数在 `/admin/openclaw/settings`，Gateway 全局运行配置在 `/admin/openclaw`，Main/提取 Agent 在 `/admin/openclaw/system-agents`，各班级 Agent 在 `/admin/agents`。班级列表可直接跳转到对应 Agent，未创建 Agent 的班级也会显示；班级 Agent 支持按班级、负责人、Agent ID 和状态筛选。完整配置分类及文件位置见 [配置说明](configuration.md#管理端配置层级)。
+导航收敛为「概览」「设置中心」「班级与账号」「运维中心」四项。`/admin/settings` 统一 ClassClaw 表单 / TOML 源码、OpenClaw 白名单配置及系统 / 班级 Agent。`/admin/access` 合并用户与班级管理，班级行展开后可改派负责人及使用共用 Agent 面板。`/admin/ops?tab=usage|logs|maintenance|database|audit` 提供五个运维 tab。旧路由保留跳转，包含原 query 的班级等信息。完整分类见 [配置说明](configuration.md#管理端配置层级)。
 
 - `GET /api/v1/admin/overview`：用户、班级、学生、智能体、会话、SQLite/附件占用及 OpenClaw 健康状态。
 - `POST /api/v1/admin/classes`：已停用，固定返回 `WEB_ONBOARDING_REQUIRED`——管理员不具备任何建班入口，新班级只能由班主任账号通过 `/app/#/onboarding` 创建向导完成资料复核、专属智能体与微信绑定；管理员在班级创建后经此页分配/解除负责人。`PATCH /api/v1/admin/classes/{id}/owner`：分配或解除班主任；班级字段修改和删除复用 `/classes/{id}`。
@@ -85,10 +85,12 @@ cd <项目根目录>
 - `PUT /api/v1/admin/openclaw/agents/{identifier}/workspace/{filename}`、`POST .../reset`：编辑 `AGENTS.md`、`SOUL.md`、`IDENTITY.md`、`TOOLS.md`、`USER.md`、`HEARTBEAT.md`。文件名使用白名单，保存时带 SHA-256 版本检查；班级和提取智能体可恢复 ClassClaw 默认内容，Main 只允许保存和版本校验，不提供默认内容覆盖。自定义内容不会被日常 Agent 修复流程覆盖。
 - `GET /api/v1/admin/usage`：按自然日窗口聚合业务库的登录、交互、写入和独立用量库的 OpenClaw Responses Token。Token 从迁移 `0009` 后开始采集，`0014` 保留并迁移已有采集记录，不补算从未采集的历史数据。统计库不可用时返回 503 `USAGE_DATABASE_UNAVAILABLE`，不会把故障显示为零用量。
 - `GET /api/v1/admin/usage/agents`：按 Main、数据提取和班级 Agent 读取 OpenClaw 会话统计，包括模型调用次数、Agent 回复数、错误数、Token/费用、平均/P95/最短/最长/最近一次响应耗时、有效样本数及逐日趋势。Token 和费用来自 `usage.cost`；调用与延迟由后端只读扫描 TOML `storage.openclaw_state_dir` 下对应 Agent 的 transcript 元数据，忽略且不保存消息正文。耗时优先使用 OpenClaw `durationMs`，缺失时使用用户消息到 Agent 回复记录的时间差。
-- `GET /api/v1/admin/logs`：读取 ClassClaw 轮转 JSON 日志或 OpenClaw Gateway 日志，支持来源、级别、关键字和数量筛选。ClassClaw 日志只记录请求元数据和异常，不记录请求正文或聊天消息。
-- `GET /api/v1/admin/settings`：只读展示全部 43 项非敏感启动配置，保留原有列表结构和旧字段 key；每项标注 TOML 字段、环境变量、实际来源及“修改后重启”。不再提供在线 PUT 更新。
+- `GET /api/v1/admin/logs`：读取 ClassClaw 轮转 JSON 日志或 OpenClaw Gateway 日志，支持来源、级别、关键字、精确 request_id、since 时间和 cursor 增量筛选，单次最多扫描 5000 行。网页可展开请求链路、每 3 秒增量刷新并导出当前视图，离页取消日志读取与轮询。ClassClaw 日志只记录请求元数据和异常，不记录请求正文或聊天消息。
+- `GET /api/v1/admin/settings`：读取全部非敏感启动配置，保留原有列表结构和旧字段 key；每项标注 TOML 字段、环境变量、实际来源及“修改后重启”。保留旧列表接口，不提供逐项 PUT；网页编辑使用下述文档接口。
 - `GET /api/v1/admin/settings/catalog`：管理员专用分组目录，包含启动配置文件位置、版本、优先级及凭据配置状态；不依赖 OpenClaw 在线，不返回密钥内容，禁止缓存。
-- `/app/#/admin/maintenance`：集中显示服务器备份、恢复、附件检查步骤和完整初始化入口；`/app/#/admin/openclaw/maintenance` 查看会话维护状态并调用 `POST /api/v1/admin/openclaw/sessions/cleanup?enforce=false` 预览，不在页面执行会话删除。
+- `GET|PATCH /api/v1/admin/settings/document`、`POST /api/v1/admin/settings/check`、`POST /api/v1/admin/settings/rollback`：非敏感 TOML 文档读取、校验、原子保存和恢复；环境变量锁定、版本冲突、同目录备份、失败恢复和仅键名 / hash 审计。
+- `GET|PATCH /api/v1/admin/openclaw/config/raw`：通过 Gateway RPC 读取脱敏 JSON，编辑仅接受三个白名单标量路径，必须携带 `base_hash`；冲突返回 409 并刷新配置。
+- `/app/#/admin/ops?tab=maintenance`：备份、恢复、附件检查、完整初始化及 OpenClaw 会话维护；日志 tab 下也保留会话维护卡，预览仍使用 `POST /api/v1/admin/openclaw/sessions/cleanup?enforce=false`，不自动删除聊天会话。
 - `POST /api/v1/admin/system/initialize`：要求正文确认值 `INITIALIZE`，执行完整出厂重置。全部旧用户、登录会话、班级业务数据、临时草稿、附件、数据库运行状态、审计日志、AI/Token 统计和班级 Agent 都会删除；随后只重新创建启动配置指定的默认管理员。OpenClaw 的 `main` 与 `classclaw-extractor` 是两个默认智能体，不删除；Main 保持 OpenClaw 基础配置，提取智能体恢复 ClassClaw 默认工作区，两者的历史会话目录清空。程序代码、数据库表结构、`classclaw.toml`、`.env` 和 OpenClaw 安装本身不变。外部智能体、文件或日志有任何一项无法清理时，接口返回错误并保留数据库，便于修复后安全重试；只有全部预清理成功后才清空数据库并返回 `completed`。发起初始化的登录会话随全部会话一起失效。
 
 功能开关不是纯界面状态：文件解析、学生事件 AI 分类、微信绑定和主动提醒的对应后端接口都会执行开关检查。配置来自启动时读取的 `config/classclaw.toml`（环境变量可兼容覆盖），不再写入 `system_settings`；任何密钥都不能通过管理端配置接口读取或修改。详见 [静态配置说明](configuration.md)。

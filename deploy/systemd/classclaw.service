@@ -1,0 +1,31 @@
+[Unit]
+Description=ClassClaw classroom management
+ConditionPathExists=!/opt/classclaw/backups/.upgrade-pending.json
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=classclaw
+Group=classclaw
+WorkingDirectory=/opt/classclaw
+Environment=PATH=/home/classclaw/.npm-global/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONUNBUFFERED=1
+Environment=FORWARDED_ALLOW_IPS=127.0.0.1
+ExecStartPre=/opt/classclaw/.venv/bin/python scripts/check_config.py
+ExecStart=/opt/classclaw/.venv/bin/python run.py
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=180
+KillMode=mixed
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+MemoryAccounting=true
+MemoryHigh=512M
+MemoryMax=1G
+
+[Install]
+WantedBy=multi-user.target

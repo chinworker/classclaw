@@ -7,6 +7,7 @@ import { login, logout, restoreSession } from "./js/auth.js";
 import { state, clearSession, refreshIdentity, refreshClassInfo, refreshOpenclaw, savePrefs } from "./js/state.js";
 import { defineRoutes, setRouteResolver, startRouter, dispatch, navigate, parseHash } from "./js/router.js";
 import { field, fieldError } from "./js/components.js";
+import { ADMIN_NAV, ADMIN_ALIASES } from "./js/adminRoutes.js";
 
 const root = document.getElementById("root");
 installEnhancedControls();
@@ -51,32 +52,6 @@ const TEACHER_NAV = [
   ]},
 ];
 
-const ADMIN_NAV = [
-  { group: "控制台", items: [
-    { path: "/admin/overview", label: "运行概览" },
-  ]},
-  { group: "ClassClaw 系统", items: [
-    { path: "/admin/settings", label: "系统配置" },
-    { path: "/admin/users", label: "用户" },
-    { path: "/admin/classes", label: "班级" },
-    { path: "/admin/maintenance", label: "备份与系统维护" },
-  ]},
-  { group: "OpenClaw 配置与维护", items: [
-    { path: "/admin/openclaw/settings", label: "连接与微信配置" },
-    { path: "/admin/openclaw", label: "Gateway 全局配置" },
-    { path: "/admin/openclaw/system-agents", label: "系统 Agent · Main / 提取" },
-    { path: "/admin/openclaw/maintenance", label: "会话维护" },
-  ]},
-  { group: "班级 Agent", items: [
-    { path: "/admin/agents", label: "各班级 Agent 配置" },
-  ]},
-  { group: "可观测性", items: [
-    { path: "/admin/usage", label: "使用量与 Token" },
-    { path: "/admin/logs", label: "运行日志" },
-    { path: "/admin/database", label: "数据库" },
-    { path: "/admin/audit", label: "审计日志" },
-  ]},
-];
 
 const NAV = [...TEACHER_NAV, ...ADMIN_NAV];
 
@@ -102,20 +77,11 @@ const routes = [
   { path: "/analytics/attention", title: "重点关注", loader: () => import("./js/pages/analytics.js?v=20260901-analytics-fix"), requiresClass: true, section: "attention" },
   { path: "/workflow", title: "待确认记录", loader: () => import("./js/pages/workflow.js") },
   { path: "/agent", title: "班级 Agent", loader: () => import("./js/pages/agent.js?v=20260910-account-binding") },
-  { path: "/admin/overview", title: "运行概览", loader: () => import("./js/pages/adminOverview.js"), adminOnly: true },
-  { path: "/admin/users", title: "用户管理", loader: () => import("./js/pages/adminUsers.js"), adminOnly: true },
-  { path: "/admin/classes", title: "班级管理", loader: () => import("./js/pages/adminClasses.js"), adminOnly: true },
-  { path: "/admin/openclaw", title: "Gateway 全局配置", loader: () => import("./js/pages/adminAgents.js"), adminOnly: true },
-  { path: "/admin/openclaw/settings", title: "OpenClaw 连接与微信配置", loader: () => import("./js/pages/adminSettings.js"), adminOnly: true },
-  { path: "/admin/openclaw/system-agents", title: "系统 Agent 配置", loader: () => import("./js/pages/adminAgents.js"), adminOnly: true },
-  { path: "/admin/openclaw/maintenance", title: "OpenClaw 会话维护", loader: () => import("./js/pages/adminMaintenance.js"), adminOnly: true },
-  { path: "/admin/agents", title: "班级 Agent 配置", loader: () => import("./js/pages/adminAgents.js"), adminOnly: true },
-  { path: "/admin/usage", title: "使用量与 Token", loader: () => import("./js/pages/adminUsage.js"), adminOnly: true },
-  { path: "/admin/logs", title: "运行日志", loader: () => import("./js/pages/adminLogs.js"), adminOnly: true },
-  { path: "/admin/database", title: "数据库调试", loader: () => import("./js/pages/adminDatabase.js"), adminOnly: true },
-  { path: "/admin/audit", title: "审计日志", loader: () => import("./js/pages/adminAudit.js"), adminOnly: true },
-  { path: "/admin/settings", title: "ClassClaw 系统配置", loader: () => import("./js/pages/adminSettings.js"), adminOnly: true },
-  { path: "/admin/maintenance", title: "备份与系统维护", loader: () => import("./js/pages/adminMaintenance.js"), adminOnly: true },
+  { path: "/admin/overview", title: "概览", loader: () => import("./js/pages/adminOverview.js"), adminOnly: true },
+  { path: "/admin/settings", title: "设置中心", loader: () => import("./js/pages/adminSettings.js"), adminOnly: true },
+  { path: "/admin/access", title: "班级与账号", loader: () => import("./js/pages/adminAccess.js"), adminOnly: true },
+  { path: "/admin/ops", title: "运维中心", loader: () => import("./js/pages/adminOps.js"), adminOnly: true },
+  ...Object.entries(ADMIN_ALIASES).map(([path, redirect]) => ({ path, redirect, adminOnly: true })),
   { path: "/account", title: "账户设置", loader: () => import("./js/pages/account.js?v=20260911-wechat-verification") },
   { path: "/welcome", title: "创建班级", loader: () => import("./js/pages/welcome.js"), bare: true },
   { path: "/onboarding", title: "班级创建向导", loader: () => import("./js/pages/onboarding.js?v=20260901-onboarding-actions") },
@@ -292,6 +258,10 @@ setRouteResolver(async (route, ctx) => {
   const isAdmin = state.user.role === "admin";
   if (route.adminOnly && !isAdmin) {
     mountErrorState("权限不足", "该页面仅管理员可以访问。", "403");
+    return;
+  }
+  if (route.redirect) {
+    navigate(route.redirect[0], { ...ctx.query, ...route.redirect[1] });
     return;
   }
   if (isAdmin && !route.adminOnly && route.path !== "/account") {

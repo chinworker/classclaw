@@ -25,8 +25,13 @@ def test_catalog_covers_every_supported_startup_field_once():
     for row in data["items"]:
         assert sections[row["section"]] == row["category"]
         assert row["label"] and row["description"] and row["env_var"]
-        assert row["editable"] is False and row["restart_required"] is True
+        assert row["editable"] is (not row["value_source"].startswith("environment:"))
+        assert row["restart_required"] is True
     assert {row["category"] for row in data["items"]} == {"classclaw", "openclaw"}
+    rows = {row["config_path"]: row for row in data["items"]}
+    assert rows["openclaw.session_cleanup_hours"]["type"] == "number"
+    assert rows["server.port"]["minimum"] == 1
+    assert rows["server.port"]["maximum"] == 65535
 
 
 def test_catalog_reports_actual_startup_sources_and_resolved_values(tmp_path, monkeypatch):

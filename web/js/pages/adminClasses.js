@@ -1,22 +1,39 @@
 import { el, clear, fmtDateTime, toast } from "../util.js";
-import { api } from "../api.js";
-import { pageHeader, dataTable, statusBadge, openModal, confirmDanger, field, errorPanel, skeleton } from "../components.js";
+import { agentPanel } from "../adminAgentPanel.js";
+import { adminView } from "../adminView.js";
+import { pageHeader, dataTable, statusBadge, openModal as modal, confirmDanger as danger, field, errorPanel, skeleton } from "../components.js";
 
-export async function render(mount) {
+let activeView = null;
+export function dispose() { activeView?.dispose(); activeView = null; }
+
+export async function render(mount, ctx = {}) {
+  dispose(); const view = adminView(); activeView = view;
+  clear(mount);
+  const api = async (path, options = {}) => {
+    const result = await view.api(path, options);
+    if (options.method && options.method !== "GET") ctx.onChanged?.();
+    return result;
+  };
+  const openModal = (options) => view.overlay(modal(options));
+  const confirmDanger = (options) => danger({ ...options, signal: view.signal });
+
   const host = el("div");
-  let users = []; let classes = [];
+  let users = []; let classes = []; let agents = []; let agentError = null;
+  view.guard(() => false);
   mount.append(pageHeader("班级管理", "管理员维护已有班级：修改信息、分配负责人和彻底删除。新班级由班主任账号通过创建向导创建。"), host);
 
   async function load() {
     clear(host); host.append(skeleton(5));
     try {
-      const [classData, userData] = await Promise.all([api("/classes?page_size=100"), api("/admin/users")]);
+      const [classData, userData, agentResult] = await Promise.all([api("/classes?page_size=100"), api("/admin/users"),
+        api("/admin/openclaw/agents/catalog").then((value) => ({ value })).catch((error) => ({ error }))]);
+      agents = agentResult.value || []; agentError = agentResult.error;
       classes = classData.items || []; users = userData.filter((u) => u.role === "head_teacher");
       const ownerNames = new Map(users.map((u) => [u.id, u.display_name || u.username]));
       clear(host);
       host.append(dataTable({
         columns: [
-          { key: "name", label: "班级", render: (c) => el("div", {}, el("b", {}, c.name), el("div", { class: "muted" }, `${c.grade}${c.room ? ` · ${c.room}` : ""}`)) },
+          { key: "name", label: "班级", render: (c) => el("div", {}, classDetails(c), el("div", { class: "muted" }, `${c.grade}${c.room ? ` · ${c.room}` : ""}`)) },
           { key: "owner_user_id", label: "负责人", render: (c) => ownerNames.get(c.owner_user_id) || "未分配" },
           { key: "status", label: "状态", render: (c) => statusBadge(c.status) },
           { key: "students", label: "资源 ID", render: (c) => el("code", {}, c.id) },
@@ -24,7 +41,35 @@ export async function render(mount) {
           { key: "actions", label: "操作", render: actions },
         ], rows: classes,
       }));
-    } catch (error) { clear(host); host.append(errorPanel(error, { onRetry: load })); }
+    } catch (error) { if (!view.active) return; clear(host); host.append(errorPanel(error, { onRetry: load })); }
+  }
+
+  function classDetails(cls) {
+    const body = el("div", { class: "access-class-detail" });
+    const details = el("details", { open: ctx.query?.class_id === cls.id || ctx.query?.focus === "agents" }, el("summary", {}, el("b", {}, cls.name)), body);
+    let loaded = false;
+    async function expand() {
+      if (!details.open || loaded) return;
+      loaded = true;
+      const owner = ownerSelect(cls);
+      const errors = el("div");
+      body.append(el("p", { class: "muted" }, `${cls.grade} · ${cls.room || "未设置教室"} · ${cls.semester_name || "未设置学期"}`),
+        field("归属班主任", owner), el("button", { class: "secondary", type: "button", onclick: async () => {
+          clear(errors);
+          try {
+            await api(`/admin/classes/${cls.id}/owner`, { method: "PATCH", body: { owner_user_id: owner.value || null } });
+            toast("班级负责人已更新", "success"); await load();
+          } catch (error) { if (view.active) errors.append(errorPanel(error)); }
+        } }, "保存负责人"), errors);
+      const agent = agents.find((item) => item.identifier === cls.id);
+      if (agent) body.append(agentPanel(agent, view, { onRefresh: load }));
+      else if (agentError) body.append(errorPanel(agentError, { onRetry: load }));
+      else body.append(el("p", { class: "muted" }, "尚未创建班级 Agent"));
+      body.append(el("a", { href: `#/admin/settings?domain=openclaw&section=class-agents&class_id=${encodeURIComponent(cls.id)}` }, "在设置中心打开本班 Agent"));
+    }
+    details.addEventListener("toggle", expand);
+    if (ctx.query?.class_id === cls.id || ctx.query?.focus === "agents") { details.open = true; void expand(); }
+    return details;
   }
 
   function ownerSelect(current = null) {
@@ -40,7 +85,7 @@ export async function render(mount) {
   function actions(cls) {
     return el("div", { class: "row-gap" },
       el("button", { class: "secondary", type: "button", onclick: () => openEdit(cls) }, "修改"),
-      el("a", { href: `#/admin/agents?class_id=${encodeURIComponent(cls.id)}` }, "Agent 配置"),
+      el("a", { href: `#/admin/settings?domain=openclaw&section=class-agents&class_id=${encodeURIComponent(cls.id)}` }, "Agent 配置"),
       el("button", { class: "text-button danger-text", type: "button", onclick: () => remove(cls) }, "彻底删除"));
   }
 
@@ -62,7 +107,7 @@ export async function render(mount) {
           await api(`/classes/${cls.id}`, { method: "PATCH", body: { name: name.value.trim(), grade: grade.value.trim(), room: room.value.trim() || null, head_teacher: teacher.value.trim() || null, semester_name: semester.value.trim() || null, status: status.value } });
           if ((owner.value || null) !== (cls.owner_user_id || null)) await api(`/admin/classes/${cls.id}/owner`, { method: "PATCH", body: { owner_user_id: owner.value || null } });
           close(); toast("班级配置已保存", "success"); load();
-        } catch (error) { toast(error.message, "error"); } finally { setSubmitting(false); }
+        } catch (error) { if (!view.active) return; toast(error.message, "error"); } finally { setSubmitting(false); }
       } }],
     });
   }
@@ -70,7 +115,7 @@ export async function render(mount) {
   async function remove(cls) {
     const accepted = await confirmDanger({ title: `彻底删除 ${cls.name}`, lines: ["将删除学生、课表、作业、考勤、附件关联等班级业务数据。", "将尝试移除 OpenClaw 智能体配置与工作目录。", "此操作不可恢复。"], requireText: cls.name, confirmLabel: "彻底删除" });
     if (!accepted) return;
-    try { await api(`/classes/${cls.id}`, { method: "DELETE" }); toast("班级及关联资源已删除", "success"); load(); } catch (error) { toast(error.message, "error"); }
+    try { await api(`/classes/${cls.id}`, { method: "DELETE" }); toast("班级及关联资源已删除", "success"); load(); } catch (error) { if (!view.active) return; toast(error.message, "error"); }
   }
 
   await load();

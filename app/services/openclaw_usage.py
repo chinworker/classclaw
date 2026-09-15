@@ -46,6 +46,7 @@ def _stats(values: list[float], *, latest_ms: float | None = None) -> dict[str, 
     result: dict[str, float | int] = {
         "count": count,
         "avgMs": sum(ordered) / count,
+        "p50Ms": ordered[max(0, math.ceil(count * 0.50) - 1)],
         "p95Ms": ordered[max(0, math.ceil(count * 0.95) - 1)],
         "minMs": ordered[0],
         "maxMs": ordered[-1],

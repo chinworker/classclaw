@@ -381,7 +381,7 @@ def _workspace_files(cls: ClassRoom, binding: ClassAgentBinding) -> dict[str, st
 所有临近提醒统一由本 Agent 主动发给用户，后端不代发。系统触发提醒任务时，先读 reminder_delivery；无效或未到期只回复 NO_REPLY，有效且到期则调用 classclaw_mark_reminder_sent，再用一句话提醒用户，不展示预览、不要求确认。
 """
     soul = "# Soul\n准确、克制、可靠；回复短而清楚，可以温和幽默一句。严肃事项不玩笑；保护隐私，不虚构，不越权。\n"
-    identity_md = f"# Identity\nName: {display_name}\nRole: 班级事务助理\nEmoji: 🏫\n"
+    identity_md = f"# Identity\nName: {display_name}\nRole: 班级事务助理\n"
     tools = """# Tools
 写入意图：`classclaw_analyze_interaction`；查询：`classclaw_read`。
 附件用 `classclaw_upload_file`；`classclaw_propose_write` 不得绕过分析。聊天确认后单条用 `classclaw_commit_write`、多条用 `classclaw_commit_writes`；放弃用 `classclaw_cancel_write`。系统提醒先读 `reminder_delivery`，有效且到期时用 `classclaw_mark_reminder_sent` 后回复。
@@ -541,7 +541,6 @@ async def _configure_agent_identity(cls: ClassRoom, binding: ClassAgentBinding) 
             "agentId": binding.openclaw_agent_id,
             "name": _identity_name(cls.id),
             "workspace": binding.workspace_path,
-            "emoji": "🏫",
         },
     )
     # agents.update may regenerate bootstrap files; defaults are repaired while admin-customized files are preserved.
@@ -570,7 +569,7 @@ async def _ensure_agent(db: Session, cls: ClassRoom, binding: ClassAgentBinding)
     try:
         result = await admin_rpc(
             "agents.create",
-            {"name": binding.agent_name, "workspace": binding.workspace_path, "emoji": "🏫"},
+            {"name": binding.agent_name, "workspace": binding.workspace_path},
         )
         binding.openclaw_agent_id = str(result["agentId"])
         binding.status = "agent_created"

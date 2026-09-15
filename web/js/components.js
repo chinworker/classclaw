@@ -85,13 +85,15 @@ export function openModal({ title, body, actions = [], wide = false, headClose =
 }
 
 // 危险操作二次确认：写明对象与影响，可要求输入特定文本。
-export function confirmDanger({ title, lines = [], requireText = null, confirmLabel = "确认执行" }) {
+export function confirmDanger({ title, lines = [], requireText = null, confirmLabel = "确认执行", signal = null }) {
   return new Promise((resolve) => {
+    if (signal?.aborted) { resolve(false); return; }
     const body = el("div", {},
       el("div", { class: "danger-lines" }, lines.map((line) => el("p", {}, line))),
       requireText ? el("label", { class: "field" }, el("span", {}, `请输入「${requireText}」以确认`), el("input", { type: "text", autocomplete: "off", id: "danger-confirm-input" })) : null,
     );
     let modal;
+    const abort = () => modal?.close();
     const run = () => {
       if (requireText) {
         const value = body.querySelector("#danger-confirm-input").value.trim();
@@ -103,24 +105,32 @@ export function confirmDanger({ title, lines = [], requireText = null, confirmLa
     modal = openModal({
       title,
       body,
-      onClose: () => resolve(false),
+      onClose: () => { signal?.removeEventListener("abort", abort); resolve(false); },
       actions: [
         { label: "取消", kind: "secondary" },
         { label: confirmLabel, kind: "danger", onClick: run, closeOnDone: true },
       ],
     });
+    signal?.addEventListener("abort", abort, { once: true });
   });
 }
 
 /* ---------------- Drawer ---------------- */
 
-export function openDrawer({ title, body, wide = false }) {
+export function openDrawer({ title, body, wide = false, onClose = null }) {
   const overlay = el("div", { class: "drawer-overlay" });
   const drawer = el("div", { class: `drawer${wide ? " drawer-wide" : ""}`, role: "dialog", "aria-modal": "true", "aria-label": title });
   const closeBtn = el("button", { class: "modal-close", type: "button", "aria-label": "关闭" }, "关闭");
   drawer.append(el("div", { class: "modal-head" }, el("h3", {}, title), closeBtn), el("div", { class: "drawer-body" }, body));
   overlay.append(drawer);
-  const { close } = attachOverlay({ overlay, panel: drawer, closeBtn });
+  const tabTrap = (event) => {
+    const nodes = [...drawer.querySelectorAll(FOCUSABLE)];
+    if (!nodes.length) return;
+    const first = nodes[0]; const last = nodes[nodes.length - 1];
+    if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+    else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+  };
+  const { close } = attachOverlay({ overlay, panel: drawer, closeBtn, onClose, tabTrap });
   return { close, drawer };
 }
 

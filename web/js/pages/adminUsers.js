@@ -1,15 +1,28 @@
 // 管理员 · 用户管理：创建班主任、停用/启用、重置密码、分配历史班级。
 
 import { el, clear, toast, fmtDateTime } from "../util.js";
-import { api } from "../api.js";
+import { adminView } from "../adminView.js";
 import {
-  pageHeader, dataTable, statusBadge, openModal, confirmDanger, field, fieldError, errorPanel, skeleton, emptyState,
+  pageHeader, dataTable, statusBadge, openModal as modal, confirmDanger as danger, field, fieldError, errorPanel, skeleton, emptyState,
 } from "../components.js";
 
-export async function render(mount) {
+let activeView = null;
+export function dispose() { activeView?.dispose(); activeView = null; }
+
+export async function render(mount, ctx = {}) {
+  dispose(); const view = adminView(); activeView = view;
+  clear(mount);
+  const api = async (path, options = {}) => {
+    const result = await view.api(path, options);
+    if (options.method && options.method !== "GET") ctx.onChanged?.();
+    return result;
+  };
+  const openModal = (options) => view.overlay(modal(options));
+  const confirmDanger = (options) => danger({ ...options, signal: view.signal });
+
   const listHost = el("div");
   mount.append(
-    pageHeader("用户管理", "管理员是创建账号的唯一入口；系统不提供公开注册。",
+    pageHeader("班主任账号", "管理员是创建账号的唯一入口；系统不提供公开注册。",
       el("button", { class: "primary", type: "button", onclick: openCreateModal }, "添加班主任")),
     listHost);
 
@@ -22,7 +35,7 @@ export async function render(mount) {
       [users] = await Promise.all([api("/admin/users")]);
       const classes = await api("/classes?page_size=100").catch(() => null);
       if (classes?.items) classNames = new Map(classes.items.map((c) => [c.id, c.name]));
-    } catch (error) {
+    } catch (error) { if (!view.active) return;
       clear(listHost);
       listHost.append(errorPanel(error, { onRetry: load }));
       return;
@@ -64,7 +77,7 @@ export async function render(mount) {
           await api(`/admin/users/${user.id}/reset-password`, { method: "POST", body: {} });
           toast(`已重置 ${user.username} 的密码为 32767`, "success");
           load();
-        } catch (error) { toast(error.message, "error"); }
+        } catch (error) { if (!view.active) return; toast(error.message, "error"); }
       },
     }, "重置密码"));
     box.append(el("button", {
@@ -83,7 +96,7 @@ export async function render(mount) {
           await api(`/admin/users/${user.id}`, { method: "PATCH", body: { is_active: target } });
           toast(target ? "账号已启用" : "账号已停用", "success");
           load();
-        } catch (error) { toast(error.message, "error"); }
+        } catch (error) { if (!view.active) return; toast(error.message, "error"); }
       },
     }, user.is_active ? "停用" : "启用"));
     box.append(el("button", { class: "secondary", type: "button", onclick: () => openAssignModal(user) }, "分配班级"));
@@ -108,7 +121,7 @@ export async function render(mount) {
         try {
           await api(`/admin/users/${user.id}`, { method: "PATCH", body: { username, display_name: displayInput.value.trim() || null, is_active: activeInput.checked } });
           close(); toast("用户资料已更新", "success"); load();
-        } catch (error) { toast(error.message, "error"); } finally { setSubmitting(false); }
+        } catch (error) { if (!view.active) return; toast(error.message, "error"); } finally { setSubmitting(false); }
       } }],
     });
   }
@@ -122,7 +135,7 @@ export async function render(mount) {
     });
     if (!accepted) return;
     try { await api(`/admin/users/${user.id}`, { method: "DELETE" }); toast("用户已删除", "success"); load(); }
-    catch (error) { toast(error.message, "error"); }
+    catch (error) { if (!view.active) return; toast(error.message, "error"); }
   }
 
   function openCreateModal() {
@@ -159,7 +172,7 @@ export async function render(mount) {
               close();
               toast(`班主任账号 ${username} 已创建，初始密码 32767（仅本次提示，请线下转交）`, "success");
               load();
-            } catch (error) {
+            } catch (error) { if (!view.active) return;
               if (error.code === "USERNAME_CONFLICT") usernameError.append(fieldError("用户名已存在，请更换"));
               else toast(error.message, "error");
             } finally { setSubmitting(false); }
@@ -174,7 +187,7 @@ export async function render(mount) {
     let classes;
     try {
       classes = (await api("/classes?page_size=100")).items || [];
-    } catch (error) { toast(error.message, "error"); return; }
+    } catch (error) { if (!view.active) return; toast(error.message, "error"); return; }
     const available = classes.filter((c) => !c.owner_user_id);
     if (!available.length) { toast("没有未分配的历史班级", "info"); return; }
     const select = el("select", {}, available.map((c) => el("option", { value: c.id }, `${c.name}（${c.grade}）`)));
@@ -194,7 +207,7 @@ export async function render(mount) {
               close();
               toast("班级已分配", "success");
               load();
-            } catch (error) {
+            } catch (error) { if (!view.active) return;
               toast(error.code === "CLASS_ALREADY_ASSIGNED" ? "该班级已分配给其他班主任" : error.message, "error");
             } finally { setSubmitting(false); }
           },

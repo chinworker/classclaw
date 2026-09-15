@@ -1,0 +1,10 @@
+[Unit]
+Description=Nightly ClassClaw maintenance backup (brief downtime)
+
+[Timer]
+OnCalendar=*-*-* 03:30:00 Asia/Shanghai
+Persistent=false
+Unit=classclaw-backup.service
+
+[Install]
+WantedBy=timers.target

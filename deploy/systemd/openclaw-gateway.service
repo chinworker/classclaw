@@ -1,0 +1,29 @@
+[Unit]
+Description=OpenClaw Gateway for ClassClaw
+ConditionPathExists=!/opt/classclaw/backups/.upgrade-pending.json
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=classclaw
+Group=classclaw
+WorkingDirectory=/home/classclaw
+Environment=PATH=/home/classclaw/.npm-global/bin:/usr/local/bin:/usr/bin:/bin
+Environment=OPENCLAW_STATE_DIR=/home/classclaw/.openclaw
+Environment=NODE_OPTIONS=--max-old-space-size=1280
+ExecStart=/home/classclaw/.npm-global/bin/openclaw gateway run --bind loopback --port 18789
+Restart=always
+RestartSec=5
+TimeoutStopSec=180
+KillMode=mixed
+UMask=0077
+NoNewPrivileges=true
+MemoryAccounting=true
+MemoryHigh=1536M
+MemoryMax=2G
+
+[Install]
+WantedBy=multi-user.target

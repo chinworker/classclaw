@@ -1,10 +1,21 @@
 // 管理员 · 审计日志：轻量审计（操作人、动作、实体、时间），不展示完整前后快照。
 
 import { el, clear, fmtDateTime } from "../util.js";
-import { api } from "../api.js";
-import { pageHeader, dataTable, errorPanel, skeleton, emptyState, field, statusBadge } from "../components.js";
+import { adminView } from "../adminView.js";
+import { pageHeader, dataTable, errorPanel, skeleton, emptyState, field, statusBadge, jsonDetails } from "../components.js";
 
-export async function render(mount) {
+let activeView = null;
+export function dispose() { activeView?.dispose(); activeView = null; }
+
+export async function render(mount, ctx = {}) {
+  dispose(); const view = adminView(); activeView = view;
+  clear(mount);
+  const api = async (path, options = {}) => {
+    const result = await view.api(path, options);
+    if (options.method && options.method !== "GET") ctx.onChanged?.();
+    return result;
+  };
+
   const host = el("div");
   const entityTypeInput = el("input", { type: "text", placeholder: "如 write_proposal / user" });
   const entityIdInput = el("input", { type: "text", placeholder: "实体 ID（可选）" });
@@ -26,7 +37,7 @@ export async function render(mount) {
     let rows;
     try {
       rows = await api(`/audit-logs${params.size ? `?${params}` : ""}`);
-    } catch (error) {
+    } catch (error) { if (!view.active) return;
       clear(host);
       host.append(errorPanel(error, { onRetry: load }));
       return;
@@ -40,6 +51,8 @@ export async function render(mount) {
         { key: "action", label: "动作", render: (r) => statusBadge(null, r.action) },
         { key: "entity_type", label: "实体类型" },
         { key: "entity_id", label: "实体 ID", render: (r) => el("code", {}, `${r.entity_id.slice(0, 12)}…`) },
+        { label: "配置变更", render: (r) => r.entity_type === "configuration" && r.after_json
+          ? jsonDetails(r.after_json, "键名与版本") : "—" },
       ],
       rows,
     }));

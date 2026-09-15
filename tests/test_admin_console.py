@@ -382,6 +382,7 @@ def test_agent_studio_runtime_workspace_usage_and_logs(client, db, monkeypatch, 
     assert class_usage["totals"]["totalTokens"] == 120
     assert class_usage["calls"] == 1
     assert class_usage["latency"]["p95Ms"] == 1250
+    assert class_usage["latency"]["p50Ms"] == 1250
     assert class_usage["daily"][0]["model_calls"] == 1
 
     log_path = tmp_path / "classclaw.log"

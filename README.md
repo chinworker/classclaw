@@ -53,6 +53,20 @@ python run.py
 
 完整字段、优先级、路径迁移和安全约束见 [静态配置说明](docs/configuration.md)；Ubuntu/systemd/Nginx 单机部署步骤见 [服务器部署](docs/deployment.md)。
 
+### 2 核 4 GB 服务器
+
+[部署指南](docs/deployment.md) 提供 Ubuntu 24.04、ClassClaw 与 OpenClaw 同机的安装步骤、资源预算、HTTPS、备份恢复和容量验收，以及 `deploy/` 下的配套配置。生产 Python 依赖使用 `requirements-runtime.txt`。安装管理命令后可执行：
+
+```bash
+sudo classclaw restart
+sudo classclaw upgrade --check
+sudo classclaw upgrade
+sudo classclaw backup
+sudo classclaw doctor
+```
+
+重启默认包含 Gateway；升级会先停机完整备份，再更新依赖/插件和迁移。完整步骤及失败恢复边界见部署指南。
+
 SQLite 连接自动启用 `foreign_keys=ON`、`busy_timeout=5000` 和文件数据库的 WAL 模式（外加 `synchronous=NORMAL`）。写路径经单写者连接串行化（`writer_session`，可重入），读走独立连接池（`reader_session`）；`get_db` 按 HTTP 方法自动选择。所有响应带 `request_id`，数据库锁冲突返回 `DATABASE_BUSY`。
 
 ## 已实现功能

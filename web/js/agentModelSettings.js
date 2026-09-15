@@ -2,7 +2,7 @@ import { api } from "./api.js";
 import { el, toast } from "./util.js";
 import { field, openModal, statusBadge } from "./components.js";
 
-function selectModel(items, selected, emptyLabel, { speech = false } = {}) {
+export function selectModel(items, selected, emptyLabel, { speech = false } = {}) {
   const select = el("select", {}, el("option", { value: "", selected: !selected }, emptyLabel));
   let found = false;
   for (const item of items) {
@@ -19,10 +19,10 @@ function selectModel(items, selected, emptyLabel, { speech = false } = {}) {
   return select;
 }
 
-export async function openAgentModelSettings(classId, { onSaved = null, isActive = () => true, onClosed = null } = {}) {
+export async function openAgentModelSettings(classId, { onSaved = null, isActive = () => true, onClosed = null, signal = null } = {}) {
   let settings;
   try {
-    settings = await api(`/classes/${classId}/agent-chat/models`);
+    settings = await api(`/classes/${classId}/agent-chat/models`, { signal });
   } catch (error) {
     if (isActive()) toast(error.message, "error");
     return;
@@ -66,7 +66,7 @@ export async function openAgentModelSettings(classId, { onSaved = null, isActive
           }
           setSubmitting(true);
           try {
-            const result = await api(`/classes/${classId}/agent-chat/models`, { method: "PATCH", body: changes });
+            const result = await api(`/classes/${classId}/agent-chat/models`, { method: "PATCH", body: changes, signal });
             if (!isActive()) { modal.close(); return false; }
             toast(result.restart_requested ? "模型设置已保存，Gateway 正在重启" : "模型设置已保存", "success");
             modal.close();

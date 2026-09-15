@@ -1,13 +1,24 @@
 // 管理员 · 数据库调试（只读）：表清单、行数、分页浏览；密码哈希与会话令牌由后端脱敏。
 
 import { el, clear, toast, copyText } from "../util.js";
-import { api } from "../api.js";
+import { adminView } from "../adminView.js";
 import { appConfig } from "../config.js";
 import { pageHeader, errorPanel, skeleton, jsonDetails, pagination } from "../components.js";
 
 const PAGE_SIZE = Number(appConfig.web.database_page_size || 50);
 
-export async function render(mount) {
+let activeView = null;
+export function dispose() { activeView?.dispose(); activeView = null; }
+
+export async function render(mount, ctx = {}) {
+  dispose(); const view = adminView(); activeView = view;
+  clear(mount);
+  const api = async (path, options = {}) => {
+    const result = await view.api(path, options);
+    if (options.method && options.method !== "GET") ctx.onChanged?.();
+    return result;
+  };
+
   const listHost = el("div", { class: "card" });
   const tableHost = el("div", { class: "card" });
   mount.append(
@@ -22,7 +33,7 @@ export async function render(mount) {
     let data;
     try {
       data = await api("/admin/database/overview");
-    } catch (error) {
+    } catch (error) { if (!view.active) return;
       clear(listHost);
       listHost.append(errorPanel(error, { onRetry: loadOverview }));
       return;
@@ -40,7 +51,8 @@ export async function render(mount) {
     let data;
     try {
       data = await api(`/admin/database/tables/${encodeURIComponent(name)}?offset=${offset}&limit=${PAGE_SIZE}`);
-    } catch (error) {
+      if (current.table !== name || current.offset !== offset) return;
+    } catch (error) { if (!view.active) return;
       clear(tableHost);
       tableHost.append(errorPanel(error, { onRetry: () => loadTable(name, offset) }));
       return;

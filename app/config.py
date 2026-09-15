@@ -437,6 +437,7 @@ def load_settings(
     config_path: str | Path | None = None,
     *,
     environ: Mapping[str, str] | None = None,
+    toml_text: str | None = None,
 ) -> Settings:
     env = os.environ if environ is None else environ
     explicit_path = config_path or env.get("CLASSCLAW_CONFIG_FILE")
@@ -448,7 +449,11 @@ def load_settings(
         selected = selected.resolve()
     raw: dict = {}
     config_file: Path | None = None
-    if selected.exists():
+    if toml_text is not None:
+        # The admin dry run uses the real file's base directory without touching disk or os.environ.
+        raw = tomllib.loads(toml_text)
+        config_file = selected
+    elif selected.exists():
         if not selected.is_file():
             raise ConfigurationError(f"配置路径不是普通文件：{selected}")
         try:

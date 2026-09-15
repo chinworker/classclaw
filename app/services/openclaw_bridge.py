@@ -466,7 +466,7 @@ async def ensure_extractor_agent(*, force: bool = False) -> bool:
             defaults = extractor_workspace_defaults()
             openclaw_workspaces.ensure_defaults(workspace, defaults)
             if agent_id not in {_prov_agent_id(row) for row in rows}:
-                await admin_rpc("agents.create", {"name": "classclaw-extractor", "workspace": str(workspace), "emoji": "🧮"})
+                await admin_rpc("agents.create", {"name": "classclaw-extractor", "workspace": str(workspace)})
                 openclaw_workspaces.ensure_defaults(workspace, defaults)
             runtime_changed = await _configure_extractor_runtime(admin_rpc, workspace)
             if runtime_changed:

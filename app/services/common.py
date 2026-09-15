@@ -8,6 +8,9 @@ from sqlalchemy.orm import Session
 from app.models.entities import AuditLog
 
 AUDITED_ACTIONS = {
+    ("config_update", "configuration"),
+    ("config_rollback", "configuration"),
+    ("gateway_config_patch", "configuration"),
     ("create", "class"),
     ("hard_delete", "class"),
     ("soft_delete", "student"),
@@ -50,7 +53,8 @@ def audit(
         entity_type=entity_type,
         entity_id=entity_id,
         before_json=None,
-        after_json=None,
+        after_json={key: after[key] for key in ("paths", "old_config_hash", "new_config_hash") if key in after}
+        if entity_type == "configuration" and after else None,
         source_message_id=None,
     )
     db.add(log)

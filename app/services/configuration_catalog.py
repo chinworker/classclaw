@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from app.config import CONFIG_ENVIRONMENT_VARIABLES, DEFAULT_CONFIG_FILE, Settings
+from app.config import CONFIG_ENVIRONMENT_VARIABLES, DEFAULT_CONFIG_FILE, ConfigDocument, Settings
 
 # section: (category, label, description). The categories are navigation scopes, not TOML tables.
 SECTIONS = {
@@ -78,6 +78,7 @@ _LEGACY_KEYS = {
 
 def list_settings(settings: Settings) -> list[dict[str, Any]]:
     sources = dict(settings.config_sources)
+    schema = ConfigDocument.model_json_schema()
     rows = []
     for path, (section, attribute, label, description) in FIELDS.items():
         value: Any = settings
@@ -85,15 +86,21 @@ def list_settings(settings: Settings) -> list[dict[str, Any]]:
             value = getattr(value, part)
         if isinstance(value, Path):
             value = str(value)
+        constraints = schema
+        for part in path.split("."):
+            if "$ref" in constraints:
+                constraints = schema["$defs"][constraints["$ref"].split("/")[-1]]
+            constraints = constraints["properties"][part]
         rows.append({
             "key": _LEGACY_KEYS.get(path, path), "config_path": path,
             "category": SECTIONS[section][0], "section": section,
             "group": "features" if section == "features" else "constants",
             "label": label, "description": description, "value": value,
-            "type": "boolean" if isinstance(value, bool) else "integer" if isinstance(value, int) else "number" if isinstance(value, float) else "string",
+            "type": constraints["type"],
             "env_var": CONFIG_ENVIRONMENT_VARIABLES[path],
             "source": "startup_config", "value_source": sources.get(path, "unknown"),
-            "restart_required": True, "editable": False,
+            "restart_required": True, "editable": not sources.get(path, "").startswith("environment:"),
+            **{key: constraints[key] for key in ("minimum", "maximum", "exclusiveMinimum", "minLength", "maxLength", "enum") if key in constraints},
         })
     return rows
 

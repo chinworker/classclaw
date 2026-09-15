@@ -1,0 +1,55 @@
+# Ubuntu 24.04, /opt/classclaw, user classclaw, colocated OpenClaw.
+# Copy to /opt/classclaw/config/classclaw.toml; secrets belong in .env.
+[storage]
+database_url = "sqlite:////opt/classclaw/data/classclaw.db"
+usage_database_url = "sqlite:////opt/classclaw/data/usage.db"
+attachment_dir = "/opt/classclaw/data/attachments"
+max_attachment_bytes = 10485760
+class_workspace_root = "/opt/classclaw/data/openclaw-agents"
+openclaw_state_dir = "/home/classclaw/.openclaw"
+
+[runtime]
+timezone = "Asia/Shanghai"
+log_level = "INFO"
+log_file = "/opt/classclaw/data/logs/classclaw.log"
+auth_session_hours = 24
+analysis_cache_max_entries = 200
+http_trust_env = false
+
+[server]
+host = "127.0.0.1"
+port = 8000
+access_log = false
+
+[bootstrap]
+default_admin_username = "admin"
+
+[openclaw]
+gateway_url = "http://127.0.0.1:18789"
+agent_id = "main"
+extractor_agent_id = "classclaw-extractor"
+extractor_enabled = true
+class_agent_thinking = "off"
+timeout_seconds = 120.0
+session_cleanup_hours = 24.0
+cli = "/home/classclaw/.npm-global/bin/openclaw"
+
+[features]
+file_analysis = true
+event_ai = true
+wechat_binding = true
+reminders = true
+
+[web]
+ai_request_timeout_seconds = 150
+usage_window_days = 30
+database_page_size = 50
+
+[wechat]
+channel = "openclaw-weixin"
+qr_binding_timeout_seconds = 300
+qr_initial_poll_ms = 2000
+qr_poll_ms = 3000
+qr_retry_ms = 5000
+gateway_start_timeout_seconds = 30
+gateway_wait_timeout_seconds = 15

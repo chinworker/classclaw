@@ -1,0 +1,8 @@
+[Unit]
+Description=Offline ClassClaw backup including OpenClaw state
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/classclaw backup
+TimeoutStartSec=30min
+UMask=0077

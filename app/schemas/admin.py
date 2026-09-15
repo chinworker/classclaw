@@ -2,7 +2,36 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+
+class ConfigDocumentCheck(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    toml_text: str | None = Field(default=None, max_length=200_000)
+    changes: dict[str, object] | None = None
+
+    @model_validator(mode="after")
+    def one_document(self):
+        if (self.toml_text is None) == (self.changes is None):
+            raise ValueError("toml_text 与 changes 必须且只能提供一项")
+        return self
+
+
+class ConfigDocumentUpdate(ConfigDocumentCheck):
+    base_hash: str = Field(min_length=1, max_length=128)
+    base_document_hash: str | None = Field(default=None, min_length=64, max_length=64)
+
+
+class ConfigDocumentRollback(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    base_hash: str = Field(min_length=1, max_length=128)
+    base_document_hash: str | None = Field(default=None, min_length=64, max_length=64)
+
+
+class GatewayRawUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    patch: dict[str, object] = Field(min_length=1, max_length=20)
+    base_hash: str = Field(min_length=1, max_length=128)
 
 
 class AdminClassOwnerUpdate(BaseModel):

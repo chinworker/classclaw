@@ -4,21 +4,23 @@ ClassClaw 的部署配置采用“非敏感 TOML + 密钥环境变量”两层�
 
 ## 管理端配置层级
 
-| 一级分类 | 二级入口 | 覆盖内容 | 修改位置与生效方式 |
+| 一级入口 | 分组 / tab | 覆盖内容 | 修改位置与生效方式 |
 | --- | --- | --- | --- |
-| ClassClaw 系统 | 系统配置 | 服务监听、SQLite、附件、运行时区、日志、登录有效期、缓存、初始化账号、功能开关、网页品牌与默认值 | `config/classclaw.toml` / 环境变量；校验后重启 ClassClaw |
-| ClassClaw 系统 | 用户 / 班级 | 用户启停、密码重置、班级信息与负责人 | 网页保存；数据库立即生效 |
-| ClassClaw 系统 | 备份与系统维护 | 服务器备份恢复说明、无引用附件检查、完整初始化 | 备份恢复用服务器脚本；完整初始化需在网页明确确认 |
-| OpenClaw 配置与维护 | 连接与微信配置 | Gateway 地址与 Token 状态、超时、提取 Agent 开关与 ID、工作区、状态目录、CLI、维护间隔、微信通道与二维码参数 | ClassClaw TOML / 环境变量；校验后重启 ClassClaw |
-| OpenClaw 配置与维护 | Gateway 全局配置 | Responses API、ClassClaw 插件开关、私聊会话隔离；全局模型与 Provider 摘要 | 三项运行参数可在网页保存并重启 Gateway；Provider 地址、模型目录及凭据通过 OpenClaw 自身配置维护 |
-| OpenClaw 配置与维护 | 系统 Agent · Main / 提取 | 两个系统 Agent 各自的模型、思考与回复、上下文与记忆、模型参数、提示词和身份 | 网页运行参数保存请求重启 Gateway；工作区文件在后续对话轮次生效 |
-| OpenClaw 配置与维护 | 会话维护 | 定时维护状态、上次结果、只读维护预览 | 网页可执行 dry-run；维护策略在 OpenClaw 侧核对，班级聊天会话长期复用 |
-| 班级 Agent | 各班级 Agent 配置 | 按班级搜索、状态筛选，独立主/图片/语音模型、运行参数、提示词、微信绑定 | 使用各班级卡片的网页入口；主模型变更请求重启 Gateway，图片/语音设置在后续请求生效 |
-| 可观测性 | 使用量 / 运行日志 / 数据库 / 审计 | 运行诊断、调用统计、只读数据库及变更审计 | 只读查看，不与配置或初始化混放 |
+| 概览 | 健康与告警 | 数据库、用量库、附件可写、Gateway、插件、admin-rpc 六项状态；本周调用与今日 Token | 异常直接跳转修复入口或错误日志 |
+| 设置中心 | ClassClaw | 全部非敏感启动配置、凭据状态、分组搜索、表单 / TOML 源码 | 差异确认后原子写入配置文件并备份；重启 ClassClaw 生效 |
+| 设置中心 | OpenClaw → 微信与连接 | Gateway 地址、超时、工作区、提取开关与 ID、维护间隔、微信参数 | 同一份 ClassClaw TOML；环境变量覆盖项锁定 |
+| 设置中心 | OpenClaw → Gateway 全局 | Responses、插件、私聊隔离及脱敏 JSON | 白名单标量通过 Gateway `config.patch` + `baseHash` 保存；Gateway 短暂重启 |
+| 设置中心 | OpenClaw → 系统 / 班级 Agent | 模型、运行参数、工作区文件及班级微信绑定 | 复用现有接口；工作区以 SHA-256 防冲突 |
+| 班级与账号 | 账号 / 班级 | 用户启停、密码重置、班级信息与负责人；班级行展开共用 Agent 面板 | 网页保存；归属改派由后端校验一账号一班级 |
+| 运维中心 | 用量 / 日志 / 备份与维护 / 数据库 / 审计 | 趋势、分布、Agent 明细、请求链路、备份恢复与初始化 | 日志每 3 秒增量刷新，离页停止；备份恢复使用服务器脚本，初始化须确认 |
 
-管理端 `/admin/settings` 和 `/admin/openclaw/settings` 合计覆盖当前全部 **43 项非敏感启动配置**，另显示 3 项凭据状态。每项显示实际生效值、TOML 路径、兼容环境变量和启动时来源；支持按分组及名称搜索。来源在启动时记录，修改磁盘文件或进程环境之后不会把旧运行值误标成新配置。重启后再刷新核对。
+管理端 `/admin/settings` 覆盖配置目录的全部非敏感启动配置，另显示 3 项凭据状态。表单与源码共用同一文档，支持分组搜索、修改计数、行内错误、差异预览与恢复上一版。环境变量覆盖项显示 `ENV` 并禁止提交，密钥只展示是否已设置。旧管理端路由保留跳转，完整映射见 [重构设计](admin-console-redesign.md#3-总体信息架构)。
 
-`GET /api/v1/admin/settings/catalog` 返回完整分组目录，仅管理员可访问，不依赖 Gateway 在线，禁止缓存；旧的 `GET /api/v1/admin/settings` 保留列表格式并补齐全部非敏感字段。公开 `/app-config` 的白名单没有扩大，任何网页接口均不新增凭据原文或尾号。
+`GET /api/v1/admin/settings/catalog` 返回当前进程的分组目录、类型与约束；旧的 `GET /api/v1/admin/settings` 保留列表格式。两者均仅限管理员，不依赖 Gateway 在线，禁止缓存。公开 `/app-config` 白名单保持原有范围。
+
+`GET /api/v1/admin/settings/document` 返回当前文件全文、编辑值、环境变量锁定路径、文件配置版本与当前进程版本。`POST /api/v1/admin/settings/check` 只校验、不落盘；`PATCH /api/v1/admin/settings/document` 要求 `base_hash`，网页同时提交全文 `base_document_hash`，防止覆盖并发编辑。写入前在同目录生成 `.bak-时间戳`，原子替换并保留权限位；重读校验或审计提交失败自动恢复原文件。`POST /api/v1/admin/settings/rollback` 使用当前版本恢复最新备份。服务账号必须能写配置文件所在目录；符号链接路径不允许网页写入。
+
+文件写入不会热更新运行配置。页面比较 `config_hash` 与 `active_config_hash` 显示待重启提示，执行 `sudo systemctl restart classclaw` 后刷新核对；恢复同样需要重启。配置审计仅记录操作者、键名与新旧版本，不记录值。
 
 ### OpenClaw 与班级 Agent 的配置文件边界
 
@@ -27,7 +29,7 @@ OpenClaw 的配置文件由 Gateway 自身管理，网页展示 `config.get` 返
 | 内容 | OpenClaw 配置位置 / ClassClaw 存储位置 |
 | --- | --- |
 | 全局主模型 / 图片模型 | `agents.defaults.model` / `agents.defaults.imageModel` |
-| Provider 地址、模型目录、凭据 | `models.providers` 及 OpenClaw 自身凭据配置；ClassClaw 网页只显示 Provider 名称 |
+| Provider 地址、模型目录、凭据 | `models.providers` 及 OpenClaw 自身凭据配置；源码只展示后端脱敏版本，页面禁止修改这些路径 |
 | Responses API / 插件 / 私聊隔离 | `gateway.http.endpoints.responses.enabled` / `plugins.entries.classclaw.enabled` / `session.dmScope` |
 | 单个 Agent 运行参数 | `agents.list` 中对应 Agent 条目；网页主模型、回退模型、辅助模型、思考、上下文、预算等配置写入该条目 |
 | 班级主模型 / 图片模型 / 语音模型 | ClassClaw `class_agent_bindings` 保存班级选择，主模型同时同步到 OpenClaw；请通过班级模型设置入口维护，不直接修改数据库 |
@@ -87,6 +89,8 @@ OpenClaw 的配置文件由 Gateway 自身管理，网页展示 `config.get` 返
 
 必须通过 `python run.py` 启动才能自动使用这三个字段；若直接执行 Uvicorn CLI，应在命令参数中保持相同取值。worker 数固定为 1，不作为可配置项。
 
+Ubuntu 2 核 4 GB 同机部署可复制 [专用模板](../deploy/classclaw.2c4g.toml)。它使用绝对路径、10 MiB 单附件上限、200 条数据库分析缓存和 3 秒二维码常规轮询；systemd 内存限制单独位于 `deploy/systemd/`，不是 TOML 字段。安装 `classclaw` 管理命令后，配置统一从项目 `.env`/TOML 读取，不能只给 systemd 设置应用配置覆盖而让维护命令读取另一套值，详见 [部署指南](deployment.md)。
+
 ### 首次初始化 `[bootstrap]`
 
 `default_admin_username` 只影响首次创建管理员或“完整初始化”后重新创建的管理员，不会重命名现有账号。初始密码只放在 `.env` 的 `CLASSCLAW_DEFAULT_ADMIN_PASSWORD` 中，并应在首次登录后修改。
@@ -127,7 +131,7 @@ Gateway 管理 Token 只放在 `.env` 的 `CLASSCLAW_OPENCLAW_GATEWAY_TOKEN` 中
 | `wechat_binding` | 班级 Agent 微信二维码启动、等待与绑定入口 |
 | `reminders` | 提醒查询和发送接口；关闭不会删除已有提醒 |
 
-开关同时在网页和后端接口生效，不能仅靠隐藏按钮绕过。管理端“系统配置”页只读显示实际启动值、TOML 路径及环境变量来源，不再写数据库或在线修改部署参数。
+开关同时在网页和后端接口生效，不能仅靠隐藏按钮绕过。管理端“设置中心”通过 TOML 文档保存开关，重启后生效，不写入 system_settings 表。
 
 ### 网页 `[web]` 与 `[web.brand]`
 

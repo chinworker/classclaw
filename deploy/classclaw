@@ -1,0 +1,3 @@
+#!/bin/sh
+# Install this launcher as /usr/local/bin/classclaw. See docs/deployment.md.
+exec /usr/bin/python3 /usr/local/lib/classclaw/manage.py --root /opt/classclaw "$@"

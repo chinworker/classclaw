@@ -1,92 +1,63 @@
 import { el, clear } from "../util.js";
-import { api } from "../api.js";
 import { appConfig } from "../config.js";
-import { pageHeader, metricCard, dataTable, field, errorPanel, skeleton, openDrawer } from "../components.js";
+import { pageHeader, metricCard, dataTable, field, errorPanel, skeleton, emptyState, statusBadge } from "../components.js";
+import { adminView } from "../adminView.js";
+import { trendChart, barList } from "../charts.js";
 
 const num = (value) => Number(value || 0).toLocaleString("zh-CN");
-const duration = (value) => {
-  const ms = Number(value);
-  if (!Number.isFinite(ms) || ms < 0) return "—";
-  if (ms < 1000) return `${Math.round(ms)} ms`;
-  return `${(ms / 1000).toFixed(ms < 10000 ? 2 : 1)} s`;
-};
+const duration = (value) => value === null || value === undefined ? "—" : `${Math.round(Number(value))} ms`;
+const cost = (value) => value === null || value === undefined ? "—" : `$${Number(value).toFixed(4)}`;
+let activeView = null;
+export function dispose() { activeView?.dispose(); activeView = null; }
 
 export async function render(mount) {
+  dispose(); const view = adminView(); activeView = view;
   const host = el("div");
-  const configuredDays = Number(appConfig.web.usage_window_days || 30);
-  const dayOptions = [...new Set([7, 14, 30, 90, 180, 365, configuredDays])].sort((a, b) => a - b);
-  const days = el("select", {}, dayOptions.map((value) => el("option", { value, selected: value === configuredDays }, `${value} 天`)));
-  mount.append(pageHeader("使用量与 Token", "统计网页与智能体的请求、写入、登录及 OpenClaw Responses API 返回的 Token 用量。"),
-    el("div", { class: "filter-bar" }, field("统计窗口", days), el("button", { class: "secondary", type: "button", onclick: load }, "查询")), host);
-
+  const days = el("select", { "aria-label": "统计窗口" }, ...[7, 30, 90].map((value) => el("option", { value }, `${value} 天`)));
+  days.value = [7, 30, 90].includes(Number(appConfig.web.usage_window_days)) ? String(appConfig.web.usage_window_days) : "30";
+  mount.append(pageHeader("用量", "查看谁在使用 AI、消耗多少 Token，以及调用分布。"),
+    el("div", { class: "filter-bar" }, field("统计窗口", days), el("button", { class: "secondary", type: "button", onclick: load }, "刷新")), host);
+  let revision = 0;
   async function load() {
-    clear(host); host.append(skeleton(6));
-    try {
-      const [data, agentResult] = await Promise.all([
-        api(`/admin/usage?days=${days.value}`),
-        api(`/admin/usage/agents?days=${days.value}`).then((value) => ({ value })).catch((error) => ({ error })),
-      ]);
-      const t = data.totals;
-      clear(host);
-      host.append(
-        el("div", { class: "metric-grid" },
-          metricCard("总 Token", num(t.total_tokens), `${num(t.input_tokens)} input / ${num(t.output_tokens)} output`),
-          metricCard("缓存输入", num(t.cached_input_tokens)), metricCard("AI 请求", num(t.ai_requests)),
-          metricCard("交互分析", num(t.interaction_analyses)), metricCard("写入预览", num(t.write_proposals)),
-          metricCard("审计动作", num(t.audit_actions)), metricCard("登录", num(t.logins))),
-        el("div", { class: "card" }, el("h3", {}, "按日"), dataTable({
-          columns: [
-            { key: "date", label: "日期", render: (r) => el("code", {}, r.date) },
-            { key: "requests", label: "交互分析" }, { key: "writes", label: "审计动作" }, { key: "logins", label: "登录" },
-            { key: "input_tokens", label: "Input", render: (r) => num(r.input_tokens) },
-            { key: "output_tokens", label: "Output", render: (r) => num(r.output_tokens) },
-            { key: "total_tokens", label: "Total", render: (r) => num(r.total_tokens) },
-          ], rows: [...data.daily].reverse(),
-        })),
-        el("div", { class: "admin-two-col" },
-          el("div", { class: "card" }, el("h3", {}, "按调用类型"), dataTable({ columns: [{ key: "name", label: "类型", render: (r) => el("code", {}, r.name) }, { key: "requests", label: "请求" }, { key: "tokens", label: "Token", render: (r) => num(r.tokens) }], rows: data.by_operation })),
-          el("div", { class: "card" }, el("h3", {}, "按模型"), dataTable({ columns: [{ key: "name", label: "模型", render: (r) => el("code", {}, r.name) }, { key: "requests", label: "请求" }, { key: "tokens", label: "Token", render: (r) => num(r.tokens) }], rows: data.by_model }))),
-        agentResult.value ? el("div", { class: "card" },
-          el("div", { class: "row-gap admin-section-title" }, el("div", {}, el("h3", {}, "按智能体"), el("p", { class: "muted" }, "包含 Main、数据提取和班级智能体；基于 OpenClaw 会话记录统计调用、回复和响应耗时，结果缓存 30 秒。"))),
-          dataTable({
-            columns: [
-              { key: "label", label: "智能体", render: (r) => el("div", {}, el("b", {}, r.label || r.class_name || r.agent_id), el("span", { class: "tag tag-muted" }, (r.kind || "class").toUpperCase()), el("code", {}, r.agent_id || "NOT CREATED"), (r.warnings || []).map((warning) => el("div", { class: "field-error" }, warning))) },
-              { key: "calls", label: "调用次数", render: (r) => num(r.calls) },
-              { key: "assistant", label: "Agent 回复", render: (r) => num(r.messages?.assistant) },
-              { key: "avg_latency", label: "平均延迟", render: (r) => duration(r.latency?.avgMs) },
-              { key: "p95_latency", label: "P95 延迟", render: (r) => duration(r.latency?.p95Ms) },
-              { key: "latency_samples", label: "延迟样本", render: (r) => num(r.latency?.count) },
-              { key: "cacheRead", label: "Cache read", render: (r) => num(r.totals?.cacheRead) },
-              { key: "totalTokens", label: "Total", render: (r) => el("b", { class: "mono" }, num(r.totals?.totalTokens)) },
-              { key: "totalCost", label: "Cost", render: (r) => r.totals ? `$${Number(r.totals.totalCost || 0).toFixed(4)}` : "—" },
-              { key: "errors", label: "错误", render: (r) => num(r.messages?.errors) },
-              { key: "details", label: "趋势", render: (r) => el("button", { class: "text-button", type: "button", onclick: () => openAgentDetail(r) }, "查看") },
-            ], rows: agentResult.value,
-          })) : errorPanel(agentResult.error),
-        !data.token_collection_started ? el("div", { class: "blocked-panel" }, el("b", {}, "暂无 Token 数据"), el("span", {}, "统计从本次升级后开始采集；历史调用无法补算。")) : null,
-      );
-    } catch (error) { clear(host); host.append(errorPanel(error, { onRetry: load })); }
+    const version = ++revision; const windowDays = days.value;
+    clear(host); host.append(skeleton(5));
+    const [local, gateway] = await Promise.allSettled([
+      view.api(`/admin/usage?days=${windowDays}`), view.api(`/admin/usage/agents?days=${windowDays}`),
+    ]);
+    if (!view.active || version !== revision) return;
+    clear(host);
+    if (local.status === "rejected") { host.append(errorPanel(local.reason, { onRetry: load })); return; }
+    const data = local.value; const totals = data.totals;
+    const agents = gateway.status === "fulfilled" ? gateway.value : [];
+    const costs = agents.map((agent) => agent.totals?.totalCost).filter((value) => value !== null && value !== undefined);
+    const totalCost = costs.length ? costs.reduce((sum, value) => sum + Number(value), 0) : null;
+    const active = agents.filter((agent) => agent.calls > 0 || agent.totals?.totalTokens > 0).length;
+    if (gateway.status === "rejected") host.append(el("div", { class: "gateway-degraded" }, el("p", {}, "Gateway 侧数据缺失，以下本地调用统计仍可查看。"), errorPanel(gateway.reason, { onRetry: load })));
+    host.append(el("div", { class: "metric-grid usage-summary" },
+      metricCard("窗口内请求数", num(totals.ai_requests), `最近 ${windowDays} 天 · ClassClaw 记录`),
+      metricCard("总 Token", num(totals.total_tokens), `缓存输入 ${totals.input_tokens ? (totals.cached_input_tokens / totals.input_tokens * 100).toFixed(1) : "0.0"}%`),
+      metricCard("估算费用", cost(totalCost), costs.length ? "Gateway 记录 · USD" : "Gateway 未提供费用"),
+      metricCard("活跃 Agent", gateway.status === "fulfilled" ? active : "—", "窗口内产生调用的 Agent")));
+    if (!totals.ai_requests && !agents.some((agent) => agent.calls || agent.totals?.totalTokens)) host.append(emptyState("暂无用量数据，产生 AI 调用后自动统计"));
+    host.append(el("section", { class: "card" }, el("h3", {}, "每日趋势"), trendChart(data.daily)),
+      el("div", { class: "admin-two-col" }, el("section", { class: "card" }, el("h3", {}, "按操作"), barList(data.by_operation)),
+        el("section", { class: "card" }, el("h3", {}, "按模型"), barList(data.by_model))));
+    if (gateway.status === "fulfilled") host.append(el("section", { class: "card" }, el("h3", {}, "Agent 明细"),
+      el("p", { class: "muted" }, "点击 Agent 展开每日调用趋势。Gateway 统计包含其会话调用，与 ClassClaw 本地请求统计口径不同；结果缓存 30 秒。"),
+      dataTable({ columns: [
+        { label: "Agent", render: (row) => el("details", { class: "usage-agent-detail" },
+          el("summary", {}, el("b", {}, row.label), el("span", { class: "tag tag-muted" }, row.kind === "class" ? "班级" : row.kind === "main" ? "Main" : "提取")),
+          el("code", {}, row.agent_id || "未创建"), trendChart(row.daily || [], { yKeys: ["model_calls", "messages"], labels: ["调用", "消息"], compact: true }),
+          el("p", { class: "muted" }, `延迟样本 ${num(row.latency?.count)} · 扫描文件 ${num(row.metrics_files_scanned)}`)) },
+        { label: "状态", render: (row) => row.available === false ? statusBadge("pending", "统计不可用") : statusBadge(row.status) },
+        { label: "调用数", render: (row) => num(row.calls) },
+        { label: "消息数", render: (row) => num(row.messages?.total ?? ((row.messages?.user || 0) + (row.messages?.assistant || 0))) },
+        { label: "Token", render: (row) => row.totals?.totalTokens === undefined ? "—" : num(row.totals.totalTokens) },
+        { label: "估算费用", render: (row) => cost(row.totals?.totalCost) },
+        { label: "延迟 p50 / p95", render: (row) => `${duration(row.latency?.p50Ms)} / ${duration(row.latency?.p95Ms)}` },
+        { label: "告警", render: (row) => el("div", { class: "usage-warnings" }, ...(row.warnings || []).map((warning) => el("span", { class: "tag tag-warn" }, warning))) },
+      ], rows: agents })),
+      el("details", { class: "card" }, el("summary", {}, "其他活动指标"), el("div", { class: "metric-grid" }, metricCard("交互分析", num(totals.interaction_analyses)), metricCard("写入预览", num(totals.write_proposals)), metricCard("审计动作", num(totals.audit_actions)), metricCard("登录", num(totals.logins)))));
   }
-
-  function openAgentDetail(row) {
-    const summary = el("div", { class: "metric-grid" },
-      metricCard("调用次数", num(row.calls)), metricCard("Agent 回复", num(row.messages?.assistant)),
-      metricCard("平均延迟", duration(row.latency?.avgMs), `${num(row.latency?.count)} 个有效样本`),
-      metricCard("P95 延迟", duration(row.latency?.p95Ms), `最短 ${duration(row.latency?.minMs)} / 最长 ${duration(row.latency?.maxMs)}`),
-      metricCard("最近一次", duration(row.latency?.latestMs), `${num(row.metrics_files_scanned)} 个会话文件`));
-    const daily = dataTable({
-      columns: [
-        { key: "date", label: "日期", render: (r) => el("code", {}, r.date) },
-        { key: "model_calls", label: "调用次数", render: (r) => num(r.model_calls) },
-        { key: "messages", label: "消息", render: (r) => num(r.messages) },
-        { key: "errors", label: "错误", render: (r) => num(r.errors) },
-        { key: "avg", label: "平均延迟", render: (r) => duration(r.latency?.avgMs) },
-        { key: "p95", label: "P95", render: (r) => duration(r.latency?.p95Ms) },
-        { key: "samples", label: "样本", render: (r) => num(r.latency?.count) },
-      ], rows: [...(row.daily || [])].reverse(),
-    });
-    openDrawer({ title: `调用与延迟 · ${row.label || row.class_name || row.agent_id}`, wide: true, body: el("div", {}, summary,
-      el("p", { class: "muted" }, "响应耗时优先使用 OpenClaw 记录的模型 durationMs；缺失时按用户消息到 Agent 回复记录的时间差计算。无有效样本时显示为“—”。"), daily) });
-  }
-  await load();
+  days.addEventListener("change", load); await load();
 }

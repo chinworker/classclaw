@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import re
 import shutil
 import time
 from collections import Counter, defaultdict
@@ -11,11 +13,13 @@ from pathlib import Path
 from typing import Any
 
 from sqlalchemy import delete, func, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app import usage_database
 from app.config import settings
 from app.core.errors import AppError
+from app.core.security import Principal
 from app.database import Base
 from app.models.entities import (
     Attachment,
@@ -29,7 +33,7 @@ from app.models.entities import (
     WriteProposal,
 )
 from app.models.usage import AiUsageRecord, UsageBase
-from app.schemas.admin import OpenClawAgentUpdate, OpenClawGlobalUpdate
+from app.schemas.admin import GatewayRawUpdate, OpenClawAgentUpdate, OpenClawGlobalUpdate
 from app.services import (
     accounts,
     class_student,
@@ -76,6 +80,83 @@ SETTING_DEFINITIONS: dict[str, dict[str, Any]] = {
 
 _agent_usage_cache: dict[int, tuple[float, list[dict[str, Any]]]] = {}
 
+# Explicit scalar leaves verified against the existing Gateway config.get/config.patch contract.
+ALLOWED_GATEWAY_PATHS = {
+    "session.dmScope",
+    "gateway.http.endpoints.responses.enabled",
+    "plugins.entries.classclaw.enabled",
+}
+GATEWAY_FIELDS = [
+    {"path": "gateway.http.endpoints.responses.enabled", "label": "Responses API", "type": "boolean", "default": False,
+     "description": "网页对话、文件解析和自然语言分类依赖此端点。"},
+    {"path": "plugins.entries.classclaw.enabled", "label": "ClassClaw 插件", "type": "boolean", "default": True,
+     "description": "为 OpenClaw 提供班级管理工具。"},
+    {"path": "session.dmScope", "label": "私聊会话隔离", "type": "string", "default": "per-account-channel-peer",
+     "enum": ["main", "per-peer", "per-channel-peer", "per-account-channel-peer"],
+     "description": "per-account-channel-peer 按账号、通道和联系人隔离；main 会共享会话。"},
+]
+
+
+def _redact_gateway(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: "***" if re.search(r"token|key|secret|password|credential", key, re.IGNORECASE) else _redact_gateway(item)
+                for key, item in value.items()}
+    if isinstance(value, list):
+        return [_redact_gateway(item) for item in value]
+    return log_service.redact_line(value) if isinstance(value, str) else value
+
+
+async def openclaw_config_raw() -> dict:
+    try:
+        snapshot = await openclaw_provisioning.admin_rpc("config.get")
+    except AppError as exc:
+        raise AppError("OPENCLAW_ADMIN_UNAVAILABLE", "无法读取 Gateway 配置，请检查连接后重试", 502) from exc
+    # Never return snapshot.raw: it contains the unredacted configuration as a string.
+    return {"config": _redact_gateway(snapshot.get("config") or {}), "hash": snapshot.get("hash"),
+            "fields": GATEWAY_FIELDS}
+
+
+async def update_openclaw_config_raw(db: Session, principal: Principal, body: GatewayRawUpdate) -> dict:
+    raw: dict[str, Any] = {}
+    for path, value in body.patch.items():
+        definition = next((item for item in GATEWAY_FIELDS if item["path"] == path), None)
+        if path not in ALLOWED_GATEWAY_PATHS or type(value) not in {str, bool, int} or not definition:
+            raise AppError("VALIDATION_ERROR", "只能修改白名单标量字段", 422,
+                           {"errors": [{"config_path": path, "message": "不支持的路径或值类型"}]})
+        if (definition["type"] == "boolean" and type(value) is not bool) or ("enum" in definition and value not in definition["enum"]):
+            raise AppError("VALIDATION_ERROR", "Gateway 配置值无效", 422,
+                           {"errors": [{"config_path": path, "message": "请选择有效值"}]})
+        group = raw
+        parts = path.split(".")
+        for part in parts[:-1]:
+            group = group.setdefault(part, {})
+        group[parts[-1]] = value
+    try:
+        snapshot = await openclaw_provisioning.admin_rpc("config.get")
+        if not snapshot.get("hash") or snapshot["hash"] != body.base_hash:
+            raise AppError("CONFIG_CONFLICT", "配置已被其他操作修改，请刷新后重试", 409)
+        result = await openclaw_provisioning.admin_rpc("config.patch", {
+            "raw": json.dumps(raw, ensure_ascii=False), "replacePaths": sorted(body.patch), "baseHash": body.base_hash,
+            "note": "Update Gateway settings from ClassClaw admin console", "restartDelayMs": 500,
+        })
+    except AppError as exc:
+        if exc.status_code == 409 or re.search(r"conflict|base.?hash|config.*changed", f"{exc.code} {exc.message} {exc.details}", re.IGNORECASE):
+            raise AppError("CONFIG_CONFLICT", "配置已被其他操作修改，请刷新后重试", 409) from exc
+        raise AppError("OPENCLAW_ADMIN_UNAVAILABLE", "Gateway 配置未能提交，请检查连接后重试", 502) from exc
+    new_hash = (result or {}).get("hash")
+    if not new_hash:
+        try:
+            updated = await asyncio.wait_for(openclaw_provisioning.admin_rpc("config.get"), timeout=2)
+            new_hash = updated.get("hash")
+        except (AppError, TimeoutError):
+            # The patch is already committed; a restarting Gateway must not turn it into a failed save.
+            new_hash = None
+    audit(db, "gateway_config_patch", "configuration", "openclaw", after={
+        "paths": sorted(body.patch), "old_config_hash": body.base_hash, "new_config_hash": new_hash,
+    }, operator_id=principal.user_id, operator_type="service" if principal.is_service else "user")
+    db.commit()
+    return {"applied": sorted(body.patch), "new_config_hash": new_hash, "restart_requested": True, "restart_after_ms": 1600}
+
 
 def setting_value(key: str) -> Any:
     definition = SETTING_DEFINITIONS.get(key)
@@ -119,8 +200,30 @@ def overview(db: Session) -> dict[str, Any]:
         usage_bytes = usage_path.stat().st_size
     except OSError:
         usage_bytes = None
+    current_time = now()
+    today = current_time.replace(hour=0, minute=0, second=0, microsecond=0)
+    week = today - timedelta(days=today.weekday())
+    usage_ready = False
+    week_requests = today_tokens = None
+    try:
+        with usage_database.reader_session() as usage_db:
+            week_requests = _count(usage_db, AiUsageRecord, AiUsageRecord.created_at >= week)
+            today_tokens = int(usage_db.scalar(select(func.coalesce(func.sum(AiUsageRecord.total_tokens), 0))
+                                              .where(AiUsageRecord.created_at >= today)) or 0)
+        usage_ready = True
+    except (AppError, OSError, SQLAlchemyError):
+        logger.warning("Usage database health check unavailable")
+    try:
+        alerts = log_service.classclaw_logs(limit=5, level="ERROR")["items"]
+    except OSError:
+        alerts = []
     return {
+        "health": {"database": True, "usage_database": usage_ready,
+                   "attachments_writable": settings.attachment_dir.is_dir() and os.access(settings.attachment_dir, os.W_OK)},
+        "recent_alerts": alerts,
         "counts": {
+            "ai_requests_week": week_requests,
+            "today_tokens": today_tokens,
             "users": _count(db, User),
             "active_teachers": _count(db, User, User.role == "head_teacher", User.is_active.is_(True)),
             "classes": _count(db, ClassRoom, ClassRoom.deleted_at.is_(None)),
@@ -156,14 +259,13 @@ def usage_stats(db: Session, days: int | None = None) -> dict[str, Any]:
     def day(value) -> str:
         return value.date().isoformat() if hasattr(value, "date") else str(value)[:10]
 
-    for row in analyses:
-        daily[day(row.created_at)]["requests"] += 1
     for row in audits:
         daily[day(row.created_at)]["writes"] += 1
     for row in sessions:
         daily[day(row.created_at)]["logins"] += 1
     for row in usage:
         bucket = daily[day(row.created_at)]
+        bucket["requests"] += 1
         bucket["input_tokens"] += row.input_tokens
         bucket["output_tokens"] += row.output_tokens
         bucket["total_tokens"] += row.total_tokens
@@ -200,8 +302,9 @@ def database_overview(db: Session) -> dict[str, Any]:
                 {"name": name, "row_count": usage_db.scalar(select(func.count()).select_from(table)) or 0, "database": "usage"}
                 for name, table in sorted(UsageBase.metadata.tables.items())
             )
-    except AppError as exc:
-        tables.extend({"name": name, "row_count": None, "database": "usage", "error": exc.code} for name in UsageBase.metadata.tables)
+    except (AppError, OSError, SQLAlchemyError) as exc:
+        code = exc.code if isinstance(exc, AppError) else type(exc).__name__
+        tables.extend({"name": name, "row_count": None, "database": "usage", "error": code} for name in UsageBase.metadata.tables)
     return {"dialect": db.bind.dialect.name if db.bind else None, "tables": tables}
 
 
@@ -469,7 +572,7 @@ async def openclaw_agent_settings(db: Session, identifier: str) -> dict[str, Any
     }
 
 
-async def update_openclaw_config(data: OpenClawGlobalUpdate) -> dict[str, Any]:
+async def update_openclaw_config(db: Session, principal: Principal, data: OpenClawGlobalUpdate) -> dict[str, Any]:
     changes = data.model_dump(exclude_unset=True)
     if not changes:
         return await openclaw_config()
@@ -491,8 +594,25 @@ async def update_openclaw_config(data: OpenClawGlobalUpdate) -> dict[str, Any]:
     }
     if snapshot.get("hash"):
         params["baseHash"] = snapshot["hash"]
-    await openclaw_provisioning.admin_rpc("config.patch", params)
-    return {"updated": changes, "restart_requested": True}
+    try:
+        result = await openclaw_provisioning.admin_rpc("config.patch", params)
+    except AppError as exc:
+        if exc.status_code == 409 or re.search(r"conflict|base.?hash|config.*changed", f"{exc.code} {exc.message} {exc.details}", re.IGNORECASE):
+            raise AppError("CONFIG_CONFLICT", "配置已被其他操作修改，请刷新后重试", 409) from exc
+        raise AppError("OPENCLAW_ADMIN_UNAVAILABLE", "Gateway 配置未能提交，请检查连接后重试", 502) from exc
+    new_hash = (result or {}).get("hash")
+    if not new_hash:
+        try:
+            updated = await asyncio.wait_for(openclaw_provisioning.admin_rpc("config.get"), timeout=2)
+            new_hash = updated.get("hash")
+        except (AppError, TimeoutError):
+            # The patch is already committed; a restarting Gateway must not turn it into a failed save.
+            new_hash = None
+    audit(db, "gateway_config_patch", "configuration", "openclaw", after={
+        "paths": paths, "old_config_hash": snapshot.get("hash"), "new_config_hash": new_hash,
+    }, operator_id=principal.user_id, operator_type="service" if principal.is_service else "user")
+    db.commit()
+    return {"updated": changes, "restart_requested": True, "new_config_hash": new_hash}
 
 
 async def update_openclaw_agent(db: Session, identifier: str, data: OpenClawAgentUpdate) -> dict[str, Any]:
@@ -670,18 +790,21 @@ async def openclaw_agent_usage(db: Session, days: int) -> list[dict[str, Any]]:
             "metrics_source": metrics.get("source"),
             "metrics_files_scanned": metrics.get("files_scanned", 0), "metrics_read_errors": metrics.get("read_errors", 0),
             "warnings": warnings,
+            "available": bool(metrics.get("available")) and not isinstance(value, Exception),
             "updated_at": payload.get("updatedAt"), "cache_status": payload.get("cacheStatus"),
         })
     _agent_usage_cache[days] = (time.monotonic(), output)
     return output
 
 
-async def logs_view(*, source: str, limit: int, level: str | None, query: str | None, cursor: int | None = None) -> dict[str, Any]:
+async def logs_view(*, source: str, limit: int, level: str | None, query: str | None, cursor: int | None = None,
+                    request_id: str | None = None, since: str | None = None, file_id: str | None = None) -> dict[str, Any]:
     if source == "classclaw":
-        return log_service.classclaw_logs(limit=limit, level=level, query=query)
+        return log_service.classclaw_logs(limit=limit, level=level, query=query, cursor=cursor,
+                                         request_id=request_id, since=since, file_id=file_id)
     if source == "openclaw":
         payload = await openclaw_provisioning.admin_rpc("logs.tail", {"limit": min(limit * 5, 1000), "maxBytes": 500_000, **({"cursor": cursor} if cursor is not None else {})})
-        return log_service.openclaw_logs_payload(payload, limit=limit, level=level, query=query)
+        return log_service.openclaw_logs_payload(payload, limit=limit, level=level, query=query, request_id=request_id, since=since)
     raise AppError("VALIDATION_ERROR", "日志来源必须是 classclaw 或 openclaw", 422)
 
 
