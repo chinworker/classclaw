@@ -129,8 +129,11 @@ python scripts/cleanup_attachments.py   # 默认只报告无引用附件，不�
 
 - `docs/architecture.md`：分层与关键边界
 - `docs/database.md`、`docs/database-data-architecture.md`：数据库设计
+- `docs/database-splitting.md`：业务库与独立用量库拆分
 - `docs/accounts-admin.md`：账户与管理员
 - `docs/class-agent-onboarding.md`：班级专属智能体与微信绑定
 - `docs/analytics.md`：分析口径
+- `docs/configuration.md`：TOML 与环境变量配置分层
+- `docs/deployment.md`：Ubuntu 同机部署与运维
+- `docs/admin-console-redesign.md`：管理端信息架构与交互
 - `docs/openclaw-integration.md`、`docs/openclaw-tools.md`：集成与 REST 映射
-- `docs/conversation-recovery.md`：对话与实现恢复记录

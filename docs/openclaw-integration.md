@@ -47,7 +47,7 @@ openclaw gateway restart
 
 JSON 提取默认走自动创建的轻量提取智能体（详见 [专属智能体与微信使用说明](class-agent-onboarding.md) §5.1）：服务启动和首次分析时，后端会通过 admin RPC 创建并校正 `classclaw-extractor` 的独立 runtime。该 runtime 显式保存模型、开启 fast mode，关闭思考、推理、记忆与技能，并以 `minimal` profile 加 `deny: [session_status]` 将可调用工具降为零；不会继承 Main 的 coding profile。清洗规范自动写入 `data/openclaw-agents/_extractor/AGENTS.md`。管理员在 Agent Studio 保存的文件会记录为自定义内容，后续自动检查不会覆盖；需要跟随 ClassClaw 新默认规则时，可在管理端恢复系统默认。因此 OpenClaw 侧必须启用 `admin-http-rpc`；未启用时后端自动回退主智能体。
 
-回合守卫以 Agent、会话和 run ID 隔离，在进程内跨插件注册实例共享有时效的计数和参数哈希，防止嵌套提取加载插件后丢失状态。单条/批量提交失败会返回不可自动重试的结构化错误，本轮不允许重新分析、替换预览或重复提交；新预览仍需重新复核。班级默认工作区要求省略工具前自述，工具结束后再给结果。实际耗时和进一步优化方向见 [响应速度检查](agent-response-performance.md)。
+回合守卫以 Agent、会话和 run ID 隔离，在进程内跨插件注册实例共享有时效的计数和参数哈希，防止嵌套提取加载插件后丢失状态。单条/批量提交失败会返回不可自动重试的结构化错误，本轮不允许重新分析、替换预览或重复提交；新预览仍需重新复核。班级默认工作区要求省略工具前自述，工具结束后再给结果。批量提取的主要等待在模型生成，优化方向（如短学生引用、更低延迟模型）需先做协议与质量验证，不得静默替换用户选择的模型或思考档位。
 
 ## 2. 配置并启动 ClassClaw 后端
 

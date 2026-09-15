@@ -88,7 +88,7 @@ SQLite 连接自动启用 `foreign_keys=ON`、`busy_timeout=5000` 和文件数�
 - 统一 `interaction_analyses`：网页自由文本、微信消息和附件经 OpenClaw 清洗，只保存结构化结果、置信度、澄清问题与关联 proposal，不保存消息原文
 - 文件优先 onboarding：名单和课表支持 Markdown、Office、CSV/TSV、PDF、图片、JSON/XML、RTF 与文本；解析后在结构化表格中直接核对编辑
 
-详细设计见 [配置](docs/configuration.md)、[服务器部署](docs/deployment.md)、[账户与管理员](docs/accounts-admin.md)、[专属智能体与微信使用说明](docs/class-agent-onboarding.md)、[架构](docs/architecture.md)、[数据库](docs/database.md)、[分析](docs/analytics.md)、[OpenClaw 集成](docs/openclaw-integration.md)、[REST 接口映射](docs/openclaw-tools.md) 和 [对话与实现恢复记录](docs/conversation-recovery.md)。OpenClaw 2026.7 与腾讯微信插件 2.4.6 的网页二维码 provider discovery 兼容层位于 `integrations/openclaw/openclaw-weixin-compat`。
+详细设计见 [配置](docs/configuration.md)、[服务器部署](docs/deployment.md)、[账户与管理员](docs/accounts-admin.md)、[专属智能体与微信使用说明](docs/class-agent-onboarding.md)、[架构](docs/architecture.md)、[数据库](docs/database.md)、[分析](docs/analytics.md)、[OpenClaw 集成](docs/openclaw-integration.md) 和 [REST 接口映射](docs/openclaw-tools.md)。OpenClaw 2026.7 与腾讯微信插件 2.4.6 的网页二维码 provider discovery 兼容层位于 `integrations/openclaw/openclaw-weixin-compat`。
 
 ## 测试
 
