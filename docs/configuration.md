@@ -75,6 +75,7 @@ OpenClaw 的配置文件由 Gateway 自身管理，网页展示 `config.get` 返
 | `log_file` | 后端轮转 JSON 日志位置 |
 | `auth_session_hours` | 网页登录会话有效小时数 |
 | `analysis_cache_max_entries` | 确定性分析缓存的最大条数，超过后清理最旧记录 |
+| `http_trust_env` | 出站 HTTP 是否信任 `*_PROXY` 环境变量；默认 `false`，避免系统代理误拦本机 Gateway 请求（环境变量 `CLASSCLAW_TRUST_ENV`） |
 
 ### 服务监听 `[server]`
 

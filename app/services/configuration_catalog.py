@@ -34,6 +34,7 @@ FIELDS = {
     "runtime.log_file": ("runtime", "log_file", "日志文件", "后端轮转 JSON 日志；显示解析后的路径。"),
     "runtime.auth_session_hours": ("runtime", "auth_session_hours", "登录有效期（小时）", "新建网页登录会话使用的有效期；不改变已有会话到期时间。"),
     "runtime.analysis_cache_max_entries": ("runtime", "analysis_cache_max_entries", "分析缓存条数上限", "确定性统计缓存的最大条数，超过后清理最旧记录。"),
+    "runtime.http_trust_env": ("runtime", "http_trust_env", "出站 HTTP 信任代理", "是否信任 *_PROXY 环境变量；默认关闭，避免系统代理误拦本机 Gateway 请求。"),
     "bootstrap.default_admin_username": ("bootstrap", "default_admin_username", "初始管理员用户名", "只影响首次创建或完整初始化后的管理员。"),
     "features.file_analysis": ("features", "features.file_analysis", "文件智能解析", "名单、课表、座位等文件的 AI 解析入口。"),
     "features.event_ai": ("features", "features.event_ai", "学生事件智能分类", "自动判断学生事件子类、倾向与程度。"),

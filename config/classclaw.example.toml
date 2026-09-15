@@ -16,6 +16,8 @@ log_file = "../data/logs/classclaw.log"
 auth_session_hours = 24
 # 确定性分析（如考试统计）缓存的最大条数，超过后清理最旧的缓存。
 analysis_cache_max_entries = 500
+# 出站 HTTP 是否信任 *_PROXY 环境变量；默认关闭，避免本机系统代理误拦 Gateway 请求。
+http_trust_env = false
 
 [server]
 # 反向代理与 ClassClaw 同机时使用 127.0.0.1；需要直接从局域网访问时改为 0.0.0.0。

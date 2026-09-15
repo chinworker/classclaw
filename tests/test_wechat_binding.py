@@ -9,9 +9,8 @@ import httpx
 import pytest
 
 from app.core.errors import AppError
-from app.models.entities import ClassAgentBinding
 from app.services import openclaw_provisioning, wechat_login
-from tests.helpers import teacher_for_class
+from tests.helpers import make_binding, teacher_for_class
 
 LOGIN_ID = "22222222-2222-2222-2222-222222222222"
 CHALLENGE_ID = "33333333-3333-3333-3333-333333333333"
@@ -20,16 +19,9 @@ CHALLENGE_ID = "33333333-3333-3333-3333-333333333333"
 @pytest.fixture()
 def pending_binding(db, sample, tmp_path, monkeypatch):
     cls = sample[0]
-    binding = ClassAgentBinding(
-        class_id=cls.id,
-        agent_name="测试 Agent",
-        openclaw_agent_id=f"classclaw-{cls.id}",
-        workspace_path=str(tmp_path / "class-agent"),
-        channel_account_id=f"class-{cls.id}",
-        status="awaiting_qr",
-    )
-    db.add(binding)
-    db.commit()
+    binding = make_binding(db, cls.id, tmp_path / "class-agent",
+                           agent_name="测试 Agent", openclaw_agent_id=f"classclaw-{cls.id}",
+                           channel_account_id=f"class-{cls.id}", status="awaiting_qr")
     async def runtime(*_args):
         return binding
     monkeypatch.setattr(openclaw_provisioning, "ensure_class_agent_runtime", runtime)
@@ -191,9 +183,8 @@ def test_old_wait_is_rejected_while_a_new_start_is_still_preparing(client, pendi
 
 
 def test_scan_cannot_reassign_another_class_account(client, db, sample, pending_binding, monkeypatch, tmp_path):
-    db.add(ClassAgentBinding(class_id=sample[1].id, agent_name="other", workspace_path=str(tmp_path / "other"),
-                            channel_account_id="already-owned", status="linked"))
-    db.commit()
+    make_binding(db, sample[1].id, tmp_path / "other", agent_name="other",
+                 channel_account_id="already-owned", status="linked")
 
     async def call(*_args, **_kwargs):
         return {"loginId": LOGIN_ID, "connected": True, "accountId": "already-owned"}

@@ -43,6 +43,8 @@ class RuntimeConfig(_StrictSection):
     log_file: str = "./data/logs/classclaw.log"
     auth_session_hours: int = Field(default=24, ge=1, le=8760)
     analysis_cache_max_entries: int = Field(default=500, ge=10, le=100_000)
+    # 出站 HTTP 默认不信任 *_PROXY；曾在本机 macOS 出现系统代理误吞 127.0.0.1 请求。
+    http_trust_env: bool = False
 
 
 class ServerConfig(_StrictSection):
@@ -123,6 +125,7 @@ class Settings:
     timezone: str
     log_level: str
     log_file: Path
+    http_trust_env: bool
     api_token: str | None
     auth_session_hours: int
     analysis_cache_max_entries: int
@@ -204,6 +207,7 @@ _ENV_FLOATS = {
 _ENV_BOOLEANS = {
     "CLASSCLAW_OPENCLAW_EXTRACTOR_ENABLED": ("openclaw", "extractor_enabled"),
     "CLASSCLAW_SERVER_ACCESS_LOG": ("server", "access_log"),
+    "CLASSCLAW_TRUST_ENV": ("runtime", "http_trust_env"),
     "CLASSCLAW_FEATURE_FILE_ANALYSIS": ("features", "file_analysis"),
     "CLASSCLAW_FEATURE_EVENT_AI": ("features", "event_ai"),
     "CLASSCLAW_FEATURE_WECHAT_BINDING": ("features", "wechat_binding"),
@@ -523,6 +527,7 @@ def load_settings(
         timezone=document.runtime.timezone,
         log_level=document.runtime.log_level,
         log_file=log_file,
+        http_trust_env=document.runtime.http_trust_env,
         api_token=env.get("CLASSCLAW_API_TOKEN") or None,
         auth_session_hours=document.runtime.auth_session_hours,
         analysis_cache_max_entries=document.runtime.analysis_cache_max_entries,
@@ -562,6 +567,7 @@ def safe_config_summary(value: Settings) -> dict:
             "timezone": value.timezone,
             "log_level": value.log_level,
             "auth_session_hours": value.auth_session_hours,
+            "http_trust_env": value.http_trust_env,
         },
         "server": value.server.model_dump(),
         "bootstrap": {"default_admin_username": value.default_admin_username},

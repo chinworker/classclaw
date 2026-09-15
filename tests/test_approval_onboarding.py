@@ -46,7 +46,6 @@ def test_class_onboarding_is_draft_until_explicit_confirmation(client, db):
         json={"expected_revision": session["revision"], "current_step": "review", "draft_patch": draft, "field_evidence_patch": {"class_info.name": {"source_type": "file", "location": "名单.xlsx!A1", "confidence": 0.98}}},
     )
     assert updated.status_code == 200
-    updated_session = updated.json()["data"]
     preview = client.post(f"/api/v1/class-onboarding/sessions/{session['id']}/preview", json={"requested_by": "teacher-1"})
     assert preview.status_code == 201
     proposal = preview.json()["data"]

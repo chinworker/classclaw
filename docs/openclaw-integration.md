@@ -18,13 +18,13 @@ ClassClaw 同时使用 OpenClaw Plugin 和 Skill：
 构建并安装插件：
 
 ```bash
-cd /Users/wellon/classclaw/integrations/openclaw/classclaw
+cd integrations/openclaw/classclaw
 npm install
 npm run build
 npm test
 npm run plugin:validate
 
-cd /Users/wellon/classclaw
+cd <项目根目录>
 openclaw plugins install --link ./integrations/openclaw/classclaw
 openclaw plugins enable classclaw
 openclaw config set plugins.entries.classclaw.config.baseUrl http://127.0.0.1:8000
@@ -52,7 +52,7 @@ JSON 提取默认走自动创建的轻量提取智能体（详见 [专属智能�
 ## 2. 配置并启动 ClassClaw 后端
 
 ```bash
-cd /Users/wellon/classclaw
+cd <项目根目录>
 python3.12 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt

@@ -19,7 +19,7 @@
 由拥有服务器终端及业务数据库读写权限的维护者执行，无需旧密码或 OpenClaw 在线。建议先停止 ClassClaw，避免重置与正在登录/改密的请求并发；重置完成后重新启动服务。
 
 ```bash
-cd /Users/wellon/classclaw
+cd <项目根目录>
 .venv/bin/python scripts/reset_admin_password.py
 ```
 
@@ -98,7 +98,7 @@ cd /Users/wellon/classclaw
 ## 升级与启动
 
 ```bash
-cd /Users/wellon/classclaw
+cd <项目根目录>
 source .venv/bin/activate
 alembic upgrade head
 python run.py

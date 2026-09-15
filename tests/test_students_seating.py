@@ -54,7 +54,7 @@ def test_soft_delete_keeps_audit(db, sample):
 
 
 def test_seating_snapshot_swap_restore_and_validation(db, sample):
-    cls, other, students = sample
+    cls, _other, students = sample
     first = seating.create_snapshot(db, cls.id, SeatingCreate(rows=2, cols=2, layout=[[students[0].id, students[1].id], [None, students[2].id]]))
     second = seating.swap_students(db, cls.id, SeatingSwap(student_a_id=students[0].id, student_b_id=students[2].id))
     assert first["snapshot"].id != second["snapshot"].id

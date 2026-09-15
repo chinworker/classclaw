@@ -17,10 +17,10 @@ _client: httpx.AsyncClient | None = None
 def get_http_client() -> httpx.AsyncClient:
     global _client
     if _client is None or _client.is_closed:
-        # Gateway is always a directly connected local/trusted endpoint. On macOS,
-        # httpx can otherwise discover a system proxy even when no *_PROXY env var
-        # is present and incorrectly send localhost traffic through that proxy.
-        _client = httpx.AsyncClient(trust_env=False)
+        # Gateway is always a directly connected local/trusted endpoint.
+        # macOS system proxies can otherwise incorrectly route 127.0.0.1
+        # traffic; *_PROXY handling is therefore opt-in via runtime.http_trust_env.
+        _client = httpx.AsyncClient(trust_env=settings.http_trust_env)
     return _client
 
 

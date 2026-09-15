@@ -11,7 +11,7 @@
 ### 1. 安装依赖并升级数据库
 
 ```bash
-cd /Users/wellon/classclaw
+cd <项目根目录>
 source .venv/bin/activate
 pip install -r requirements.txt
 alembic upgrade head
@@ -22,13 +22,13 @@ alembic upgrade head
 ### 2. 构建并重新加载 ClassClaw 插件
 
 ```bash
-cd /Users/wellon/classclaw/integrations/openclaw/classclaw
+cd integrations/openclaw/classclaw
 npm install
 npm run build
 npm test
 npm run plugin:validate
 
-cd /Users/wellon/classclaw
+cd <项目根目录>
 openclaw plugins install --link ./integrations/openclaw/classclaw
 openclaw plugins enable classclaw
 ```
@@ -47,7 +47,7 @@ openclaw gateway restart
 ### 4. 安装腾讯微信 channel 插件
 
 ```bash
-cd /Users/wellon/classclaw/integrations/openclaw/openclaw-weixin-compat
+cd integrations/openclaw/openclaw-weixin-compat
 npm install --omit=peer --ignore-scripts
 openclaw plugins install --link .
 openclaw config set plugins.entries.openclaw-weixin.enabled true
@@ -87,7 +87,7 @@ ClassClaw 自动维护 `plugins.entries.classclaw.config.agentClasses` 和顶层
 Gateway 地址、Agent、班级工作区和微信 channel 配置在 `config/classclaw.toml` 的 `[openclaw]`、`[storage]` 与 `[wechat]`；`.env` 只保存与 ClassClaw 插件一致的 `CLASSCLAW_API_TOKEN` 和与 `gateway.auth.token` 一致的 `CLASSCLAW_OPENCLAW_GATEWAY_TOKEN`。字段和校验规则见 [静态配置说明](configuration.md)。
 
 ```bash
-cd /Users/wellon/classclaw
+cd <项目根目录>
 source .venv/bin/activate
 alembic upgrade head
 python run.py

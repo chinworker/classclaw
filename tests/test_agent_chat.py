@@ -7,27 +7,14 @@ from types import SimpleNamespace
 from typing import ClassVar
 
 from app.config import settings
-from app.models.entities import Attachment, AttachmentLink, ClassAgentBinding
+from app.models.entities import Attachment, AttachmentLink
 from app.services import agent_models, agent_thinking, openclaw_bridge, openclaw_provisioning, operations
-from tests.helpers import teacher_for_class
-
-
-def _binding(db, class_id: str, workspace: Path) -> ClassAgentBinding:
-    value = ClassAgentBinding(
-        class_id=class_id,
-        openclaw_agent_id="class-agent-web",
-        agent_name="ClassClaw 助理",
-        workspace_path=str(workspace),
-        status="agent_created",
-    )
-    db.add(value)
-    db.commit()
-    return value
+from tests.helpers import make_binding, teacher_for_class
 
 
 def test_web_chat_saves_file_and_targets_class_agent(client, db, sample, tmp_path, monkeypatch):
     cls = sample[0]
-    binding = _binding(db, cls.id, tmp_path / "workspace")
+    binding = make_binding(db, cls.id, tmp_path / "workspace", openclaw_agent_id="class-agent-web", agent_name="ClassClaw 助理")
 
     async def ensure_runtime(*_args, **_kwargs):
         return binding
@@ -69,7 +56,7 @@ def test_web_chat_saves_file_and_targets_class_agent(client, db, sample, tmp_pat
 
 def test_web_chat_rejects_empty_message_and_unprovisioned_agent(client, db, sample, tmp_path):
     cls = sample[0]
-    binding = _binding(db, cls.id, tmp_path / "workspace")
+    binding = make_binding(db, cls.id, tmp_path / "workspace", openclaw_agent_id="class-agent-web", agent_name="ClassClaw 助理")
     empty = client.post(
         f"/api/v1/classes/{cls.id}/agent-chat/messages",
         data={"conversation_id": "97d646a7-153d-4370-aa17-bc49d3ba5593", "text": "  "},
@@ -197,7 +184,7 @@ def test_gateway_chat_uses_persistent_class_session_and_prestaged_files(db, tmp_
 
 def test_class_agent_models_are_scoped_validated_and_persisted(client, db, sample, tmp_path, monkeypatch):
     cls = sample[0]
-    binding = _binding(db, cls.id, tmp_path / "workspace")
+    binding = make_binding(db, cls.id, tmp_path / "workspace", openclaw_agent_id="class-agent-web", agent_name="ClassClaw 助理")
     patches = []
     runtime_rows = [{"id": binding.openclaw_agent_id, "workspace": binding.workspace_path}]
 
@@ -258,7 +245,7 @@ def test_class_agent_models_are_scoped_validated_and_persisted(client, db, sampl
 
 def test_selected_image_model_overrides_only_image_chat_turn(client, db, sample, tmp_path, monkeypatch):
     cls = sample[0]
-    binding = _binding(db, cls.id, tmp_path / "workspace")
+    binding = make_binding(db, cls.id, tmp_path / "workspace", openclaw_agent_id="class-agent-web", agent_name="ClassClaw 助理")
     binding.image_model = "provider/vision-model"
     db.commit()
 
@@ -289,7 +276,7 @@ def test_selected_image_model_overrides_only_image_chat_turn(client, db, sample,
 
 def test_model_voice_transcription_uses_temporary_file_and_selected_model(client, db, sample, tmp_path, monkeypatch):
     cls = sample[0]
-    binding = _binding(db, cls.id, tmp_path / "workspace")
+    binding = make_binding(db, cls.id, tmp_path / "workspace", openclaw_agent_id="class-agent-web", agent_name="ClassClaw 助理")
     binding.speech_model = "openai/gpt-4o-transcribe"
     db.commit()
     captured = {}

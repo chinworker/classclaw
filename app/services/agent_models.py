@@ -41,7 +41,6 @@ _SPEECH_DEFAULTS = {
     "mistral": "voxtral-mini-latest",
     "openai": "gpt-4o-transcribe",
     "openrouter": "openai/whisper-large-v3-turbo",
-    "senseaudio": "senseaudio-asr-pro-1.5-260319",
     "xai": "grok-stt",
 }
 

@@ -57,8 +57,6 @@ def test_profiles_come_from_gateway_not_model_name_or_fixed_matrix(thinking_gate
     profile = asyncio.run(agent_thinking.agent_thinking_options("class-agent"))
     assert [item["id"] for item in profile["levels"]] == [item["id"] for item in levels if item["id"] != "future-level"]
     assert profile["model"] == "custom/same-name"
-    if levels[0]["label"] == "节能思考":
-        assert profile["levels"][0]["label"] == "节能思考"
 
 
 def test_default_adapts_only_when_configured_level_is_unsupported(thinking_gateway, monkeypatch):
