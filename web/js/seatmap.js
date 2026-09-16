@@ -2,8 +2,10 @@
 // onboarding 与正式座位页复用。学生身份由 keyFn 决定（onboarding 用 student_no，正式页用 UUID）。
 
 import { el, clear, toast } from "./util.js";
+import { compareStudents } from "./studentOrder.js";
 
 export function seatMapEditor({ students = [], rows = 5, cols = 6, layout = null, keyFn = (s) => s.id, editable = true, onChange = null }) {
+  students = [...students].sort(compareStudents);
   const byKey = new Map(students.map((s) => [keyFn(s), s]));
   const initial = normalizeLayout(layout, rows, cols, byKey);
   const model = {

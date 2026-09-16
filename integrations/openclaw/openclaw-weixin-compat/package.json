@@ -1,6 +1,6 @@
 {
   "name": "classclaw-openclaw-weixin-compat",
-  "version": "2.4.6-classclaw.2",
+  "version": "2.4.6-classclaw.4",
   "type": "module",
   "private": true,
   "scripts": { "test": "node --test *.test.mjs" },

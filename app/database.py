@@ -13,6 +13,7 @@ from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 from sqlalchemy.pool import QueuePool, StaticPool
 
 from app.config import settings
+from app.utils.student_sort import compare_student_nos
 
 
 class Base(DeclarativeBase):
@@ -51,6 +52,7 @@ def build_engine(
 
         @event.listens_for(engine, "connect")
         def set_sqlite_pragmas(dbapi_connection, _connection_record) -> None:  # type: ignore[no-untyped-def]
+            dbapi_connection.create_collation("STUDENT_NO", compare_student_nos)
             cursor = dbapi_connection.cursor()
             cursor.execute("PRAGMA foreign_keys=ON")
             cursor.execute(f"PRAGMA busy_timeout={int(timeout_seconds * 1000)}")

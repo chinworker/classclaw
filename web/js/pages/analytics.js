@@ -30,7 +30,7 @@ export async function render(mount, ctx) {
   mount.append(pageHeader(titles[section] || "分析", "按所选时段查看。"));
 
   if (section === "students") {
-    const studentSel = el("select", {}, el("option", { value: "" }, "选择学生…"));
+    const studentSel = el("select", { dataset: { preserveOrder: "true" } }, el("option", { value: "" }, "选择学生…"));
     mount.append(el("div", { class: "filter-bar" },
       field("学生 *", studentSel), field("开始日期", startInput), field("结束日期", endInput), field("科目", subjectInput),
       el("button", { class: "primary", type: "button", onclick: load }, "分析")), presetBar, host);

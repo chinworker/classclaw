@@ -4,7 +4,7 @@ import { el, clear, fmtDateTime, toast } from "../util.js";
 import { api, AI_REQUEST_TIMEOUT_MS, createAiTaskId } from "../api.js";
 import { appConfig, featureEnabled } from "../config.js";
 import { state, refreshOpenclaw } from "../state.js";
-import { pageHeader, errorPanel, skeleton, statusBadge, openclawBlocked, emptyState } from "../components.js";
+import { pageHeader, errorPanel, skeleton, statusBadge, openclawBlocked, emptyState, confirmDanger } from "../components.js";
 import { agentChatStore } from "../agentChatStore.js";
 
 const MAX_FILES = 8;
@@ -357,9 +357,9 @@ function chatPanel(binding, scope, conversation) {
     el("div", { class: "agent-chat-compose-row" }, fileInput, attachButton, voiceButton, textarea, sendButton, stopButton),
     el("div", { class: "agent-chat-compose-foot" }, statusLine,
       el("span", { class: "muted" }, `最多 ${MAX_FILES} 个文件 · AI 可能出错，写入前请核对预览`)));
-  const panel = el("section", { class: "agent-chat-panel", aria: { label: `与 ${binding.agent_name} 对话` } },
+  const panel = el("section", { class: "agent-chat-panel", aria: { label: "与本班专属 Agent 对话" } },
     el("div", { class: "agent-chat-bar" },
-      el("div", {}, el("b", {}, binding.agent_name), el("span", { class: "agent-online" }, "在线")),
+      el("div", {}, el("b", {}, "本班专属 Agent"), el("span", { class: "agent-online" }, "在线")),
       el("div", { class: "agent-thinking-settings" },
         el("label", { class: "agent-thinking-control" }, "本会话思考强度 ", thinkingSelect), thinkingNote)),
     messages,
@@ -398,8 +398,10 @@ function chatPanel(binding, scope, conversation) {
     },
     dispose() {
       if (disposed) return;
-      conversation.draft = textarea.value;
-      conversation.files = selectedFiles;
+      if (!conversation.deleted) {
+        conversation.draft = textarea.value;
+        conversation.files = selectedFiles;
+      }
       disposed = true;
       chatRuntime.voiceController?.abort();
       chatRuntime.discardRecording = true;
@@ -414,10 +416,11 @@ export async function render(mount, ctx, helpers) {
   if (!mount.isConnected) return;
   dispose();
   const view = {
-    disposed: false, panel: null, unsubscribe: null, onFocus: null,
+    disposed: false, panel: null, unsubscribe: null, onFocus: null, deletePending: false, confirmController: new AbortController(),
     cleanup() {
       if (this.disposed) return;
       this.disposed = true;
+      this.confirmController.abort();
       this.unsubscribe?.();
       if (this.onFocus) window.removeEventListener("focus", this.onFocus);
       this.panel?.dispose();
@@ -441,6 +444,22 @@ export async function render(mount, ctx, helpers) {
   let binding = null;
   let renderedListSignature = null;
   let thinkingLoad = null;
+
+  async function deleteConversation(conversation) {
+    if (!live() || view.deletePending || !scope.conversations.includes(conversation)) return;
+    view.deletePending = true;
+    try {
+      const confirmed = await confirmDanger({
+        title: "删除对话", confirmLabel: "删除对话", signal: view.confirmController.signal,
+        lines: [
+          `删除“${conversation.title}”及其在本页的消息、草稿和待发送附件？删除后无法恢复。`,
+          "如果此对话正在回答，将立即停止回答并删除。其他对话不受影响。",
+          "已保存的班级数据和已上传的附件不会被删除。",
+        ],
+      });
+      if (confirmed && live()) agentChatStore.deleteConversation(scope, conversation.id);
+    } finally { view.deletePending = false; }
+  }
 
   async function reloadThinking() {
     if (!thinkingLoad) thinkingLoad = api(`/classes/${scope.classId}/agent-chat/thinking`, { timeoutMs: 15_000 });
@@ -478,15 +497,19 @@ export async function render(mount, ctx, helpers) {
     list.append(el("h3", {}, `对话列表 · ${scope.conversations.length}`));
     const labels = { idle: "未发送", running: "处理中", completed: "已回复", stopped: "已停止", failed: "请求失败" };
     list.append(el("div", { class: "agent-conversation-items" }, scope.conversations.map((conversation) =>
-      el("button", {
+      el("div", { class: "agent-conversation-row" }, el("button", {
         class: `agent-conversation-item${conversation.id === scope.selectedId ? " active" : ""}`,
         type: "button", aria: { pressed: String(conversation.id === scope.selectedId) },
-        onclick: () => agentChatStore.selectConversation(scope, conversation.id),
+        onclick: () => { if (live()) agentChatStore.selectConversation(scope, conversation.id); },
       },
       el("b", { class: "agent-conversation-title" }, conversation.title),
       el("span", { class: `agent-conversation-status ${conversation.status}` },
         `${labels[conversation.status]}${conversation.unread ? " · 新回复" : ""}`),
-      el("small", { class: "muted" }, fmtDateTime(conversation.createdAt))))));
+      el("small", { class: "muted" }, fmtDateTime(conversation.createdAt))),
+      el("button", {
+        class: "agent-conversation-delete", type: "button", title: "删除对话",
+        aria: { label: `删除对话：${conversation.title}` }, onclick: () => { void deleteConversation(conversation); },
+      }, "删除")))));
     list.append(el("p", { class: "muted agent-conversation-hint" }, "新建、切换对话或前往站内其他页面不会停止回答。记录仅保留在本标签页内存，刷新或关闭后不保留。"));
   }
   if (scope) {

@@ -406,3 +406,78 @@ test("missing Agent directs provisioning to account settings", async () => {
   assert.equal(mount.querySelector("textarea"), null);
   assert.equal(mount.querySelectorAll("button").some((button) => button.textContent === "创建班级 Agent"), false);
 });
+
+function deleteButton(mount, title) {
+  return mount.querySelectorAll(".agent-conversation-delete").find((button) => button.getAttribute("aria-label") === `删除对话：${title}`);
+}
+function modalAction(text) {
+  document.body.querySelectorAll(".modal")[0].querySelectorAll("button").find((button) => button.textContent === text).click();
+}
+
+test("deletion confirms without selecting a background conversation; only the confirmed running request stops", async () => {
+  const mount = await mountPage();
+  await send(mount, "待删除");
+  newChat(mount);
+  await send(mount, "保留");
+  const scope = agentChatStore.getScope("teacher-a", "class-a");
+  const selectedId = scope.selectedId;
+  deleteButton(mount, "待删除").click();
+  assert.equal(scope.selectedId, selectedId);
+  assert.ok(document.body.querySelector(".modal").textContent.includes("立即停止回答并删除"));
+  modalAction("取消");
+  await tick();
+  assert.equal(scope.conversations.length, 2);
+  assert.equal(calls[0].options.signal.aborted, false);
+  deleteButton(mount, "待删除").click();
+  modalAction("删除对话");
+  await tick();
+  assert.equal(scope.selectedId, selectedId);
+  assert.equal(calls[0].options.signal.aborted, true);
+  assert.equal(calls[1].options.signal.aborted, false);
+  assert.equal(mount.querySelectorAll(".agent-conversation-item").length, 1);
+  calls[1].resolve("保留对话完成");
+  await tick();
+  assert.ok(mount.querySelector(".agent-chat-messages").textContent.includes("保留对话完成"));
+});
+
+test("deleting the last conversation clears its draft and attachments and renders a fresh composer", async () => {
+  const mount = await mountPage();
+  const scope = agentChatStore.getScope("teacher-a", "class-a");
+  const deleted = agentChatStore.selectedConversation(scope);
+  mount.querySelector("textarea").value = "旧草稿";
+  const files = mount.querySelector("input");
+  files.files = [new File(["x"], "旧附件.txt")];
+  files.dispatchEvent(new Event("change"));
+  deleteButton(mount, "新对话").click();
+  modalAction("删除对话");
+  await tick();
+  assert.notEqual(scope.selectedId, deleted.id);
+  assert.equal(deleted.draft, "");
+  assert.deepEqual(deleted.files, []);
+  assert.equal(mount.querySelector("textarea").value, "");
+  assert.equal(mount.querySelector(".agent-chat-selected").textContent, "");
+  assert.equal(mount.querySelectorAll(".agent-conversation-item").length, 1);
+});
+
+for (const action of ["leave", "logout"]) test(`${action} dismisses deletion confirmation without deleting a conversation`, async () => {
+  const mount = await mountPage();
+  const scope = agentChatStore.getScope("teacher-a", "class-a");
+  const first = agentChatStore.selectedConversation(scope);
+  deleteButton(mount, "新对话").click();
+  if (action === "leave") page.dispose(); else clearSession();
+  await tick();
+  assert.equal(document.body.querySelector(".modal"), null);
+  assert.equal(first.deleted, false);
+  if (action === "leave") assert.equal(scope.conversations[0], first);
+});
+
+test("chat header and accessibility label hide internal Agent identifiers", async () => {
+  const fallback = fetch;
+  const internalId = "classclaw-b180a501-b232-4390-82e1-fd4a890e2458";
+  globalThis.fetch = (path, options) => path.endsWith("/agent-binding")
+    ? Promise.resolve(response({ agent_name: internalId, openclaw_agent_id: internalId })) : fallback(path, options);
+  const mount = await mountPage();
+  assert.ok(mount.querySelector(".agent-chat-bar").textContent.includes("本班专属 Agent"));
+  assert.equal(mount.textContent.includes(internalId), false);
+  assert.equal(mount.querySelector(".agent-chat-panel").getAttribute("aria-label"), "与本班专属 Agent 对话");
+});

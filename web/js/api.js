@@ -83,7 +83,7 @@ export async function api(path, { method = "GET", body, headers = {}, timeoutMs 
     }
     if (!response.ok || data.success === false) {
       const error = responseError(data, response);
-      if (response.status === 401 && unauthorizedHandler && authToken === requestToken) unauthorizedHandler(error);
+      if (response.status === 401 && unauthorizedHandler && authToken && authToken === requestToken) unauthorizedHandler(error);
       throw error;
     }
     return data.data;

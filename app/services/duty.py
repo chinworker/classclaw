@@ -21,6 +21,8 @@ from app.models.entities import (
 from app.schemas.domain import DutyConfirmRequest, DutyEvaluationCreate, DutyPreviewRequest, DutyRuleCreate, DutyRuleUpdate
 from app.services.class_student import get_class, get_student
 from app.services.common import audit, entity_dict
+from app.services.student_ordering import student_order_by
+from app.utils.student_sort import student_no_key
 from app.utils.time import now
 
 
@@ -113,7 +115,7 @@ def generate_preview(db: Session, data: DutyPreviewRequest | DutyConfirmRequest)
                 Student.class_id == data.class_id,
                 Student.deleted_at.is_(None),
                 Student.status == "active",
-            )
+            ).order_by(*student_order_by())
         )
     )
     by_id = {s.id: s for s in students}
@@ -153,7 +155,7 @@ def generate_preview(db: Session, data: DutyPreviewRequest | DutyConfirmRequest)
                 preference = 0
                 if item.get("boarding_preferred") and student.boarding_status in {"boarding", "住校", "住宿"}:
                     preference = -1
-                eligible.append((counts[sid], preference, student.student_no, sid))
+                eligible.append((counts[sid], preference, student_no_key(student.student_no), sid))
             eligible.sort()
             selected.extend(row[3] for row in eligible[: max(0, needed - len(selected))])
             if len(selected) < needed:
@@ -192,7 +194,7 @@ def generate_preview(db: Session, data: DutyPreviewRequest | DutyConfirmRequest)
         "preview_token": hashlib.sha256(token_source.encode()).hexdigest(),
         "assignments": assignments,
         "conflicts": conflicts,
-        "workload": [{"student_id": sid, "student_name": by_id[sid].name, "count": counts[sid]} for sid in sorted(by_id)],
+        "workload": [{"student_id": sid, "student_name": by_id[sid].name, "count": counts[sid]} for sid in by_id],
         "balance": {"max_min_spread": spread, "is_balanced": spread <= 1},
         "warnings": ([{"code": "UNKNOWN_EXCLUDED_STUDENTS", "student_ids": sorted(unknown)}] if unknown else []),
         "writes_performed": 0,
@@ -369,8 +371,9 @@ def duty_statistics(db: Session, class_id: str, start_date: date | None, end_dat
         score_stmt = score_stmt.where(DutyAssignment.duty_date <= end_date)
     for sid, average in db.execute(score_stmt.group_by(DutyAssignment.student_id)).all():
         by_student[sid]["average_score"] = round(float(average), 2)
+    student_ids = list(db.scalars(select(Student.id).where(Student.id.in_(by_student)).order_by(*student_order_by())))
     totals = [row["total"] for row in by_student.values()]
     return {
-        "students": [{"student_id": sid, **stats} for sid, stats in by_student.items()],
+        "students": [{"student_id": sid, **by_student[sid]} for sid in student_ids],
         "balance": {"max_min_spread": max(totals) - min(totals) if totals else 0, "is_balanced": not totals or max(totals) - min(totals) <= 1},
     }

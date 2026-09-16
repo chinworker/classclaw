@@ -34,6 +34,7 @@ gateway_url = "http://127.0.0.1:18789"
 agent_id = "main"
 extractor_agent_id = "classclaw-extractor"
 extractor_enabled = true
+extractor_thinking = "off" # JSON 提取默认 off；提高档位可改善模糊课表的抽取质量，但会增加耗时
 class_agent_thinking = "off" # 所有班级场景统一默认；每个网页会话可独立覆盖
 timeout_seconds = 120.0
 session_cleanup_hours = 24.0

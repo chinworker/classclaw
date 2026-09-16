@@ -60,3 +60,12 @@ save credentials, change OpenClaw configuration, or require network access.
 Do not remove the wrapper merely because upstream adds discovery declarations:
 verify short-poll lifetime, QR refresh, stale-attempt safety and browser code
 entry support before migrating the ClassClaw private endpoint.
+
+
+Deletion cleanup requires version `2.4.6-classclaw.4`: `cancel` returns the
+normalized `accountIds` committed by that class's login attempts, including a
+successful scan whose ClassClaw route has not yet been saved. The backend
+journals and checks those accounts before logout. Raw and normalized account
+aliases share the same ownership checks. Upgrade/restart the compatibility
+plugin before the backend; older cancel responses stop deletion with a
+retryable plugin-update error.

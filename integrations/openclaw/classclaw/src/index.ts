@@ -179,6 +179,7 @@ const plugin: OpenClawPluginDefinition = definePluginEntry({
       if (!event.toolName.startsWith("classclaw_")) return;
       const classId = context.agentId ? config.agentClasses[context.agentId] : undefined;
       const params = { ...event.params } as Record<string, unknown>;
+      if (classId && event.toolName === "classclaw_upload_file") params.class_id = classId;
       if (classId && event.toolName === "classclaw_analyze_interaction") params.class_id = classId;
       if (classId && event.toolName === "classclaw_read") {
         if (params.resource === "classes") return { block: true, blockReason: "班级专属智能体不能列出其他班级" };
@@ -227,20 +228,20 @@ const plugin: OpenClawPluginDefinition = definePluginEntry({
       name: "classclaw_upload_file",
       label: "暂存 ClassClaw 原始附件",
       description: "Stage a user attachment in ClassClaw for the current analysis. This does not change class business data.",
-      parameters: Type.Object({ path: Type.String(), description: Type.Optional(Type.String()) }),
+      parameters: Type.Object({ path: Type.String(), description: Type.Optional(Type.String()), class_id: Type.Optional(Type.String()) }),
       async execute(_id, params) {
-        const values = params as { path: string; description?: string };
-        return result(await client.upload(values.path, { description: values.description }));
+        const values = params as { path: string; description?: string; class_id?: string };
+        return result(await client.upload(values.path, { description: values.description, class_id: values.class_id }));
       },
     });
 
     api.registerTool({
       name: "classclaw_read",
       label: "读取 ClassClaw 数据",
-      description: "Read a whitelisted ClassClaw resource. Lists use page (from 1) and page_size (1–100); inspect total before declaring a roster complete. Use the returned analysis_id to read interaction_analysis, never a message or session ID. Never use this tool for writes.",
+      description: "Read a whitelisted ClassClaw resource. Lists use page (from 1) and page_size (1–100); inspect total before declaring a roster complete. student_detail/student_analysis accept student_no (班内学号) instead of student_id; student_no requires class_id because numbers are only unique within a class. Use the returned analysis_id to read interaction_analysis, never a message or session ID. Never use this tool for writes.",
       parameters: Type.Object({
         resource: Type.Union(readResources.map((value) => Type.Literal(value))), class_id: Type.Optional(Type.String()),
-        student_id: Type.Optional(Type.String()), proposal_id: Type.Optional(Type.String()), session_id: Type.Optional(Type.String()),
+        student_id: Type.Optional(Type.String()), student_no: Type.Optional(Type.String()), proposal_id: Type.Optional(Type.String()), session_id: Type.Optional(Type.String()),
         analysis_id: Type.Optional(Type.String()),
         reminder_id: Type.Optional(Type.String()),
         bound_class_id: Type.Optional(Type.String()),
@@ -251,11 +252,20 @@ const plugin: OpenClawPluginDefinition = definePluginEntry({
       async execute(_id, params) {
         const values = params as Record<string, unknown> & { resource: typeof readResources[number] };
         validateReadParams(values);
+        if (["student_detail", "student_analysis"].includes(values.resource) && !values.student_id && values.student_no) {
+          // Deterministic class-scoped 学号 lookup; the LLM never needs roster UUIDs.
+          const found = await client.get(`/api/v1/students${query({ class_id: values.class_id, student_no: values.student_no, page_size: 2 }, ["class_id", "student_no", "page_size"])}`) as { items?: Array<{ id?: unknown }> };
+          const items = Array.isArray(found.items) ? found.items : [];
+          if (items.length !== 1 || typeof items[0]?.id !== "string") {
+            throw new Error(`STUDENT_NOT_FOUND: 班级内找不到学号 ${String(values.student_no)} 对应的唯一学生`);
+          }
+          values.student_id = items[0].id;
+        }
         let path: string;
         switch (values.resource) {
           case "classes": path = `/api/v1/classes${query(values, ["page", "page_size"])}`; break;
           case "class_summary": path = `/api/v1/classes/${encodeURIComponent(String(values.class_id ?? ""))}/summary`; break;
-          case "student_search": path = `/api/v1/students${query(values, ["class_id", "q", "exact_name", "page", "page_size"])}`; break;
+          case "student_search": path = `/api/v1/students${query(values, ["class_id", "q", "exact_name", "student_no", "page", "page_size"])}`; break;
           case "student_detail": path = `/api/v1/students/${encodeURIComponent(String(values.student_id ?? ""))}`; break;
           case "daily_timetable": path = `/api/v1/classes/${encodeURIComponent(String(values.class_id ?? ""))}/timetable/daily${query({ lesson_date: values.date }, ["lesson_date"])}`; break;
           case "morning_briefing": path = `/api/v1/briefings/morning${query(values, ["class_id", "date"])}`; break;
@@ -271,7 +281,10 @@ const plugin: OpenClawPluginDefinition = definePluginEntry({
         const scopedClassId = typeof values.bound_class_id === "string" ? values.bound_class_id : undefined;
         if (scopedClassId && ["student_detail", "student_analysis"].includes(values.resource)) {
           const studentId = String(values.student_id ?? "");
-          const student = await client.get(`/api/v1/students/${encodeURIComponent(studentId)}`) as JsonObject;
+          // student_detail already returned the same payload; only analysis needs the extra lookup.
+          const detail = values.resource === "student_detail" ? data as JsonObject
+            : await client.get(`/api/v1/students/${encodeURIComponent(studentId)}`) as JsonObject;
+          const student = (detail.student ?? detail) as JsonObject;
           if (student.class_id !== scopedClassId) throw new Error("CLASS_SCOPE_VIOLATION: student does not belong to this agent's class");
         }
         if (scopedClassId && values.resource === "interaction_analysis" && ((data as JsonObject).analysis as JsonObject | undefined)?.class_id !== scopedClassId) {

@@ -76,7 +76,7 @@ openclaw gateway restart
 
 ### 5.1 轻量提取智能体（默认开启，提升分析速度）
 
-默认启用独立提取智能体（TOML 的 `openclaw.extractor_enabled=true`，无需额外设置）。后端所有 JSON 提取（interaction 清洗、onboarding 导入、课表/座位文件和事件分类）走一个专用的无工具智能体，默认名 `classclaw-extractor`（可用 `openclaw.extractor_agent_id` 修改）。服务启动和首次使用时会自动创建并校正它的独立 OpenClaw runtime：显式固定当前默认模型作为独立模型、开启 fast mode、关闭 thinking/reasoning/verbose、技能和记忆，并用 `minimal + deny session_status` 保证向模型暴露零个工具。它不会再继承 Main 的 coding 工具集或思考级别。
+默认启用独立提取智能体（TOML 的 `openclaw.extractor_enabled=true`，无需额外设置）。后端所有 JSON 提取（interaction 清洗、onboarding 导入、课表/座位文件和事件分类）走一个专用的无工具智能体，默认名 `classclaw-extractor`（可用 `openclaw.extractor_agent_id` 修改）。服务启动和首次使用时会自动创建并校正它的独立 OpenClaw runtime：显式固定当前默认模型作为独立模型、开启 fast mode、按 `openclaw.extractor_thinking` 设置思考档位（默认 `off`）、关闭 reasoning/verbose、技能和记忆，并用 `minimal + deny session_status` 保证向模型暴露零个工具。它不会再继承 Main 的 coding 工具集或思考级别；提高提取思考强度会在配置变化时触发一次 Gateway 重启。
 
 清洗规范自动写入其工作区 `data/openclaw-agents/_extractor/AGENTS.md`，内容哈希变化时自动覆写（手工修改会被下次规则更新覆盖），请求 prompt 只携带数据。设 `openclaw.extractor_enabled=false` 可回退主智能体与完整内联提示词。创建和运行配置校正依赖 5.3 节的 `admin-http-rpc`，未启用时自动回退。
 
@@ -123,7 +123,7 @@ python run.py
 
 - 文件解析使用随机的新 OpenClaw session key，提示词不包含旧草稿列表。
 - 文件选择与解析分开：选择后点击“开始解析”，进行中可取消。网页为每次任务发送随机 `X-ClassClaw-AI-Task-ID`，取消按钮另行调用取消端点；后端主动取消 HTTPX/OpenClaw 请求并释放写会话，不再只依赖连接断开检测，也不会应用稍后返回的结果。
-- 每次 AI 解析必须返回 0 到 1 的置信度和非空原因项，统一通过门槛为 0.75。学生名单要求学号与姓名逐行清晰且唯一；课表要求星期、节次和科目明确。低置信度结果不修改草稿，网页弹窗逐项说明文件问题并要求重新上传。
+- 每次 AI 解析必须返回 0 到 1 的置信度和非空原因项，统一通过门槛为 0.75。学生名单要求学号与姓名逐行清晰且唯一，低置信度不修改草稿，网页弹窗逐项说明问题并要求重新上传。课表采用“尽量给出 + 人工修改”：只要存在结构有效的课程（含后端跳过的坏行在内能保留的部分），即使置信度不足也会完整替换 `periods` 与 `base_timetable` 并填入草稿，`analysis.review_required=true`，网页在可编辑矩阵上方逐项列出原因与警告，用户修改后继续；只有完全无法识别出有效课程时才拒绝本次结果。提取用的 OpenClaw 模型思考强度可经 `openclaw.extractor_thinking` 提高（默认 `off`）。
 - `students` 上传完整替换学生列表；`timetable` 上传完整替换 `periods` 与 `base_timetable`。
 - 解析后只在 HTML 表格里编辑。PATCH 使用 `replace_lists=true`，删除一行就会从草稿删除。
 - 人工结构化编辑不会再次经过模型。只有重新上传文件时 OpenClaw 才重新介入。

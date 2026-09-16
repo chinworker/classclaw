@@ -58,7 +58,7 @@ async def class_agent_transcription(
     db: Annotated[Session, Depends(get_db)],
 ):
     require_owned_class(request, class_id)
-    async with ai_tasks.track(request) as cancelled:
+    async with ai_tasks.track(request, class_id=class_id) as cancelled:
         result = await agent_models.transcribe_for_class(db, class_id, audio, cancelled=cancelled)
     return ok(request, result, "语音已转成文字")
 
@@ -85,7 +85,7 @@ async def class_agent_chat_message(
         with agent_chat.conversation_turn(class_id, sender_id, conversation_id):
             # StreamingResponse owns ASGI disconnect events. Its cancellation
             # closes the producer; do not have two consumers race on receive().
-            async with ai_tasks.track(request, check_disconnect=not stream) as cancelled:
+            async with ai_tasks.track(request, class_id=class_id, check_disconnect=not stream) as cancelled:
                 return await agent_chat.send_message(
                     db, class_id=class_id, conversation_id=conversation_id, text=text, uploads=uploads,
                     sender_id=sender_id, requested_by=principal.username, cancelled=cancelled,

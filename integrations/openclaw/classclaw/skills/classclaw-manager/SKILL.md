@@ -51,8 +51,8 @@ Read [references/use-cases.md](references/use-cases.md) whenever deciding how a 
 - The acceptance threshold is 0.75. The analyzer must return a non-empty reason list for the overall result and every proposed operation. Only operations accepted by the backend may be previewed or committed.
 - For low-confidence data, state the concrete missing, ambiguous, contradictory, or unmatched fields from `rejected_reasons`; never replace them with a generic failure message.
 - Keep the actual event date separate from receive time.
-- Use real UUIDs from ClassClaw context; do not invent identities.
-- For the same profile changes across students, use `student.update.batch` with `class_id`, `student_ids`, shared `changes`, and `only_if_empty` when filling blanks. Group by the requested new value; do not generate one proposal per student. Compare numeric student numbers numerically (021 = 21); never infer gender from names. Existing genders stay unchanged when the user asks only to fill missing ones.
+- Refer to students by their class-internal student number (`student_no`), copied exactly from ClassClaw context; never invent or output student UUIDs. The backend deterministically resolves student numbers to internal IDs within the bound class.
+- For the same profile changes across students, use `student.update.batch` with `class_id`, `student_nos`, shared `changes`, and `only_if_empty` when filling blanks. Group by the requested new value; do not generate one proposal per student. Compare numeric student numbers numerically (021 = 21); never infer gender from names. Existing genders stay unchanged when the user asks only to fill missing ones.
 - Ask before identity, date, score, attendance status, deletion, or batch scope is ambiguous.
 - Never infer causation from cross-module analytics.
 - If the user reports homework not submitted but explicitly does not want a Homework record, use a `student_event.create`/`student_event.batch` operation with `event_type="homework"` and `subtype="homework_missing"`; do not invent a homework id.

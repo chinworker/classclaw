@@ -1,9 +1,10 @@
 // 可复用组件：Modal、Drawer、DataTable、状态徽章、错误面板、指标卡、上传区、二维码面板等。
 // 组件只接受结构化数据，动态文本一律经 textContent 安全插入。
 
-import { el, clear, escapeHtml, fmtDateTime, toast, copyText } from "./util.js";
+import { el, clear, escapeHtml, fmtDateTime, toast, copyText, fileSize } from "./util.js";
 import { api, ApiError, createAiTaskId } from "./api.js";
 import { appConfig, featureEnabled } from "./config.js";
+import { compareStudents } from "./studentOrder.js";
 
 /* ---------------- Modal ---------------- */
 
@@ -356,6 +357,7 @@ export function fileDropzone({
   hint = "拖拽文件到这里，或点击选择",
   accept = null,
   multiple = false,
+  maxFiles = null,
   onFiles,
   busyText = "正在上传…",
   manualStart = false,
@@ -368,10 +370,32 @@ export function fileDropzone({
   const zone = el("div", { class: `dropzone${disabled ? " disabled" : ""}`, tabindex: disabled ? "-1" : "0", role: manualStart ? "group" : "button", "aria-label": hint, "aria-disabled": disabled ? "true" : null },
     el("b", {}, disabled ? "文件智能解析已关闭" : hint), el("span", { class: "muted" }, disabled ? "仍可使用页面中的手动录入功能" : "文件会安全上传并进行识别"));
   const progress = el("div", { class: "drop-progress hidden" });
-  const selectedLine = el("span", { class: "drop-selected muted hidden" });
+  const fileList = el("div", { class: "drop-file-list hidden", role: "list", "aria-label": "已选择的文件" });
   let selectedFiles = [];
   let busy = false;
   let action = null;
+
+  const fileKey = (file) => `${file.name}:${file.size}:${file.lastModified}`;
+
+  function renderList() {
+    clear(fileList);
+    fileList.classList.toggle("hidden", !selectedFiles.length);
+    for (const [index, file] of selectedFiles.entries()) {
+      fileList.append(el("span", { class: "drop-file-item", role: "listitem" },
+        el("span", { class: "drop-file-name", title: file.name }, file.name),
+        el("small", { class: "muted" }, fileSize(file.size)),
+        el("button", {
+          class: "drop-file-remove", type: "button", "aria-label": `移除 ${file.name}`, title: "移除",
+          onclick: (event) => {
+            event.stopPropagation();
+            if (busy) return;
+            selectedFiles.splice(index, 1);
+            renderList();
+            action?.setDisabled(!selectedFiles.length);
+          },
+        }, "×")));
+    }
+  }
 
   function setBusy(value, text = busyText) {
     const changed = busy !== value;
@@ -384,13 +408,22 @@ export function fileDropzone({
 
   function fire(files) {
     if (!files?.length || busy || disabled) return;
-    selectedFiles = [...files];
-    if (!manualStart) {
-      onFiles(selectedFiles, { zone, setBusy, signal: null });
+    const merged = [...selectedFiles];
+    for (const file of files) {
+      if (!merged.some((item) => fileKey(item) === fileKey(file))) merged.push(file);
+    }
+    if (maxFiles && merged.length > maxFiles) {
+      toast(`每次最多上传 ${maxFiles} 个文件`, "error");
       return;
     }
-    selectedLine.textContent = `已选择 ${selectedFiles.length} 个文件`;
-    selectedLine.classList.remove("hidden");
+    const incoming = merged.filter((file) => !selectedFiles.includes(file));
+    selectedFiles = merged;
+    renderList();
+    // 解析或上传结束后保留文件列表，失败时用户可以直接调整后重试。
+    if (!manualStart) {
+      onFiles(incoming, { zone, setBusy, signal: null, getFiles: () => [...selectedFiles] });
+      return;
+    }
     action.setDisabled(false);
   }
 
@@ -400,15 +433,15 @@ export function fileDropzone({
       runningLabel: "取消解析",
       disabled: true,
       onBusyChange: (value) => setBusy(value, busyText),
-      onRun: ({ signal, taskId }) => onFiles([...selectedFiles], { zone, setBusy, signal, taskId }),
+      onRun: ({ signal, taskId }) => onFiles([...selectedFiles], { zone, setBusy, signal, taskId, getFiles: () => [...selectedFiles] }),
     });
     action.el.addEventListener("click", (event) => event.stopPropagation());
   }
-  zone.append(input, selectedLine, progress);
+  zone.append(input, fileList, progress);
   if (action) zone.append(action.el);
   zone.addEventListener("click", () => { if (!busy && !disabled) input.click(); });
   zone.addEventListener("keydown", (e) => {
-    if (!busy && !disabled && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); input.click(); }
+    if (e.target === zone && !busy && !disabled && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); input.click(); }
   });
   input.addEventListener("change", () => { fire(input.files); input.value = ""; });
   zone.addEventListener("dragover", (e) => { e.preventDefault(); if (!busy && !disabled) zone.classList.add("dragging"); });
@@ -595,9 +628,15 @@ export function proposalReview(proposal) {
   const box = el("div", { class: "proposal-review" });
   box.append(el("h3", {}, preview.title || "写入预览"));
   if (summary && typeof summary === "object" && !Array.isArray(summary)) {
+    const cards = Object.entries(summary).filter(([, value]) => isScalar(value) || isFlatRecord(value));
     box.append(el("div", { class: "metric-grid" },
-      Object.entries(summary).map(([key, value]) => metricCard(SUMMARY_LABELS[key] || key, value ?? "—"))));
+      cards.map(([key, value]) => metricCard(SUMMARY_LABELS[key] || key, isScalar(value) ? value ?? "—" : JSON.stringify(value)))));
+    // 行级数据（学生名单、成绩、事件等）必须让复核者逐行看到学号与姓名。
+    for (const value of Object.values(summary)) {
+      if (isRowList(value)) box.append(summaryTable(value));
+    }
   }
+  if (isRowList(preview.students)) box.append(summaryTable(preview.students));
   const issues = [];
   for (const name of preview.missing_fields || []) issues.push({ kind: "error", text: `缺少字段：${MISSING_LABELS[name] || name}` });
   for (const err of preview.validation_errors || []) issues.push({ kind: "error", text: `${err.field ? `${err.field}：` : ""}${err.message || err.msg || JSON.stringify(err)}` });
@@ -612,9 +651,44 @@ export function proposalReview(proposal) {
   return box;
 }
 
+function isScalar(value) {
+  return value === null || typeof value !== "object";
+}
+
+function isFlatRecord(value) {
+  return !!value && typeof value === "object" && !Array.isArray(value) && Object.values(value).every(isScalar);
+}
+
+function isRowList(value) {
+  return Array.isArray(value) && value.length > 0 && value.every((row) => !!row && typeof row === "object" && !Array.isArray(row));
+}
+
+function summaryTable(rows) {
+  if (rows.every((row) => row.student_no !== undefined)) rows = [...rows].sort(compareStudents);
+  const keys = [...new Set(rows.flatMap((row) => Object.keys(row)))];
+  return dataTable({
+    columns: keys.map((key) => ({
+      key,
+      label: SUMMARY_LABELS[key] || key,
+      render: (row) => {
+        const value = row[key];
+        if (value === null || value === undefined || value === "") return "—";
+        return typeof value === "object" ? JSON.stringify(value) : String(value);
+      },
+    })),
+    rows,
+    caption: "待复核的行级数据",
+  });
+}
+
 const SUMMARY_LABELS = {
   class_name: "班级", grade: "年级", subject_count: "科目数", student_count: "学生数",
   period_count: "节次数", timetable_item_count: "课程条数", record_count: "记录数",
+  student_no: "学号", name: "姓名", homework_title: "作业", exam_name: "考试",
+  rows: "行", cols: "列", attendance_date: "日期", period: "时段", status: "状态",
+  subject: "科目", score: "分数", event_type: "事件类型", subtype: "子类", event_date: "日期",
+  comment: "备注", level: "等级", submitted_at: "提交时间", gender: "性别", group_no: "小组",
+  changes: "变更内容", only_if_empty: "仅补空字段", before: "变更前",
 };
 const MISSING_LABELS = { name: "班级名称", grade: "年级", students: "学生名单", base_timetable: "基础课表" };
 

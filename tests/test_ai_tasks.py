@@ -138,3 +138,23 @@ def test_cancel_endpoint_stops_event_ai_route(client, sample, monkeypatch):
     assert cancellation.json()["data"]["state"] == "running"
     assert response.status_code == 499
     assert response.json()["error"]["code"] == "REQUEST_CANCELLED"
+
+
+def test_headerless_ai_request_is_tracked_until_it_finishes():
+    async def scenario():
+        async with ai_tasks.track(_request(), class_id="class-1"):
+            assert ai_tasks.has_active(class_id="class-1")
+            assert ai_tasks.has_active(user_id="user-1")
+        assert not ai_tasks.has_active(class_id="class-1")
+    asyncio.run(scenario())
+
+
+def test_duplicate_task_id_cannot_hide_an_earlier_inflight_request():
+    async def scenario():
+        request = _request(task_id=str(uuid.uuid4()))
+        async with ai_tasks.track(request, class_id="class-1"):
+            with pytest.raises(AppError, match="任务标识"):
+                async with ai_tasks.track(request, class_id="class-2"):
+                    pass
+            assert ai_tasks.has_active(class_id="class-1")
+    asyncio.run(scenario())

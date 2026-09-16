@@ -62,6 +62,7 @@ class OpenClawConfig(_StrictSection):
     agent_id: str = Field(default="main", min_length=1, max_length=100)
     extractor_agent_id: str = Field(default="classclaw-extractor", min_length=1, max_length=100)
     extractor_enabled: bool = True
+    extractor_thinking: ThinkingLevel = "off"
     class_agent_thinking: ThinkingLevel = "off"
     timeout_seconds: float = Field(default=120, gt=0, le=120)
     session_cleanup_hours: float = Field(default=24, ge=0, le=8760)
@@ -136,6 +137,7 @@ class Settings:
     openclaw_agent_id: str
     openclaw_extractor_agent_id: str
     openclaw_extractor_enabled: bool
+    openclaw_extractor_thinking: ThinkingLevel
     openclaw_class_agent_thinking: ThinkingLevel
     openclaw_timeout_seconds: float
     openclaw_class_workspace_root: Path
@@ -171,6 +173,7 @@ _ENV_STRINGS = {
     "CLASSCLAW_OPENCLAW_GATEWAY_URL": ("openclaw", "gateway_url"),
     "CLASSCLAW_OPENCLAW_AGENT_ID": ("openclaw", "agent_id"),
     "CLASSCLAW_OPENCLAW_EXTRACTOR_AGENT_ID": ("openclaw", "extractor_agent_id"),
+    "CLASSCLAW_OPENCLAW_EXTRACTOR_THINKING": ("openclaw", "extractor_thinking"),
     "CLASSCLAW_OPENCLAW_CLASS_AGENT_THINKING": ("openclaw", "class_agent_thinking"),
     "CLASSCLAW_OPENCLAW_BIN": ("openclaw", "cli"),
     "CLASSCLAW_OPENCLAW_WECHAT_CHANNEL": ("wechat", "channel"),
@@ -543,6 +546,7 @@ def load_settings(
         openclaw_agent_id=document.openclaw.agent_id,
         openclaw_extractor_agent_id=document.openclaw.extractor_agent_id,
         openclaw_extractor_enabled=document.openclaw.extractor_enabled,
+        openclaw_extractor_thinking=document.openclaw.extractor_thinking,
         openclaw_class_agent_thinking=document.openclaw.class_agent_thinking,
         openclaw_timeout_seconds=document.openclaw.timeout_seconds,
         openclaw_class_workspace_root=workspace_root,
@@ -590,6 +594,7 @@ def safe_config_summary(value: Settings) -> dict:
             "agent_id": value.openclaw_agent_id,
             "extractor_agent_id": value.openclaw_extractor_agent_id,
             "extractor_enabled": value.openclaw_extractor_enabled,
+            "extractor_thinking": value.openclaw_extractor_thinking,
             "class_agent_thinking": value.openclaw_class_agent_thinking,
             "timeout_seconds": value.openclaw_timeout_seconds,
             "session_cleanup_hours": value.openclaw_session_cleanup_hours,

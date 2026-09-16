@@ -10,7 +10,7 @@ from app.core.errors import AppError
 from app.core.responses import ok
 from app.core.security import require_owned_class, require_owned_record, require_owned_student
 from app.database import get_db
-from app.models.entities import DutyAssignment, DutyRule, DutySchedule, DutyScoreItem, SeatingSnapshot
+from app.models.entities import DutyAssignment, DutyRule, DutySchedule, DutyScoreItem, SeatingSnapshot, Student
 from app.schemas.domain import (
     DutyAssignmentScore,
     DutyConfirmRequest,
@@ -25,6 +25,7 @@ from app.schemas.domain import (
 )
 from app.services import admin_console, ai_tasks, duty, openclaw_bridge, operations, seating
 from app.services.common import audit, entity_dict
+from app.services.student_ordering import student_order_by
 from app.utils.time import today
 
 router = APIRouter(tags=["座位与值日"])
@@ -75,11 +76,10 @@ async def seat_import_preview(request: Request, class_id: str, files: list[Uploa
     admin_console.require_feature("feature.file_analysis")
     if not files or len(files) > 4:
         raise AppError("VALIDATION_ERROR", "每次请上传 1 至 4 个座位表文件", 422)
-    async with ai_tasks.track(request) as cancelled:
+    async with ai_tasks.track(request, class_id=class_id) as cancelled:
         attachments = []
         for upload in files:
-            attachment = operations.save_attachment(db, upload, None, "座位表文件识别")
-            operations.link_attachment(db, attachment.id, "class", class_id)
+            attachment = operations.save_attachment(db, upload, None, "座位表文件识别", class_id=class_id)
             attachments.append(attachment)
         result = await openclaw_bridge.analyze_seating_files(db, class_id, attachments, cancelled=cancelled)
         message = "座位表文件已整理，请核对预览后保存" if result["analysis"]["accepted"] else "AI 认为座位表数据不够可靠，未采用本次结果"
@@ -164,7 +164,8 @@ def duty_assignments(
         stmt = stmt.where(DutyAssignment.duty_date <= end_date)
     if student_id:
         stmt = stmt.where(DutyAssignment.student_id == student_id)
-    return ok(request, list(db.scalars(stmt.order_by(DutyAssignment.duty_date, DutyAssignment.item_name))))
+    return ok(request, list(db.scalars(stmt.join(Student, Student.id == DutyAssignment.student_id)
+                                     .order_by(DutyAssignment.duty_date, DutyAssignment.item_name, *student_order_by()))))
 
 
 @router.get("/duty/today")
@@ -173,7 +174,8 @@ def duty_today(request: Request, class_id: str, day: date | None = None, db: Ses
     duty.complete_overdue_assignments(db, class_id)
     target = day or today()
     stmt = select(DutyAssignment).join(DutySchedule, DutySchedule.id == DutyAssignment.duty_schedule_id).where(DutySchedule.class_id == class_id, DutyAssignment.duty_date == target, DutyAssignment.status != "replaced")
-    return ok(request, list(db.scalars(stmt)))
+    return ok(request, list(db.scalars(stmt.join(Student, Student.id == DutyAssignment.student_id)
+                                     .order_by(DutyAssignment.item_name, *student_order_by()))))
 
 
 @router.get("/duty/weekly")
@@ -181,7 +183,8 @@ def duty_weekly(request: Request, class_id: str, week_start: date, db: Session =
     require_owned_class(request, class_id)
     duty.complete_overdue_assignments(db, class_id)
     stmt = select(DutyAssignment).join(DutySchedule, DutySchedule.id == DutyAssignment.duty_schedule_id).where(DutySchedule.class_id == class_id, DutyAssignment.duty_date.between(week_start, week_start + timedelta(days=6)))
-    return ok(request, list(db.scalars(stmt.order_by(DutyAssignment.duty_date))))
+    return ok(request, list(db.scalars(stmt.join(Student, Student.id == DutyAssignment.student_id)
+                                     .order_by(DutyAssignment.duty_date, DutyAssignment.item_name, *student_order_by()))))
 
 
 @router.post("/duty/assignments/{assignment_id}/replace", status_code=201)

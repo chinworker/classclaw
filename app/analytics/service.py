@@ -25,6 +25,7 @@ from app.models.entities import (
 )
 from app.services.class_student import get_class, get_student
 from app.services.duty import duty_statistics
+from app.services.student_ordering import student_order_by
 from app.services.timetable import daily_timetable
 from app.utils.time import today
 
@@ -181,7 +182,7 @@ def _class_student_analyses(
         db.scalars(
             select(Student)
             .where(Student.class_id == class_id, Student.deleted_at.is_(None), Student.status == "active")
-            .order_by(Student.student_no)
+            .order_by(*student_order_by())
         )
     )
     if not students:

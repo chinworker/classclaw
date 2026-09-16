@@ -33,6 +33,7 @@ from app.schemas.domain import (
 )
 from app.services.class_student import get_class, get_student
 from app.services.common import audit, entity_dict
+from app.utils.student_sort import student_no_key
 from app.utils.time import now
 
 
@@ -422,7 +423,7 @@ def _exam_statistics_fingerprint(db: Session, exam_id: str) -> str:
         ensure_ascii=False,
         sort_keys=True,
     )
-    return hashlib.sha256(f"exam_statistics:{exam_id}:{raw}".encode()).hexdigest()
+    return hashlib.sha256(f"exam_statistics:natural-student-order-v1:{exam_id}:{raw}".encode()).hexdigest()
 
 
 def _statistics_cache_put(db: Session, kind: str, key: str, payload: dict) -> None:
@@ -508,7 +509,7 @@ def _compute_exam_statistics(db: Session, exam: Exam, subject: str | None = None
                 "subjects": {r.subject: r.score for r in sorted(rows, key=lambda r: r.subject)},
             }
         )
-    totals.sort(key=lambda t: (-t["total_score"], t["student_no"] or ""))
+    totals.sort(key=lambda t: (-t["total_score"], student_no_key(t["student_no"])))
     rank = 0
     previous = None
     for index, item in enumerate(totals, 1):

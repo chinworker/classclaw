@@ -62,14 +62,19 @@ async def timetable_import_preview(request: Request, class_id: str, files: list[
         from app.core.errors import AppError
 
         raise AppError("VALIDATION_ERROR", "每次请上传 1 至 4 个课表文件", 422)
-    async with ai_tasks.track(request) as cancelled:
+    async with ai_tasks.track(request, class_id=class_id) as cancelled:
         attachments = []
         for upload in files:
-            attachment = operations.save_attachment(db, upload, None, "课表文件识别")
-            operations.link_attachment(db, attachment.id, "class", class_id)
+            attachment = operations.save_attachment(db, upload, None, "课表文件识别", class_id=class_id)
             attachments.append(attachment)
         result = await openclaw_bridge.analyze_timetable_files(db, class_id, attachments, cancelled=cancelled)
-        message = "课表文件已整理，请核对预览后保存" if result["analysis"]["accepted"] else "AI 认为课表数据不够可靠，未采用本次结果"
+        analysis = result["analysis"]
+        if not analysis["accepted"]:
+            message = "AI 认为课表数据不够可靠，未采用本次结果"
+        elif analysis.get("review_required"):
+            message = "课表文件已整理并生成预览，请逐项核对后保存"
+        else:
+            message = "课表文件已整理，请核对预览后保存"
         return ok(request, result, message)
 
 

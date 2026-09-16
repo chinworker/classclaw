@@ -15,7 +15,7 @@ This reference is for deciding which ClassClaw operation matches a user's reques
 | 班级阶段分析 | `class_analysis` | Use short metrics and exceptions. |
 | 需要关注的学生 | `attention_students` | Give rule-based facts, not labels. |
 
-Reads never need confirmation and never create a write proposal.
+Reads never need confirmation and never create a write proposal. `student_detail` and `student_analysis` accept the class-internal `student_no` instead of `student_id`; student writes reference students by `student_no` and the backend resolves them to internal IDs.
 
 ## Write routing and examples
 

@@ -61,6 +61,7 @@ export async function render(mount) {
       hint: "上传座位表图片、PDF、Word、Excel 或文本文件",
       accept: ".xlsx,.xlsm,.docx,.pptx,.csv,.pdf,.png,.jpg,.jpeg,.webp,.txt,.md,.json",
       multiple: true,
+      maxFiles: 4,
       manualStart: true,
       busyText: "正在识别座位，请稍候…",
       disabled: !fileAnalysisEnabled,

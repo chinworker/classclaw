@@ -54,6 +54,7 @@ FIELDS = {
     "openclaw.agent_id": ("openclaw", "openclaw_agent_id", "Main Agent ID", "默认系统智能体；班级 Agent 使用各自独立的 ID。"),
     "openclaw.extractor_agent_id": ("openclaw", "openclaw_extractor_agent_id", "提取 Agent ID", "专用于一次性结构化提取；模型及提示词在系统 Agent 页配置。"),
     "openclaw.extractor_enabled": ("openclaw", "openclaw_extractor_enabled", "独立提取 Agent", "关闭或创建失败时回退 Main Agent。"),
+    "openclaw.extractor_thinking": ("openclaw", "openclaw_extractor_thinking", "提取 Agent 思考强度", "文件与文本 JSON 提取使用的默认思考档位；默认 off。提高档位可改善模糊课表/名单的抽取质量，但会增加耗时；模型须支持所选档位。"),
     "openclaw.class_agent_thinking": ("openclaw", "openclaw_class_agent_thinking", "班级 Agent 默认思考强度", "统一用于网页、微信等场景；会话可独立覆盖。off/minimal/low/medium/high/xhigh/adaptive/max，模型须支持所选档位。"),
     "openclaw.timeout_seconds": ("openclaw", "openclaw_timeout_seconds", "Gateway 请求超时（秒）", "大于 0 且不超过 120 秒。"),
     "openclaw.session_cleanup_hours": ("openclaw", "openclaw_session_cleanup_hours", "会话维护间隔（小时）", "按 OpenClaw 维护策略定时调用 CLI；0 关闭自动维护。"),

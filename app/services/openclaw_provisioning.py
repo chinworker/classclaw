@@ -171,67 +171,6 @@ def _remove_workspace(workspace_path: str) -> bool:
     return True
 
 
-async def cleanup_class_agent_resources(db: Session, class_id: str) -> dict[str, Any]:
-    """Remove the class agent from OpenClaw runtime config and delete its isolated workspace."""
-    cls = db.get(ClassRoom, class_id)
-    if not cls:
-        raise not_found("班级", class_id)
-    binding = db.scalar(select(ClassAgentBinding).where(ClassAgentBinding.class_id == class_id))
-    if not binding:
-        return {"binding_found": False, "runtime_removed": False, "workspace_removed": False}
-
-    runtime_removed = False
-    agent_id = binding.openclaw_agent_id
-    if agent_id or binding.channel_account_id:
-        snapshot = await admin_rpc("config.get")
-        config = snapshot.get("config") or {}
-        agents_config = config.get("agents") if isinstance(config.get("agents"), dict) else {}
-        agent_rows = agents_config.get("list") if isinstance(agents_config.get("list"), list) else []
-        bindings = config.get("bindings") if isinstance(config.get("bindings"), list) else []
-        plugin = ((config.get("plugins") or {}).get("entries") or {}).get("classclaw") or {}
-        plugin_config = plugin.get("config") if isinstance(plugin.get("config"), dict) else {}
-        agent_classes = plugin_config.get("agentClasses") if isinstance(plugin_config.get("agentClasses"), dict) else {}
-
-        filtered_agents = [row for row in agent_rows if not isinstance(row, dict) or str(row.get("id") or row.get("agentId")) != agent_id]
-        filtered_bindings = [
-            row
-            for row in bindings
-            if not isinstance(row, dict)
-            or not (
-                (agent_id and row.get("agentId") == agent_id)
-                or (
-                    binding.channel_account_id
-                    and (row.get("match") or {}).get("channel") == binding.channel_id
-                    and (row.get("match") or {}).get("accountId") == binding.channel_account_id
-                )
-            )
-        ]
-        filtered_agent_classes = {key: value for key, value in agent_classes.items() if key != agent_id and value != class_id}
-        raw = {
-            "agents": {"list": filtered_agents},
-            "bindings": filtered_bindings,
-            "plugins": {"entries": {"classclaw": {"config": {"agentClasses": filtered_agent_classes}}}},
-        }
-        patch_params: dict[str, Any] = {
-            "raw": json.dumps(raw, ensure_ascii=False),
-            "replacePaths": ["bindings", "agents.list", "plugins.entries.classclaw.config.agentClasses"],
-            "note": f"Remove ClassClaw runtime for deleted class {class_id}",
-            "restartDelayMs": 500,
-        }
-        if snapshot.get("hash"):
-            patch_params["baseHash"] = snapshot["hash"]
-        await admin_rpc("config.patch", patch_params)
-        runtime_removed = True
-
-    return {
-        "binding_found": True,
-        "agent_id": agent_id,
-        "channel_account_id": binding.channel_account_id,
-        "runtime_removed": runtime_removed,
-        "workspace_removed": _remove_workspace(binding.workspace_path),
-    }
-
-
 def _remove_agent_state(agent_id: str) -> bool:
     root = (settings.openclaw_state_dir / "agents").expanduser().resolve()
     target = (root / agent_id).resolve()
@@ -270,7 +209,28 @@ async def cleanup_all_class_agent_resources(db: Session) -> dict[str, Any]:
     account_ids = {binding.channel_account_id for binding in bindings if binding.channel_account_id}
     errors: list[str] = []
     runtime_removed = 0
+    accounts_logged_out = 0
 
+    for binding in bindings:
+        # Drop in-flight QR attempts first so a late scan cannot re-register credentials.
+        try:
+            await wechat_login.call(binding.class_id, "cancel")
+        except AppError as exc:
+            errors.append(f"wechat cancel {binding.class_id}: {str(exc)[:300]}")
+    if errors:
+        raise AppError("DELETION_INCOMPLETE", "扫码取消失败，已停止初始化清理", 503, {"errors": errors})
+    for account_id in sorted(account_ids):
+        try:
+            result = await admin_rpc("channels.logout", {"channel": settings.openclaw_wechat_channel, "accountId": account_id})
+            if isinstance(result, dict) and result.get("cleared") is True and result.get("loggedOut") is True:
+                accounts_logged_out += 1
+            else:
+                errors.append(f"wechat account {account_id}: 未完成登出或本地凭据清理")
+        except AppError as exc:
+            errors.append(f"wechat account {account_id}: {str(exc)[:500]}")
+
+    if errors:
+        raise AppError("DELETION_INCOMPLETE", "微信登出失败，已停止初始化清理", 503, {"errors": errors})
     if agent_ids or account_ids:
         try:
             snapshot = await admin_rpc("config.get")
@@ -300,18 +260,25 @@ async def cleanup_all_class_agent_resources(db: Session) -> dict[str, Any]:
             plugin = ((config.get("plugins") or {}).get("entries") or {}).get("classclaw") or {}
             plugin_config = plugin.get("config") if isinstance(plugin.get("config"), dict) else {}
             agent_classes = plugin_config.get("agentClasses") if isinstance(plugin_config.get("agentClasses"), dict) else {}
-            filtered_agent_classes = {
-                key: value for key, value in agent_classes.items()
-                if key not in agent_ids and value not in class_ids
+            # config.patch merges objects: only an explicit null deletes a mapping key.
+            # replacePaths replaces arrays wholesale and has no effect on objects.
+            removed_agent_classes = {
+                key: None for key, value in agent_classes.items()
+                if key in agent_ids or value in class_ids
             }
-            raw = {
+            raw: dict[str, Any] = {
                 "agents": {"list": filtered_agents},
                 "bindings": filtered_bindings,
-                "plugins": {"entries": {"classclaw": {"config": {"agentClasses": filtered_agent_classes}}}},
+                "plugins": {"entries": {"classclaw": {"config": {"agentClasses": removed_agent_classes}}}},
             }
+            channel_accounts = ((config.get("channels") or {}).get(settings.openclaw_wechat_channel) or {}).get("accounts")
+            if isinstance(channel_accounts, dict):
+                stale = [account for account in account_ids if account in channel_accounts]
+                if stale:
+                    raw["channels"] = {settings.openclaw_wechat_channel: {"accounts": {account: None for account in stale}}}
             params: dict[str, Any] = {
                 "raw": json.dumps(raw, ensure_ascii=False),
-                "replacePaths": ["bindings", "agents.list", "plugins.entries.classclaw.config.agentClasses"],
+                "replacePaths": ["bindings", "agents.list"],
                 "note": "Factory reset ClassClaw class agents",
                 "restartDelayMs": 500,
             }
@@ -320,6 +287,9 @@ async def cleanup_all_class_agent_resources(db: Session) -> dict[str, Any]:
             await admin_rpc("config.patch", params)
         except Exception as exc:
             errors.append(f"OpenClaw runtime: {str(exc)[:1000]}")
+
+    if errors:
+        raise AppError("DELETION_INCOMPLETE", "Gateway 清理失败，已停止文件删除", 503, {"errors": errors})
 
     removed_workspaces = 0
     removed_agent_states = 0
@@ -352,6 +322,7 @@ async def cleanup_all_class_agent_resources(db: Session) -> dict[str, Any]:
         "runtime_agents_removed": runtime_removed,
         "workspaces_removed": removed_workspaces,
         "agent_states_removed": removed_agent_states,
+        "wechat_accounts_logged_out": accounts_logged_out,
         "protected_agents": sorted(item for item in protected if item),
         "errors": errors,
     }
@@ -374,6 +345,7 @@ def _workspace_files(cls: ClassRoom, binding: ClassAgentBinding) -> dict[str, st
 一个预览用 `classclaw_commit_write`；同一回复中的多个预览获全部确认时，用 `classclaw_commit_writes` 一次原子提交。
 肯定回复只对应最近一组未决预览；新任务、纠正或澄清会结束旧组，绝不能误提交旧 proposal。
 用户改动预览时取消旧 proposal 并重新分析。成功只能以后端 completed 为准。不得创建班级。回答简短。
+引用学生一律使用班内学号（student_no）；不生成、不展示 UUID，后端会把学号确定性解析为内部 ID。
 回复格式：标题 + 1至5行关键数据 + 下一步；成功通常一句话。最多一句善意小幽默，严肃、健康、家庭、安全和隐私场景不玩笑。
 不主动解释 UUID、proposal、工具、数据库或审批流程，不自我介绍，不问用户怎么称呼，不加无关提醒。
 直接调用工具，省略自述；工具完成后再给预览、结果或澄清问题。

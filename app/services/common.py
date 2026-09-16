@@ -17,6 +17,8 @@ AUDITED_ACTIONS = {
     ("revoke", "student_event"),
     ("delete", "exam"),
     ("create", "user"),
+    ("delete", "user"),
+    ("complete", "deletion"),
     ("update", "user"),
     ("reset_password", "user"),
     ("repair_agent_claim", "class_agent_binding"),

@@ -10,6 +10,7 @@ import { navigate } from "../router.js";
 import {
   field, fieldError, fileDropzone, proposalReview, qrBindingPanel, statusBadge, openclawBlocked, emptyState, showAiRejection,
 } from "../components.js";
+import { compareStudents } from "../studentOrder.js";
 import { timetableGridEditor } from "../timetableGrid.js";
 
 let activeView = null;
@@ -252,11 +253,12 @@ export async function render(mount, ctx, helpers) {
   }
 
   function renderStudents(panel) {
-    studentRowsHost.current = (draft().students || []).map((s) => ({ ...s }));
+    studentRowsHost.current = (draft().students || []).map((s) => ({ ...s })).sort(compareStudents);
     panel.append(el("p", { class: "muted" }, "上传文件生成名单。识别后可修改。"));
     panel.append(fileDropzone({
       hint: "拖拽学生名单文件到这里，或点击选择（最多 8 个）",
       multiple: true,
+      maxFiles: 8,
       manualStart: true,
       busyText: "正在解析学生名单…",
       disabled: !featureEnabled("file_analysis"),
@@ -282,6 +284,7 @@ export async function render(mount, ctx, helpers) {
     panel.append(fileDropzone({
       hint: "拖拽课表或作息文件到这里，或点击选择",
       multiple: true,
+      maxFiles: 8,
       manualStart: true,
       busyText: "正在解析课表…",
       disabled: !featureEnabled("file_analysis"),
@@ -333,9 +336,12 @@ export async function render(mount, ctx, helpers) {
       local.stepSaved = true;
       local.maxUnlockedStep = Math.max(local.maxUnlockedStep, Math.min(local.step + 1, STEPS.length - 1));
       renderStep();
-      const warnings = result.analysis?.warnings || [];
-      toast(warnings.length ? `解析完成，有 ${warnings.length} 项需核对` : "解析完成，请核对结构化数据", warnings.length ? "error" : "success");
-      if (warnings.length) toast(warnings.slice(0, 3).join("；"), "info");
+      const analysis = result.analysis || {};
+      const warnings = analysis.warnings || [];
+      const review = analysis.review_required || warnings.length > 0;
+      toast(review ? "解析完成，已填入草稿，请逐项核对" : "解析完成，请核对结构化数据", review ? "error" : "success");
+      const notes = [...(analysis.reasons || []), ...warnings];
+      if (review && notes.length) toast(notes.slice(0, 3).join("；"), "info");
     } catch (error) {
       if (error.code === "REQUEST_CANCELLED") {
         toast("已取消解析", "info");

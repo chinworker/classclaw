@@ -9,7 +9,7 @@ from app.core.security import principal_from_request, require_owned_class, requi
 from app.database import get_db
 from app.schemas.domain import ClassCreate, ClassUpdate, StudentCreate, StudentUpdate
 from app.services import class_student as service
-from app.services import openclaw_provisioning
+from app.services import deletions
 
 router = APIRouter(tags=["班级与学生"])
 
@@ -44,11 +44,9 @@ def class_update(request: Request, class_id: str, body: ClassUpdate, db: Session
 
 @router.delete("/classes/{class_id}")
 async def class_delete(request: Request, class_id: str, db: Session = Depends(get_db)):
-    require_owned_class(request, class_id)
+    require_owned_class(request, class_id, allow_pending_deletion=True)
     principal = principal_from_request(request)
-    agent_cleanup = await openclaw_provisioning.cleanup_class_agent_resources(db, class_id)
-    result = service.hard_delete_class(db, class_id, operator_id=principal.user_id)
-    result["agent_cleanup"] = agent_cleanup
+    result = await deletions.delete_target(db, "class", class_id, principal.user_id)
     return ok(request, result, "班级及关联业务数据已彻底删除")
 
 
@@ -84,6 +82,7 @@ def student_search(
     tag: str | None = None,
     status: str | None = None,
     exact_name: bool = False,
+    student_no: str | None = None,
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     db: Session = Depends(get_db),
@@ -95,7 +94,7 @@ def student_search(
         class_id = principal.class_id
         if not class_id:
             return ok(request, {"items": [], "total": 0, "page": page, "page_size": page_size})
-    return ok(request, service.search_students(db, class_id=class_id, query=q, tag=tag, status=status, page=page, page_size=page_size, exact_name=exact_name))
+    return ok(request, service.search_students(db, class_id=class_id, query=q, tag=tag, status=status, page=page, page_size=page_size, exact_name=exact_name, student_no=student_no))
 
 
 @router.get("/students/{student_id}")

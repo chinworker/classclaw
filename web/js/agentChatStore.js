@@ -13,7 +13,7 @@ export function createChatStore({ request = api, newId = createAiTaskId, timesta
     const conversation = {
       id: newId(), title: "新对话", createdAt: timestamp(), messages: [],
       draft: "", files: [], status: "idle", unread: false, activeController: null,
-      thinkingLevel: null, thinkingNotice: "", revision: 0,
+      thinkingLevel: null, thinkingNotice: "", revision: 0, deleted: false,
     };
     scope.conversations.unshift(conversation);
     scope.selectedId = conversation.id;
@@ -41,6 +41,30 @@ export function createChatStore({ request = api, newId = createAiTaskId, timesta
     scope.selectedId = id;
     selectedConversation(scope).unread = false;
     notify(scope);
+  }
+
+  function deleteConversation(scope, id) {
+    if (scope.disposed) return false;
+    const index = scope.conversations.findIndex((conversation) => conversation.id === id);
+    if (index < 0) return false;
+    const [conversation] = scope.conversations.splice(index, 1);
+    // Remove ownership before aborting: late preflight/stream callbacks must not
+    // restore a deleted conversation's draft or messages.
+    conversation.deleted = true;
+    stopMessage(conversation);
+    conversation.messages = [];
+    conversation.draft = "";
+    conversation.files = [];
+    conversation.unread = false;
+    if (!scope.conversations.length) createConversation(scope);
+    else {
+      if (scope.selectedId === id) {
+        scope.selectedId = scope.conversations[Math.min(index, scope.conversations.length - 1)].id;
+        selectedConversation(scope).unread = false;
+      }
+      notify(scope);
+    }
+    return true;
   }
 
   function subscribe(scope, listener) {
@@ -136,7 +160,7 @@ export function createChatStore({ request = api, newId = createAiTaskId, timesta
           notify(scope);
         },
       });
-      if (!scope.disposed) {
+      if (!scope.disposed && !conversation.deleted) {
         if (controller.signal.aborted) throw Object.assign(new Error("cancelled"), { code: "REQUEST_CANCELLED" });
         if (partial) Object.assign(partial, { text: result.reply, streaming: false });
         else conversation.messages.push({ role: "assistant", text: result.reply, time: time() });
@@ -144,7 +168,7 @@ export function createChatStore({ request = api, newId = createAiTaskId, timesta
         conversation.status = "completed";
       }
     } catch (error) {
-      if (!scope.disposed) {
+      if (!scope.disposed && !conversation.deleted) {
         if (!thinkingLoaded) scope.thinkingOptions = null;
         if (!messageStarted) { conversation.draft = text; conversation.files = uploads; }
         if (partial) Object.assign(partial, { streaming: false, incomplete: true });
@@ -157,7 +181,7 @@ export function createChatStore({ request = api, newId = createAiTaskId, timesta
       }
     } finally {
       conversation.activeController = null;
-      if (!scope.disposed) {
+      if (!scope.disposed && !conversation.deleted) {
         reconcileThinking(scope, conversation);
         conversation.unread = true;
         notify(scope);
@@ -180,7 +204,7 @@ export function createChatStore({ request = api, newId = createAiTaskId, timesta
     scopes.clear();
   }
 
-  return { getScope, createConversation, selectedConversation, selectConversation, setThinkingLevel, setThinkingOptions,
+  return { getScope, createConversation, selectedConversation, selectConversation, deleteConversation, setThinkingLevel, setThinkingOptions,
     subscribe, sendMessage, stopMessage, clear };
 }
 

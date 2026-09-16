@@ -85,8 +85,7 @@ async def send_message(
     source_message_id = f"web:{normalized_conversation_id}:{message_id}"
     attachments: list[Attachment] = []
     for upload in uploads:
-        attachment = operations.save_attachment(db, upload, source_message_id, "网页班级 Agent 对话")
-        operations.link_attachment(db, attachment.id, "class", class_id)
+        attachment = operations.save_attachment(db, upload, source_message_id, "网页班级 Agent 对话", class_id=class_id)
         attachments.append(attachment)
 
     result = await openclaw_bridge.chat_with_class_agent(

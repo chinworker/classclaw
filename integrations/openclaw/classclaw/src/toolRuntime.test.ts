@@ -31,6 +31,15 @@ describe("tool execution contract and bounded context", () => {
     expect(() => validateReadParams({ resource: "write_proposal", proposal_id: "real-id" })).not.toThrow();
   });
 
+  it.each(["student_detail", "student_analysis"])("accepts a class-scoped student number for %s", (resource) => {
+    expect(() => validateReadParams({ resource })).toThrow("TOOL_ARGUMENT_REQUIRED");
+    expect(() => validateReadParams({ resource, student_no: "  " })).toThrow("TOOL_ARGUMENT_REQUIRED");
+    expect(() => validateReadParams({ resource, student_no: "001" })).toThrow("TOOL_ARGUMENT_REQUIRED");
+    expect(() => validateReadParams({ resource, student_no: "001", class_id: "class-a" })).not.toThrow();
+    expect(() => validateReadParams({ resource, student_id: "uuid" })).not.toThrow();
+    expect(() => validateReadParams({ resource, student_id: "uuid", student_no: "001" })).not.toThrow();
+  });
+
   it("does not repeat requests by changing object order or idempotency keys; runs remain independent", () => {
     const guard = createTurnGuard();
     expect(guard.before("owner/session/run-a", "classclaw_read", { resource: "student_search", class_id: "class-a" })).toBeUndefined();

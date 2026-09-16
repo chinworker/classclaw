@@ -24,7 +24,9 @@ from app.models.entities import (
 )
 from app.schemas.domain import InteractionAnalyzeCreate, WriteProposalCreate
 from app.services import approval, openclaw_bridge
+from app.services import operations as operations_service
 from app.services.ai_confidence import evaluate_ai_output
+from app.services.student_ordering import student_order_by
 from app.utils.time import now
 
 
@@ -39,20 +41,18 @@ def _attachments(db: Session, attachment_ids: list[str]) -> list[Attachment]:
 
 
 def _context(db: Session, class_id: str | None) -> dict[str, Any]:
-    classes = list(db.scalars(select(ClassRoom).where(ClassRoom.deleted_at.is_(None)).order_by(ClassRoom.name).limit(100)))
-    result: dict[str, Any] = {
-        "current_datetime": now().isoformat(),
-        "classes": [{"id": row.id, "name": row.name, "grade": row.grade, "status": row.status} for row in classes],
-    }
+    result: dict[str, Any] = {"current_datetime": now().isoformat()}
     if class_id:
         cls = db.get(ClassRoom, class_id)
         if not cls or cls.deleted_at is not None:
             raise not_found("班级", class_id)
+        # 班级专属分析只需要本班上下文；学生以班内学号引用，不暴露内部 UUID。
+        result["classes"] = [{"id": cls.id, "name": cls.name, "grade": cls.grade, "status": cls.status}]
         students = list(
             db.scalars(
                 select(Student)
                 .where(Student.class_id == class_id, Student.deleted_at.is_(None))
-                .order_by(Student.student_no)
+                .order_by(*student_order_by())
                 .limit(1000)
             )
         )
@@ -70,15 +70,22 @@ def _context(db: Session, class_id: str | None) -> dict[str, Any]:
                 .limit(100)
             )
         )
+        duty_student_nos = {
+            row.id: row.student_no
+            for row in db.scalars(select(Student).where(Student.id.in_({item.student_id for item in recent_duty})))
+        } if recent_duty else {}
         result["selected_class"] = {"id": cls.id, "name": cls.name, "grade": cls.grade}
-        result["students"] = [{"id": row.id, "student_no": row.student_no, "name": row.name, "gender": row.gender,
+        result["students"] = [{"student_no": row.student_no, "name": row.name, "gender": row.gender,
                                "status": row.status} for row in students]
         result["subjects"] = [{"name": row.name, "teacher": row.teacher, "default_full_score": row.default_full_score} for row in subjects]
         result["periods"] = [{"period_no": row.period_no, "name": row.name} for row in periods]
         result["homework"] = [{"id": row.id, "title": row.title, "subject": row.subject, "assigned_date": row.assigned_date.isoformat(), "status": row.status} for row in homework]
         result["exams"] = [{"id": row.id, "name": row.name, "exam_date": row.exam_date.isoformat(), "status": row.status} for row in exams]
         result["duty_schedules"] = [{"id": row.id, "name": row.name, "start_date": row.start_date.isoformat(), "end_date": row.end_date.isoformat(), "status": row.status} for row in duty_schedules]
-        result["recent_duty_assignments"] = [{"id": row.id, "date": row.duty_date.isoformat(), "item_name": row.item_name, "student_id": row.student_id, "status": row.status, "score": row.score} for row in recent_duty]
+        result["recent_duty_assignments"] = [{"id": row.id, "date": row.duty_date.isoformat(), "item_name": row.item_name, "student_no": duty_student_nos.get(row.student_id), "status": row.status, "score": row.score} for row in recent_duty]
+    else:
+        classes = list(db.scalars(select(ClassRoom).where(ClassRoom.deleted_at.is_(None)).order_by(ClassRoom.name).limit(100)))
+        result["classes"] = [{"id": row.id, "name": row.name, "grade": row.grade, "status": row.status} for row in classes]
     return result
 
 
@@ -110,6 +117,13 @@ async def analyze(db: Session, data: InteractionAnalyzeCreate) -> dict[str, Any]
     if data.onboarding_session_id and not db.get(ClassOnboardingSession, data.onboarding_session_id):
         raise not_found("班级创建引导", data.onboarding_session_id)
     attachments = _attachments(db, data.attachment_ids)
+    # Record class / onboarding ownership at staging time so deletion can tell
+    # where an attachment came from even before any proposal references it.
+    for attachment in attachments:
+        if data.class_id:
+            operations_service.link_attachment(db, attachment.id, "class", data.class_id)
+        if data.onboarding_session_id:
+            operations_service.link_attachment(db, attachment.id, "class_onboarding_session", data.onboarding_session_id)
 
     analysis = InteractionAnalysis(
         channel=data.channel,

@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.core.errors import AppError
 from app.core.responses import ok
-from app.core.security import principal_from_request, require_owned_class
+from app.core.security import principal_from_request, require_class_available, require_owned_class
 from app.database import get_db
 from app.models.entities import ClassOnboardingSession, ClassSubject, WriteProposal
 from app.schemas.domain import (
@@ -51,6 +51,12 @@ def _require_proposal_access(request: Request, db: Session, proposal: WritePropo
         raise AppError("CLASS_ACCESS_DENIED", "写入预览不属于当前班主任账号绑定的班级", 403)
 
 
+def _require_classes_available(request: Request, db: Session, proposal: WriteProposal) -> None:
+    """Route-layer defense in depth: every service caller already runs this check."""
+    for class_id in sorted(service._proposal_class_ids(db, proposal)):
+        require_class_available(request, class_id, db=db)
+
+
 @router.get("/openclaw/status")
 async def openclaw_status(request: Request, refresh: bool = False):
     return ok(request, await openclaw_bridge.connection_status(force=refresh))
@@ -65,6 +71,7 @@ def write_proposal_create(request: Request, body: WriteProposalCreate, db: Sessi
         db.delete(proposal)
         db.commit()
         raise
+    _require_classes_available(request, db, proposal)
     return ok(request, proposal, "写入预览已生成，尚未修改业务数据", 201)
 
 
@@ -81,6 +88,7 @@ def write_proposals_confirm_batch(request: Request, body: WriteProposalBatchConf
     proposals = [service.get_proposal(db, item.proposal_id) for item in body.items]
     for proposal in proposals:
         _require_proposal_access(request, db, proposal)
+        _require_classes_available(request, db, proposal)
     if not principal.is_admin:
         body = body.model_copy(update={"confirmed_by": principal.username})
     return ok(request, service.confirm_proposals_batch(db, body), "用户已在聊天中复核，全部写入执行完成")
@@ -99,6 +107,7 @@ def write_proposal_confirm(request: Request, proposal_id: str, body: WritePropos
             body = body.model_copy(update={"confirmed_by": principal.username})
     elif not principal.is_admin:
         _require_proposal_access(request, db, proposal)
+    _require_classes_available(request, db, proposal)
     return ok(request, service.confirm_proposal(db, proposal_id, body), "用户已复核，写入执行完成")
 
 
@@ -192,8 +201,7 @@ async def class_onboarding_files(
     async with ai_tasks.track(request) as cancelled:
         attachments = []
         for upload in files:
-            attachment = operations_service.save_attachment(db, upload, None, f"班级创建/{target_section}/OpenClaw处理")
-            operations_service.link_attachment(db, attachment.id, "class_onboarding_session", session_id)
+            attachment = operations_service.save_attachment(db, upload, None, f"班级创建/{target_section}/OpenClaw处理", onboarding_session_id=session_id)
             attachments.append(attachment)
         result = await openclaw_bridge.analyze_onboarding_files(
             db,
@@ -203,7 +211,13 @@ async def class_onboarding_files(
             expected_revision,
             cancelled=cancelled,
         )
-        message = "文件已由 OpenClaw 分析并填入草稿" if result["analysis"]["accepted"] else "AI 认为文件数据不够可靠，未修改草稿"
+        analysis = result["analysis"]
+        if not analysis["accepted"]:
+            message = "AI 认为文件数据不够可靠，未修改草稿"
+        elif analysis.get("review_required"):
+            message = "文件已由 OpenClaw 分析并填入草稿，请逐项核对低置信度内容"
+        else:
+            message = "文件已由 OpenClaw 分析并填入草稿"
         return ok(request, result, message)
 
 

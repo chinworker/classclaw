@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.core.responses import ok
 from app.core.security import require_owned_class, require_owned_record, require_owned_student, scoped_class_id
 from app.database import get_db
-from app.models.entities import AttendanceRecord, Exam, Homework, HomeworkStudentStatus, Score, StudentEvent
+from app.models.entities import AttendanceRecord, Exam, Homework, HomeworkStudentStatus, Score, Student, StudentEvent
 from app.schemas.domain import (
     AttendanceSet,
     ExamCreate,
@@ -21,6 +21,7 @@ from app.schemas.domain import (
 )
 from app.services import academic as service
 from app.services import admin_console, ai_tasks, openclaw_bridge
+from app.services.student_ordering import student_order_by
 
 router = APIRouter(tags=["作业、表现、考勤与成绩"])
 
@@ -63,7 +64,9 @@ def homework_summary(request: Request, homework_id: str, db: Session = Depends(g
 @router.get("/homework/{homework_id}/missing")
 def homework_missing_list(request: Request, homework_id: str, db: Session = Depends(get_db)):
     require_owned_record(request, db, Homework, homework_id)
-    rows = list(db.scalars(select(HomeworkStudentStatus).where(HomeworkStudentStatus.homework_id == homework_id, HomeworkStudentStatus.status == "missing")))
+    rows = list(db.scalars(select(HomeworkStudentStatus).join(Student, Student.id == HomeworkStudentStatus.student_id)
+                           .where(HomeworkStudentStatus.homework_id == homework_id, HomeworkStudentStatus.status == "missing")
+                           .order_by(*student_order_by())))
     return ok(request, rows)
 
 
@@ -85,7 +88,7 @@ async def student_event_analyze(request: Request, class_id: str, body: StudentEv
     require_owned_class(request, class_id)
     require_owned_student(request, db, body.student_id)
     admin_console.require_feature("feature.event_ai")
-    async with ai_tasks.track(request) as cancelled:
+    async with ai_tasks.track(request, class_id=class_id) as cancelled:
         result = await openclaw_bridge.analyze_student_event(
             db,
             class_id,
@@ -125,7 +128,8 @@ def student_event_query(request: Request, student_id: str | None = None, class_i
         stmt = stmt.where(StudentEvent.event_date >= start_date)
     if end_date:
         stmt = stmt.where(StudentEvent.event_date <= end_date)
-    return ok(request, list(db.scalars(stmt.order_by(StudentEvent.event_date.desc()))))
+    return ok(request, list(db.scalars(stmt.join(Student, Student.id == StudentEvent.student_id)
+                                     .order_by(StudentEvent.event_date.desc(), *student_order_by(), StudentEvent.id))))
 
 
 @router.delete("/student-events/{event_id}")
@@ -159,7 +163,8 @@ def attendance_query(request: Request, class_id: str | None = None, student_id: 
         stmt = stmt.where(AttendanceRecord.period == period)
     if status:
         stmt = stmt.where(AttendanceRecord.status == status)
-    return ok(request, list(db.scalars(stmt.order_by(AttendanceRecord.attendance_date.desc()))))
+    return ok(request, list(db.scalars(stmt.join(Student, Student.id == AttendanceRecord.student_id)
+                                     .order_by(AttendanceRecord.attendance_date.desc(), *student_order_by(), AttendanceRecord.period))))
 
 
 @router.get("/attendance/summary")
@@ -209,7 +214,8 @@ def score_query(request: Request, exam_id: str, student_id: str | None = None, s
         stmt = stmt.where(Score.student_id == student_id)
     if subject:
         stmt = stmt.where(Score.subject == subject)
-    return ok(request, list(db.scalars(stmt.order_by(Score.subject, Score.class_rank))))
+    return ok(request, list(db.scalars(stmt.join(Student, Student.id == Score.student_id)
+                                     .order_by(Score.subject, Score.class_rank, *student_order_by()))))
 
 
 @router.get("/exams/{exam_id}/statistics")

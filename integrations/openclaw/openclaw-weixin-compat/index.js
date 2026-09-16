@@ -7,6 +7,12 @@ import { createWebLogin, LoginError } from "./web-login.js";
 import { createWechatTransport } from "./web-transport.js";
 import { webLoginHandler } from "./web-route.js";
 
+import { createAccountLogout } from "./account-cleanup.js";
+import { resolveStateDir } from "@tencent-weixin/openclaw-weixin/dist/src/storage/state-dir.js";
+import { clearContextTokensForAccount } from "@tencent-weixin/openclaw-weixin/dist/src/messaging/inbound.js";
+
+weixinPlugin.gateway.logoutAccount = createAccountLogout({ stateDir: resolveStateDir, clearMemory: clearContextTokensForAccount });
+
 const webLoginMethods = ["web.login.start", "web.login.wait"];
 
 // OpenClaw 2026.7 discovers the QR-login provider from this declaration.

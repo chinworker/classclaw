@@ -809,6 +809,9 @@ async def logs_view(*, source: str, limit: int, level: str | None, query: str | 
 
 
 def update_class_owner(db: Session, class_id: str, owner_user_id: str | None) -> ClassRoom:
+    from app.services import deletions
+    deletions.require_available(db, "class", class_id)
+    deletions.require_available(db, "user", owner_user_id)
     cls = class_student.get_class(db, class_id, include_inactive=True)
     if owner_user_id:
         user = db.get(User, owner_user_id)
@@ -858,6 +861,9 @@ async def initialize_system(db: Session) -> dict[str, Any]:
     except Exception as exc:
         agent_cleanup = {"bindings": None, "protected_agents": [settings.openclaw_agent_id, settings.openclaw_extractor_agent_id], "errors": [str(exc)[:1000]]}
         errors.append(f"class agents: {str(exc)[:1000]}")
+    if errors:
+        raise AppError("SYSTEM_INITIALIZATION_INCOMPLETE", "智能体预清理失败，已停止附件和会话清理；修复后重试", 503,
+                       {"errors": errors, "agent_cleanup": agent_cleanup, "database_preserved_for_retry": True})
     try:
         default_sessions = openclaw_provisioning.clear_default_agent_sessions()
     except Exception as exc:

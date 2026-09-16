@@ -239,3 +239,81 @@ test("identity scopes are isolated and logout clears all data, ignoring late rep
   assert.notEqual(again, scope);
   assert.equal(store.selectedConversation(again).messages.length, 0);
 });
+
+test("deleting selects an adjacent conversation, preserves other scopes, and replaces the last with a fresh ID", () => {
+  const { store, scope, first } = setup();
+  const second = store.createConversation(scope);
+  const third = store.createConversation(scope);
+  const other = store.getScope("teacher-b", "class-b");
+  assert.equal(store.deleteConversation(scope, other.selectedId), false);
+  assert.equal(store.deleteConversation(scope, second.id), true);
+  assert.equal(scope.selectedId, third.id);
+  assert.equal(store.deleteConversation(scope, second.id), false);
+  store.deleteConversation(scope, third.id);
+  assert.equal(scope.selectedId, first.id);
+  first.draft = "草稿";
+  first.files = [new File(["draft"], "draft.txt")];
+  store.deleteConversation(scope, first.id);
+  assert.equal(scope.conversations.length, 1);
+  assert.notEqual(scope.selectedId, first.id);
+  assert.deepEqual(first.messages, []);
+  assert.deepEqual(first.files, []);
+  assert.equal(first.draft, "");
+  assert.equal(other.conversations.length, 1);
+});
+
+test("deleting a running conversation cancels only its request and discards late chunks and errors", async () => {
+  const { store, scope, first, calls } = setup();
+  const firstRun = store.sendMessage(scope, first, "删除的任务");
+  await tick();
+  calls[0].options.onDelta("部分回复");
+  const second = store.createConversation(scope);
+  const secondRun = store.sendMessage(scope, second, "保留的任务");
+  await tick();
+  store.deleteConversation(scope, first.id);
+  calls[0].options.onDelta("迟到回复");
+  await firstRun;
+  assert.equal(calls[0].options.signal.aborted, true);
+  assert.equal(calls[1].options.signal.aborted, false);
+  assert.deepEqual(first.messages, []);
+  assert.equal(first.unread, false);
+  assert.equal(await store.sendMessage(scope, first, "不能恢复已删对话"), false);
+  calls[1].resolve({ reply: "正常完成" });
+  await secondRun;
+  assert.equal(second.messages.at(-1).text, "正常完成");
+});
+
+test("deletion during preflight does not send a message or restore its draft", async () => {
+  let finish;
+  const store = createChatStore({ request: (path) => {
+    assert.ok(path.endsWith("/thinking"));
+    return new Promise((resolve) => { finish = resolve; });
+  } });
+  const scope = store.getScope("teacher", "class");
+  const first = store.selectedConversation(scope);
+  const pending = store.sendMessage(scope, first, "删除草稿", [new File(["x"], "x.txt")]);
+  store.deleteConversation(scope, first.id);
+  finish({ levels: [{ id: "off" }], default_level: "off" });
+  await pending;
+  assert.deepEqual(first.messages, []);
+  assert.deepEqual(first.files, []);
+  assert.equal(first.draft, "");
+  assert.equal(scope.thinkingOptions, null);
+});
+
+test("late successful completion cannot restore a deleted conversation even if transport ignores abort", async () => {
+  let finish;
+  const store = createChatStore({ request: (path) => path.endsWith("/thinking")
+    ? Promise.resolve({ levels: [{ id: "off" }], default_level: "off" })
+    : new Promise((resolve) => { finish = resolve; }) });
+  const scope = store.getScope("teacher", "class");
+  const first = store.selectedConversation(scope);
+  const pending = store.sendMessage(scope, first, "原消息");
+  await tick();
+  store.deleteConversation(scope, first.id);
+  finish({ reply: "迟到完成" });
+  await pending;
+  assert.deepEqual(first.messages, []);
+  assert.equal(first.unread, false);
+  assert.equal(store.selectedConversation(scope).messages.length, 0);
+});

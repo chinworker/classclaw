@@ -70,7 +70,7 @@ export function installDom() {
   });
   const values = new Map();
   globalThis.sessionStorage = { getItem: (key) => values.get(key), setItem: (key, value) => values.set(key, value), removeItem: (key) => values.delete(key) };
-  globalThis.window = Object.assign(new EventTarget(), { setTimeout, clearTimeout });
+  globalThis.window = Object.assign(new EventTarget(), { setTimeout, clearTimeout, setInterval, clearInterval });
   globalThis.requestAnimationFrame = (callback) => { callback(); return 1; };
   Object.defineProperty(globalThis, "navigator", { value: {}, configurable: true });
   return document;

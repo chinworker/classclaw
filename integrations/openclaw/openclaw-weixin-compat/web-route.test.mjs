@@ -41,6 +41,22 @@ test("route rejects oversized / malformed input, disallows GET and sanitizes une
   assert.equal(result.headers["Cache-Control"], "no-store");
 });
 
+test("cancel is accepted for a class whose binding is already gone", () => {
+  const cancel = { action: "cancel", classId, timeoutMs: 15000 };
+  assert.deepEqual(validateLoginRequest(cancel, config), cancel);
+  assert.deepEqual(validateLoginRequest(cancel, {}), cancel);
+  assert.throws(() => validateLoginRequest({ ...body, action: "wait", loginId }, {}));
+});
+
+test("route forwards cancel without a live QR session", async () => {
+  const seen = [];
+  const handler = webLoginHandler({ cancel: (params) => { seen.push(params); return { cancelled: true }; } }, () => ({}));
+  const result = await invoke(handler, { action: "cancel", classId, timeoutMs: 15000 });
+  assert.equal(result.statusCode, 200);
+  assert.equal(result.body.payload.cancelled, true);
+  assert.deepEqual(seen, [{ action: "cancel", classId, timeoutMs: 15000 }]);
+});
+
 test("route reloads class bindings on every request and is registered behind Gateway authentication", async () => {
   let cfg = config;
   const handler = webLoginHandler({ start: async () => ({ loginId }) }, () => cfg);

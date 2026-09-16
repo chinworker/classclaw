@@ -1,20 +1,33 @@
 from __future__ import annotations
 
+import sys
 from contextlib import contextmanager
+from dataclasses import replace
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
-from sqlalchemy.pool import StaticPool
 
 from app import usage_database
 from app.config import settings
-from app.database import Base, get_db
+from app.database import Base, build_engine, get_db
 from app.main import app
 from app.models import entities  # noqa: F401
 from app.models.entities import ClassRoom, Student
 from app.services import openclaw_bridge
+
+
+@pytest.fixture(autouse=True)
+def isolated_files(tmp_path, monkeypatch):
+    """All imported Settings aliases must point at disposable filesystem roots."""
+    original = settings
+    isolated = replace(original, attachment_dir=tmp_path / "attachments",
+                       openclaw_class_workspace_root=tmp_path / "workspaces",
+                       openclaw_state_dir=tmp_path / "openclaw", log_file=tmp_path / "logs" / "test.log")
+    for module in list(sys.modules.values()):
+        if module and getattr(module, "settings", None) is original:
+            monkeypatch.setattr(module, "settings", isolated)
+    yield isolated
 
 
 @pytest.fixture(autouse=True)
@@ -30,6 +43,38 @@ def usage_store(tmp_path, monkeypatch):
 
 
 @pytest.fixture()
+def deletion_gateway(client, monkeypatch):
+    """Fake Gateway admin RPC and private WeChat transport for deletion flows.
+
+    Depends on ``client`` so the conftest no-real-WeChat guard is installed first.
+    """
+    calls: list[tuple[str, dict | None]] = []
+
+    async def fake_admin_rpc(method: str, params: dict | None = None):
+        calls.append((method, params))
+        if method == "config.get":
+            return {"hash": "deletion-hash", "config": {
+                "agents": {"list": []},
+                "bindings": [],
+                "plugins": {"entries": {"classclaw": {"config": {"agentClasses": {}}}}},
+            }}
+        if method == "tasks.list":
+            return {"tasks": []}
+        if method == "channels.logout":
+            return {"cleared": True, "loggedOut": True}
+        if method == "config.patch":
+            return {"ok": True}
+        raise AssertionError(method)
+
+    async def cancel_wechat(class_id: str, action: str, **params):
+        return {"cancelled": True, "accountIds": []}
+
+    monkeypatch.setattr("app.services.openclaw_provisioning.admin_rpc", fake_admin_rpc)
+    monkeypatch.setattr("app.services.wechat_login.call", cancel_wechat)
+    return calls
+
+
+@pytest.fixture()
 def usage_db(usage_store):
     with usage_store.reader() as session:
         yield session
@@ -37,11 +82,7 @@ def usage_db(usage_store):
 
 @pytest.fixture()
 def db():
-    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
-
-    @event.listens_for(engine, "connect")
-    def pragmas(connection, _record):
-        connection.execute("PRAGMA foreign_keys=ON")
+    engine = build_engine("sqlite://")
 
     Base.metadata.create_all(engine)
     session = sessionmaker(bind=engine, expire_on_commit=False, class_=Session)()

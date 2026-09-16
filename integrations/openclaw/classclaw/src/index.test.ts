@@ -29,6 +29,13 @@ function registeredHooks() {
 afterEach(() => vi.restoreAllMocks());
 
 describe("classclaw plugin", () => {
+  it("stamps staged uploads with the bound class before any analysis", async () => {
+    const hook = registeredHooks().before_tool_call;
+    const result = await hook({ toolName: "classclaw_upload_file", params: { path: "/tmp/file.txt", class_id: "other" } },
+      { agentId: "agent-a", sessionKey: "upload", runId: "upload-run" });
+    expect(result).toMatchObject({ params: { class_id: "class-a" } });
+  });
+
   it("uses safe configuration defaults", () => {
     const config = resolveConfig(undefined);
     expect(config.baseUrl).toBe("http://127.0.0.1:8000");
@@ -55,8 +62,56 @@ describe("classclaw plugin", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
-  it("reads the nested analysis scope and rejects foreign analyses", async () => {
-    vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({ success: true,
+  it("resolves a class-scoped student number before reading student detail", async () => {
+    const calls: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = new URL(String(input));
+      calls.push(`${url.pathname}${url.search}`);
+      if (url.pathname === "/api/v1/students") {
+        return new Response(JSON.stringify({ success: true, data: { total: 1, page: 1, page_size: 2, items: [{ id: "student-1", student_no: "001" }] } }));
+      }
+      return new Response(JSON.stringify({ success: true, data: { student: { id: "student-1", student_no: "001" }, homework: [] } }));
+    });
+    const tool = registeredTools().classclaw_read;
+    const result = await tool.execute("1", { resource: "student_detail", class_id: "class-a", student_no: "001" });
+    expect(result).toMatchObject({ details: { data: { student: { student_no: "001" } } } });
+    expect(calls[0]).toBe("/api/v1/students?class_id=class-a&student_no=001&page_size=2");
+    expect(calls[1]).toBe("/api/v1/students/student-1");
+  });
+
+  it("rejects an unmatched student number without calling the detail endpoint", async () => {
+    const calls: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      calls.push(new URL(String(input)).pathname);
+      return new Response(JSON.stringify({ success: true, data: { total: 0, page: 1, page_size: 2, items: [] } }));
+    });
+    const tool = registeredTools().classclaw_read;
+    await expect(tool.execute("1", { resource: "student_detail", class_id: "class-a", student_no: "999" })).rejects.toThrow("STUDENT_NOT_FOUND");
+    expect(calls).toEqual(["/api/v1/students"]);
+  });
+
+  it("checks the nested student scope for student detail without a second fetch", async () => {
+    const calls: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      calls.push(new URL(String(input)).pathname);
+      return new Response(JSON.stringify({ success: true, data: { student: { id: "student-1", class_id: "class-a", student_no: "001" }, homework: [] } }));
+    });
+    const tool = registeredTools().classclaw_read;
+    await expect(tool.execute("1", { resource: "student_detail", student_id: "student-1", bound_class_id: "class-a" }))
+      .resolves.toMatchObject({ details: { data: { student: { class_id: "class-a" } } } });
+    expect(calls).toEqual(["/api/v1/students/student-1"]);
+    await expect(tool.execute("2", { resource: "student_detail", student_id: "student-1", bound_class_id: "class-b" }))
+      .rejects.toThrow("CLASS_SCOPE_VIOLATION");
+  });
+
+  it("rejects a student number without a class scope before any HTTP call", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response("{}"));
+    const tool = registeredTools().classclaw_read;
+    await expect(tool.execute("1", { resource: "student_detail", student_no: "001" })).rejects.toThrow("TOOL_ARGUMENT_REQUIRED");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("reads the nested analysis scope and rejects foreign analyses", async () => {    vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({ success: true,
       data: { analysis: { id: "analysis-a", class_id: "class-a", status: "failed" }, proposals: [] },
     })));
     const tool = registeredTools().classclaw_read;

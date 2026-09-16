@@ -4,17 +4,18 @@ const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 export function validateLoginRequest(body, config) {
   if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("Invalid request");
   const allowed = {
+    cancel: ["action", "classId", "timeoutMs"],
     start: ["action", "classId", "force", "timeoutMs", "ttlMs"],
     wait: ["action", "classId", "loginId", "timeoutMs"],
     verify: ["action", "classId", "loginId", "challengeId", "code", "timeoutMs"],
   }[body.action];
   if (!allowed || Object.keys(body).some((key) => !allowed.includes(key))) throw new Error("Invalid fields");
   const classes = config?.plugins?.entries?.classclaw?.config?.agentClasses || {};
-  if (typeof body.classId !== "string" || !uuid.test(body.classId) || !Object.values(classes).includes(body.classId)) throw new Error("Unbound class");
+  if (typeof body.classId !== "string" || !uuid.test(body.classId) || (body.action !== "cancel" && !Object.values(classes).includes(body.classId))) throw new Error("Unbound class");
   if (!Number.isInteger(body.timeoutMs) || body.timeoutMs < 1 || body.timeoutMs > 120_000) throw new Error("Invalid timeout");
   if (body.action === "start") {
     if (typeof body.force !== "boolean" || !Number.isInteger(body.ttlMs) || body.ttlMs < 30_000 || body.ttlMs > 1_800_000) throw new Error("Invalid start");
-  } else {
+  } else if (body.action !== "cancel") {
     if (typeof body.loginId !== "string" || !uuid.test(body.loginId)) throw new Error("Invalid login");
     if (body.action === "verify" && (typeof body.challengeId !== "string" || !uuid.test(body.challengeId)
         || typeof body.code !== "string" || !/^[0-9]{1,12}$/.test(body.code))) throw new Error("Invalid code");

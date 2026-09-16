@@ -7,22 +7,24 @@ For user prose, WeChat messages, pasted lists, OCR, or attachments, do not const
 | Operation | Payload shape |
 |---|---|
 | `student.create` | `{class_id, student_no, name, gender?, phone?, boarding_status?, group_no?, tags?, ...}` |
-| `student.update` | `{student_id, changes:{...}}` |
-| `student.update.batch` | `{class_id, student_ids:[uuid,...], changes:{...}, only_if_empty?:[field,...]}`；同值变更按组，最多100人；仅补性别用 `only_if_empty:["gender"]` |
-| `seating.update` | `{class_id, rows, cols, layout, change_note?}` |
-| `attendance.set` | `{class_id, student_id, attendance_date, period, status, note?}` |
+| `student.update` | `{class_id, student_no, changes:{...}}` |
+| `student.update.batch` | `{class_id, student_nos:[班内学号,...], changes:{...}, only_if_empty?:[field,...]}`；同值变更按组，最多100人；仅补性别用 `only_if_empty:["gender"]` |
+| `seating.update` | `{class_id, rows, cols, layout:[[student_no|null,...],...], change_note?}` |
+| `attendance.set` | `{class_id, student_no, attendance_date, period, status, note?}` |
 | `homework.create` | `{class_id, title, subject, description?, assigned_date, due_at?, status?}` |
-| `homework.status.batch` | `{homework_id, items:[{student_id,status,submitted_at?,score?,comment?}]}` |
-| `student_event.create` | `{class_id,student_id,event_type,subtype,event_date,content,sentiment?,severity?,...}` |
+| `homework.status.batch` | `{homework_id, items:[{student_no,status,submitted_at?,score?,comment?}]}` |
+| `student_event.create` | `{class_id,student_no,event_type,subtype,event_date,content,sentiment?,severity?,...}` |
 | `student_event.batch` | `{items:[student event payloads...]}` |
 | `exam.create` | `{class_id,name,exam_date,subjects:[{subject,full_score}]}` |
-| `score.batch` | `{exam_id,scores:[{student_id,subject,score,note?}]}` |
+| `score.batch` | `{exam_id,scores:[{student_no,subject,score,note?}]}` |
 | `lesson_override.create` | `{class_id,lesson_date,period_no,replacement_subject?,replacement_teacher?,replacement_room?,status,reason}` |
 | `arrangement.create` | `{class_id?,title,summary?,start_at?,due_at?,priority?,reminder_times?}`; at most 3 reminders, default once at target minus 3 hours |
 | `duty.schedule.confirm` | Confirmed structured duty preview payload |
 | `duty.assignment.score` | `{assignment_id,score:0..5,note?}`; assignment must come from current read context |
 
-Dates are `YYYY-MM-DD`; datetimes are ISO 8601 with timezone. Use a stable idempotency key derived from the external message id plus the intended operation, for example `wechat-message-id:attendance:student-id:date:period`.
+Students are always referenced by class-internal `student_no` (seating layouts included); the backend resolves them to internal UUIDs within the bound class. `homework_id`, `exam_id`, `assignment_id`, `proposal_id` and `attachment_id` remain opaque handles returned by tools.
+
+Dates are `YYYY-MM-DD`; datetimes are ISO 8601 with timezone. Use a stable idempotency key derived from the external message id plus the intended operation, for example `wechat-message-id:attendance:student-no:date:period`.
 
 Evidence items use:
 

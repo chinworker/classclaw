@@ -26,14 +26,14 @@ ClassClaw 是供 OpenClaw 智能体和网页端共用的轻量班级管理系统
 - `app/database.py`：读写双引擎构建（SQLite 自动启用 `foreign_keys=ON`、`busy_timeout=5000`、WAL、`synchronous=NORMAL`；写引擎为单连接并由线程锁串行化）。`get_db` 按 HTTP 方法选择会话（GET/HEAD/OPTIONS 走读连接池，其余走单写者），非请求上下文用 `writer_session()` / `reader_session()`；不要直接新建 Session
 - `app/usage_database.py` / `app/models/usage.py`：独立 AI 用量库 `usage.db`，独立 metadata、读写连接与写锁，不参与业务事务；用量写入必须使用此模块的会话，不能用业务 `get_db`。迁移 `0014` 复制校验历史记录后移除业务库旧表
 - `app/api/v1/`：按领域拆分的路由（`classes_students`、`seating_duty`、`academic`、`timetable`、`operations`、`analytics`、`approval`、`interactions`、`auth_admin`），由 `router.py` 聚合；除登录等公共路由外全部经过 `require_authenticated`
-- `app/services/`：业务逻辑层（`class_student`、`seating`、`duty`、`academic`、`timetable`、`operations`、`approval`、`interactions`、`accounts`、`openclaw_bridge`、`openclaw_provisioning` 等）
+- `app/services/`：业务逻辑层（`class_student`、`seating`、`duty`、`academic`、`timetable`、`operations`、`approval`、`interactions`、`accounts`、`deletions`、`deletion_runtime`、`deletion_files`、`openclaw_bridge`、`openclaw_provisioning` 等）
 - `app/analytics/service.py`：仅基于数据库事实生成结构化指标和证据的分析服务
 - `app/models/entities.py`：全部 SQLAlchemy 实体（单文件）；`app/models/base.py` 提供 `IdMixin`（UUID 字符串主键）、`TimestampMixin`、`SoftDeleteMixin`
 - `app/schemas/`：Pydantic 2 schema（`domain.py`、`auth.py`、`common.py`）
 - `app/core/`：`errors.py`（`AppError`）、`responses.py`（统一 `ok()` 响应）、`security.py`（`Principal`、鉴权与班级归属隔离）
 - `app/utils/time.py`：时区感知的 `now()`
-- `alembic/versions/`：迁移（当前到 `0014_split_usage_database`）
-- `scripts/`：`init_db.py`、`seed_demo.py`、`backup.py`、`restore.py`、`cleanup_attachments.py`
+- `alembic/versions/`：迁移（当前到 `0015_deletion_operations`）
+- `scripts/`：`init_db.py`、`seed_demo.py`、`backup.py`、`restore.py`、`cleanup_attachments.py`、`cleanup_deletions.py`
 - `scripts/manage.py` / `deploy/`：Ubuntu 同机部署的 `classclaw` 运维命令、systemd/Nginx 和 2 核 4 GB 配置。维护命令由 root 协调，项目命令降为服务用户执行；升级只允许 Git 快进，停两项服务并完整备份后迁移，失败保留标记禁止自动启动，不能自动 reset/downgrade。生产依赖在 `requirements-runtime.txt`，开发 `requirements.txt` 引用它。详见 `docs/deployment.md`。
 - `scripts/reset_admin_password.py`：仅限本地终端将现有唯一管理员密码重置为 `.env` 的 `CLASSCLAW_DEFAULT_ADMIN_PASSWORD`；不输出密码，事务性撤销旧会话并审计，不允许新增 HTTP/Agent 重置入口
 - `web/`：网页前端（`index.html` 班级创建引导 + 业务页面；`test.html` 后端综合验收台）
@@ -76,7 +76,7 @@ node --test tests/web/*.test.mjs  # 对话状态、页面交互与登录切换�
 ```
 
 - 测试使用独立内存 SQLite（`StaticPool`），通过 `app.dependency_overrides[get_db]` 注入；OpenClaw 连接状态在 `tests/conftest.py` 中被 monkeypatch 掉，测试不依赖 OpenClaw 在线。
-- 当前 32 个测试文件、322 个用例全部通过。覆盖：学号唯一与同名歧义、座位快照、值日预览确认、作业幂等、考勤口径、成绩整批回滚、调课覆盖、分析、早报、统一响应、账户/管理员、onboarding 原子提交。
+- 当前 34 个测试文件、347 个用例全部通过。覆盖：学号唯一与同名歧义、班内学号确定性解析（全角/“13号”/前导零/歧义候选/跨班）、座位快照、值日预览确认、作业幂等、考勤口径、成绩整批回滚、调课覆盖、分析、早报、统一响应、账户/管理员、onboarding 原子提交、删除分阶段重试与共享资源保护。
 - 新增业务功能应同步增加测试；测试客户端默认带 `X-ClassClaw-Surface: web` 头和 Bearer Token（若配置了 `CLASSCLAW_API_TOKEN`）。
 
 代码风格：Ruff（`pyproject.toml` 配置，line-length 140，target py312）；代码普遍使用 `from __future__ import annotations`、现代类型标注（`str | None` 等）。
@@ -86,6 +86,9 @@ node --test tests/web/*.test.mjs  # 对话状态、页面交互与登录切换�
 - **统一响应**：成功用 `app.core.responses.ok()`，返回 `{success, data, message, request_id}`；业务错误抛 `AppError(code, message, status_code, details)`；参数校验失败统一返回 `VALIDATION_ERROR`；SQLite 锁冲突返回 503 `DATABASE_BUSY`。
 - **鉴权与隔离**：角色只有唯一 `admin` 和 `head_teacher`；共享 Bearer Token（`CLASSCLAW_API_TOKEN`）仅供 OpenClaw 服务调用并视为 admin。班主任账号只能访问其绑定的唯一班级，路由层必须使用 `app/core/security.py` 中的 `require_owned_class` / `require_owned_student` / `scoped_class_id` / `require_owned_record` 做归属校验。
 - **写入安全边界**：proposal 只接受 `app/services/approval.py` 中 `SUPPORTED_OPERATIONS` 白名单内的 operation；确认接口调用固定执行器，禁止任意 URL、SQL 或代码执行接口。预览保存归一化 payload、revision 和有效期，确认时需校验版本/过期。
+- **删除与残留**：班级/账号删除走 `app/services/deletions.py` 的持久化阶段化清理（归属预检 → 停止活动与 Gateway 清理 → 业务数据删除 → 文件清理 → 完成校验），失败保留 `deletion_operations` 记录并返回非成功状态，重复 DELETE 或 `POST /admin/deletions/{id}/retry` 从失败阶段继续。Gateway 删除 `agentClasses` 和频道账号必须显式置 `null`（`config.patch` 的 `replacePaths` 只替换数组）；删除前必须取消未完成扫码、用 `channels.logout` 清理微信凭据、用 `tasks.list` 确认无运行任务，并拒绝共享账号与越界路径。删除进行中由 `app/core/security.py` 拒绝该班级的新写入，写提案的创建与确认执行都会返回 409 `DELETION_IN_PROGRESS`，读不受影响。
+- **学号引用**：对话式写入中智能体一律用班内学号（`student_no`/`student_nos`，座位 `layout` 同）引用学生，不输出学生 UUID；`approval.create_proposal` 在归一化前经 `app/services/student_refs.py` 在绑定班级内确定性解析为 UUID（支持全角、“13号”、前导零，歧义报 `STUDENT_AMBIGUOUS` 并给候选，跨班/已删报 403），预览展示学号与姓名。网页结构化 API 与执行器仍用 UUID；`homework_id`/`exam_id`/`assignment_id`/`proposal_id`/`attachment_id` 保持不透明句柄。
+- **学生排序**：无明确业务排序时按学号自然升序，不能按字符串将 10 排在 2 前面；SQL 使用 `student_order_by()`，Python 使用 `student_no_key()`，网页使用 `compareStudents()`。分页前排序，学生下拉框禁止按使用频率重排；成绩排名、座位位置、日期分组和值日公平性优先级保留。
 - **不保存消息原文**：`interaction_analyses` 只保存结构化结果、置信度、澄清问题与 proposal 关联。
 - **软删除**：学生、班级、学生事件使用 `SoftDeleteMixin`，查询需过滤 `deleted_at`。
 - **时间**：一律使用 `app.utils.time.now()`（时区感知），不要直接用 `datetime.now()`。
@@ -111,6 +114,7 @@ python scripts/backup.py ./backups
 # 停止服务并核对目录后：
 python scripts/restore.py ./backups/classclaw-backup-YYYYMMDD-HHMMSS
 python scripts/cleanup_attachments.py   # 默认只报告无引用附件，不自动删除
+python scripts/cleanup_deletions.py     # 定向清理删除残留；默认只检查，--apply 才清理
 ```
 
 备份用 SQLite Backup API 分别保存业务库和独立用量库，复制附件并写入清单；各库单独一致而非跨库原子快照。恢复会覆盖两个库和附件，必须先停服务；旧单库备份恢复后会重新迁移旧用量表。详见 `docs/database-splitting.md`。

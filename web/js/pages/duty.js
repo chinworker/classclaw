@@ -253,7 +253,7 @@ export async function render(mount) {
         : el("p", { class: "muted" }, "本周没有值日安排")));
 
     async function openReplace(assignment) {
-      const select = el("select", {}, students.map((s) => el("option", { value: s.id }, `${s.name}（${s.student_no}）`)));
+      const select = el("select", { dataset: { preserveOrder: "true" } }, students.map((s) => el("option", { value: s.id }, `${s.name}（${s.student_no}）`)));
       const noteInput = el("input", { type: "text", placeholder: "替换原因（可选）" });
       openModal({
         title: "临时替换值日学生",

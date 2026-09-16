@@ -116,6 +116,18 @@ test("verification attempts and QR refreshes are bounded", async (t) => {
   assert.equal(latest.restartRequired, true);
 });
 
+test("cancel ends the class session and permanently blocks new QR starts", async (t) => {
+  const f = fixture(t);
+  const start = await f.engine.start({ classId: "a" });
+  assert.deepEqual(f.engine.cancel({ classId: "a" }), { cancelled: true, accountIds: [] });
+  assert.deepEqual(f.engine.cancel({ classId: "a" }), { cancelled: true, accountIds: [] });
+  await assert.rejects(f.engine.wait({ classId: "a", loginId: start.loginId }), { code: "WECHAT_LOGIN_STALE" });
+  await assert.rejects(f.engine.start({ classId: "a" }), { code: "WECHAT_LOGIN_STALE" });
+  await assert.rejects(f.engine.start({ classId: "a", force: true }), { code: "WECHAT_LOGIN_STALE" });
+  const other = await f.engine.start({ classId: "b" });
+  assert.ok(other.loginId);
+});
+
 test("class and login IDs are independently scoped", async (t) => {
   const f = fixture(t);
   const a = await f.engine.start({ classId: "a" });
@@ -155,4 +167,26 @@ test("provider-controlled redirects must stay on HTTPS Weixin hosts", () => {
   for (const url of ["http://ilinkai.weixin.qq.com", "https://evil.test", "https://weixin.qq.com.evil.test", "https://u:p@ilinkai.weixin.qq.com", "https://ilinkai.weixin.qq.com/path"]) {
     assert.throws(() => trustedWeixinUrl(url), { code: "WECHAT_RESPONSE_INVALID" });
   }
+});
+
+test("cancel reports credentials committed before the backend saved its route", async (t) => {
+  const f = fixture(t, { pollQr: async () => ({ status: "confirmed", bot_token: "SECRET", ilink_bot_id: "raw-bot" }) });
+  const first = await f.engine.start({ classId: "a" });
+  await f.engine.wait({ classId: "a", loginId: first.loginId });
+  // Regenerating a QR must not forget the preceding committed account.
+  await f.engine.start({ classId: "a", force: true });
+  assert.deepEqual(f.engine.cancel({ classId: "a" }), { cancelled: true, accountIds: ["normalized-bot"] });
+  assert.deepEqual(f.engine.cancel({ classId: "a" }), { cancelled: true, accountIds: ["normalized-bot"] });
+});
+
+test("a late confirmed poll after deletion cancellation cannot save credentials", async (t) => {
+  const pending = deferred();
+  const f = fixture(t, { pollQr: () => pending.promise });
+  const first = await f.engine.start({ classId: "a" });
+  const waiting = f.engine.wait({ classId: "a", loginId: first.loginId });
+  const rejected = assert.rejects(waiting, { code: "WECHAT_LOGIN_STALE" });
+  f.engine.cancel({ classId: "a" });
+  pending.resolve({ status: "confirmed", bot_token: "SECRET", ilink_bot_id: "bot" });
+  await rejected;
+  assert.equal(f.saved.length, 0);
 });

@@ -10,6 +10,8 @@ const terminal = new Set(["connected", "expired", "failed"]);
 
 export function createWebLogin({ requestQr, pollQr, saveAccount, now = Date.now, uuid = randomUUID, maxSessions = 100 }) {
   const sessions = new Map();
+  const deleting = new Map();
+  const savedAccounts = new Map();
   function clearSecrets(s) { s.qrToken = null; s.qrData = null; s.challengeId = null; }
   function finish(s, state, message) {
     s.state = state; s.message = message; clearSecrets(s);
@@ -78,6 +80,8 @@ export function createWebLogin({ requestQr, pollQr, saveAccount, now = Date.now,
           // saving the account and marking this attempt complete.
           s.accountId = saveAccount({ classId: s.classId, accountId: result.ilink_bot_id,
             token: result.bot_token, baseUrl: trustedWeixinUrl(result.baseurl || s.baseUrl), userId: result.ilink_user_id });
+          const committed = savedAccounts.get(s.classId) || new Set();
+          committed.add(s.accountId); savedAccounts.set(s.classId, committed);
           finish(s, "connected", "微信登录成功，正在配置班级消息路由。");
           break;
         }
@@ -96,7 +100,14 @@ export function createWebLogin({ requestQr, pollQr, saveAccount, now = Date.now,
     return snapshot(s);
   }
   return {
+    cancel({ classId }) {
+      deleting.set(classId, [...(savedAccounts.get(classId) || [])]);
+      const s = sessions.get(classId);
+      if (s) { finish(s, "failed", "班级正在删除"); sessions.delete(classId); }
+      return { cancelled: true, accountIds: deleting.get(classId) };
+    },
     async start({ classId, force = false, timeoutMs = 30_000, ttlMs = 300_000 }) {
+      if (deleting.has(classId)) throw stale();
       for (const [key, item] of sessions) {
         if (now() >= item.expiresAt) { item.controller.abort(); clearSecrets(item); clearTimeout(item.timer); sessions.delete(key); }
       }
@@ -140,7 +151,7 @@ export function createWebLogin({ requestQr, pollQr, saveAccount, now = Date.now,
       s.job = runPoll(s, timeoutMs, code).finally(() => { s.job = null; });
       return s.job;
     },
-    dispose() { for (const s of sessions.values()) { s.controller.abort(); clearTimeout(s.timer); clearSecrets(s); } sessions.clear(); },
+    dispose() { for (const s of sessions.values()) { s.controller.abort(); clearTimeout(s.timer); clearSecrets(s); } sessions.clear(); savedAccounts.clear(); deleting.clear(); },
   };
 }
 

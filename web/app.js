@@ -102,6 +102,11 @@ function disposePage() {
 
 /* ---------------- 登录页 ---------------- */
 
+const LOGIN_ERROR_MESSAGES = {
+  ACCOUNT_NOT_FOUND: "用户不存在",
+  INVALID_PASSWORD: "密码错误",
+};
+
 function renderLogin(notice = null) {
   disposePage();
   shell = null;
@@ -126,13 +131,14 @@ function renderLogin(notice = null) {
       await renderApp();
     } catch (error) {
       clear(errorBox);
-      errorBox.append(el("b", {}, error.message));
+      errorBox.append(el("b", {}, LOGIN_ERROR_MESSAGES[error.code] || error.message));
       if (error.requestId) errorBox.append(el("div", { class: "error-meta" }, el("span", { class: "tag tag-id" }, `问题编号：${error.requestId}`)));
       errorBox.classList.remove("hidden");
     } finally {
       submit.disabled = false;
       submit.textContent = "登录";
       passInput.value = "";
+      if (form.isConnected) passInput.focus();
     }
   });
   clear(root);

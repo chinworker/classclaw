@@ -1,6 +1,6 @@
 import { el, clear, toast, fmtDateTime } from "../util.js";
 import { adminView } from "../adminView.js";
-import { pageHeader, confirmDanger as danger, errorPanel, jsonDetails, skeleton, statusBadge } from "../components.js";
+import { pageHeader, confirmDanger as danger, dataTable, errorPanel, jsonDetails, skeleton, statusBadge } from "../components.js";
 import { clearSession } from "../state.js";
 
 let activeView = null;
@@ -17,8 +17,54 @@ export async function render(mount, ctx = {}) {
   const confirmDanger = (options) => danger({ ...options, signal: view.signal });
 
   const host = el("div");
+  const deletionHost = el("div", { class: "card" });
   const resultHost = el("div");
-  mount.append(pageHeader("备份与系统维护", "服务器备份与恢复步骤，以及完整系统初始化。"), host);
+  mount.append(pageHeader("备份与系统维护", "服务器备份与恢复步骤，以及完整系统初始化。"), host, deletionHost);
+
+  async function loadDeletions() {
+    clear(deletionHost);
+    deletionHost.append(el("h3", {}, "未完成的删除清理"), skeleton(2));
+    try {
+      const rows = await api("/admin/deletions");
+      clear(deletionHost);
+      deletionHost.append(el("h3", {}, "未完成的删除清理"));
+      if (!rows.length) {
+        deletionHost.append(el("p", { class: "muted" }, "没有等待重试的删除任务。删除失败时资源可能仍有残留，会在此处显示并保留清理记录。"));
+        return;
+      }
+      deletionHost.append(el("p", { class: "muted" }, "这些删除已停止在某个阶段。核对残留后重试清理；对同一资源再次删除会复用原记录。"));
+      deletionHost.append(dataTable({
+        columns: [
+          { key: "target", label: "目标", render: (row) => row.target_type === "class" ? `班级 ${row.target_id.slice(0, 8)}…` : `账号 ${row.target_id.slice(0, 8)}…` },
+          { key: "phase", label: "失败阶段" },
+          { key: "error_code", label: "错误", render: (row) => row.error_code || "—" },
+          { key: "updated_at", label: "更新时间", render: (row) => fmtDateTime(row.updated_at) },
+          {
+            key: "retry", label: "操作", render: (row) => {
+              const button = el("button", { class: "secondary", type: "button" }, "重试清理");
+              button.addEventListener("click", async () => {
+                button.disabled = true;
+                try {
+                  await api(`/admin/deletions/${row.id}/retry`, { method: "POST" });
+                  toast("残留清理已完成", "success");
+                } catch (error) {
+                  toast(error.message, "error");
+                }
+                await loadDeletions();
+              });
+              return button;
+            },
+          },
+        ],
+        rows,
+        empty: "没有等待重试的删除任务。",
+      }));
+    } catch (error) {
+      if (!view.active) return;
+      clear(deletionHost);
+      deletionHost.append(errorPanel(error, { onRetry: loadDeletions }));
+    }
+  }
 
   async function load() {
     clear(host); host.append(skeleton(6));
@@ -69,6 +115,7 @@ export async function render(mount, ctx = {}) {
     }
   }
   await load();
+  await loadDeletions();
   await renderSessions(mount, view);
 }
 

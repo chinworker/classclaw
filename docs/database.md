@@ -7,7 +7,7 @@
 - 值日：`duty_rules`、`duty_schedules`、`duty_assignments`、`duty_score_items`、`duty_evaluations`、`duty_evaluation_details`
 - 教学：`homework`、`homework_student_statuses`、`student_events`、`attendance_records`、`exams`、`exam_subjects`、`scores`；确定性分析缓存保存在 `analysis_cache`（以数据指纹为键，超上限自动清理最旧条目，删除考试时同步清理）
 - 课表：`class_periods`、`base_timetable`、`lesson_overrides`
-- 工作流与运维（业务库）：`arrangements`、`reminders`、`attachments`、`attachment_links`、`interaction_analyses`、`audit_logs`、`write_proposals`、`class_onboarding_sessions`、`class_agent_bindings`
+- 工作流与运维（业务库）：`arrangements`、`reminders`、`attachments`、`attachment_links`、`interaction_analyses`、`audit_logs`、`write_proposals`、`class_onboarding_sessions`、`class_agent_bindings`、`deletion_operations`
 - AI 用量（独立 `usage.db`）：`ai_usage_records`，实体和 metadata 位于 `app/models/usage.py`
 
 所有主键为 UUID 字符串。主要唯一约束包括：班级+学号、学生+日期+考勤时段、考试+学生+科目、班级+星期+节次、班级+`lesson_key`、外部消息 ID。学生和学生事件支持软删除；班级采用停用。历史记录通过学生 UUID 关联，不靠姓名。
@@ -17,6 +17,8 @@
 SQLite 不保存附件 BLOB。`attachments.stored_path` 是相对附件父目录的路径，保存 SHA-256、大小和 MIME；`attachment_links` 以实体类型和实体 ID 建立通用关联。
 
 `write_proposals` 保存原始和归一化 payload、面向用户的预览、revision、状态、申请/确认者、过期时间和执行结果，不复制保存消息证据。业务表只在 proposal 确认时写入。`class_onboarding_sessions` 保存网页引导草稿、文件字段置信度、警告、当前步骤和乐观并发 revision；完成后关联创建出的班级。`class_agent_bindings` 对 `class_id` 与 `openclaw_agent_id` 分别唯一，保存 workspace、channel/account、provisioning 状态和错误，不保存微信凭据或二维码。
+
+`deletion_operations` 为班级和账号删除保存可恢复的清理日志：目标、受控资源清单、阶段、错误码和结果，不保存凭据或消息内容。记录在目标资源删除后仍然保留；未完成记录通过管理员接口查看并重试，重复删除同一目标复用原记录。阶段依次为归属预检、停止活动与 Gateway 清理、业务数据删除、文件清理和完成校验。迁移 `0015` 创建该表。
 
 `interaction_analyses` 只保存渠道、外部消息 ID、附件 IDs、上下文班级、OpenClaw agent、结构化输出、置信度、澄清问题、警告和 proposal IDs；不保存消息原文。`idempotency_key` 防止同一微信或网页事件重复分析；正式业务幂等仍由 proposal 和各领域唯一约束共同保证。
 

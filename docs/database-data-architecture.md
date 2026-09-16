@@ -9,6 +9,8 @@ ClassClaw 使用 SQLite + SQLAlchemy，核心业务库有 33 张应用数据表�
 - 网页结构化表单：字段已经确定，直接调用领域 API 写入，不经过智能体或 proposal。
 - 微信、自然语言、OCR、语音、文件：先由 OpenClaw 清洗，后端生成 `write_proposals` 预览；用户在聊天中确认后，固定执行器写入。多条预览在一个事务中提交，任一失败则全部回滚。
 
+对话式写入的 payload 中，学生一律以班内学号（`student_no`/`student_nos`，座位 layout 同）引用；`approval.create_proposal` 在归一化前由 `app/services/student_refs.py` 在绑定班级内确定性解析为 `students.id`（支持“13号”、全角数字和前导零归一，歧义时报 `STUDENT_AMBIGUOUS` 并给出候选），预览展示学号和姓名。作业、考试、值日任务、附件、proposal 等仍以工具返回的不透明 UUID 句柄引用。
+
 智能体不能执行 SQL，也不能直接操作账户、会话、审计、微信路由或 onboarding 表。
 
 ## 2. 表结构分区
@@ -31,6 +33,7 @@ ClassClaw 使用 SQLite + SQLAlchemy，核心业务库有 33 张应用数据表�
 | 对话写入 | `interaction_analyses`, `write_proposals` | 分析记录只保留结构化结果和 proposal 关联，不保存聊天原文；proposal 保存归一化 payload、预览、版本、状态与执行结果。 |
 | 网页建班 | `class_onboarding_sessions` | 保存网页建班草稿、版本和状态；最终确认时原子创建班级、学生、科目、节次、课表和智能体绑定记录。 |
 | 轻量审计 | `audit_logs` | 只记录少量关键动作，不保存整份业务消息或前后快照。 |
+| 删除日志 | `deletion_operations` | 班级/账号删除的持久化清理记录：目标、资源清单、阶段、错误码和结果，不保存凭据或消息内容；未完成记录可重试。 |
 | AI 使用量（独立 `usage.db`） | `ai_usage_records` | 保存 OpenClaw 报告的 Token 数、模型和调用类型，不保存 prompt 或回复正文；独立会话与写锁，不参与业务事务。 |
 
 ## 3. 智能体允许的查询操作

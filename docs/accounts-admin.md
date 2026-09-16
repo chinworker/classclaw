@@ -40,7 +40,7 @@ cd <项目根目录>
 | GET | `/api/v1/admin/users` | 管理员 | 用户列表 |
 | POST | `/api/v1/admin/users` | 管理员 | 新建班主任，默认密码为 `32767` |
 | PATCH | `/api/v1/admin/users/{id}` | 管理员 | 修改唯一用户名、显示名或启停账号 |
-| DELETE | `/api/v1/admin/users/{id}` | 管理员 | 删除班主任账号并注销会话；原班级保留为未分配 |
+| DELETE | `/api/v1/admin/users/{id}` | 管理员 | 删除班主任账号并注销会话；原班级保留为未分配；清理未完成的个人草稿与独占附件，失败可重试 |
 | POST | `/api/v1/admin/users/{id}/reset-password` | 管理员 | 重置为 `32767` 并注销旧会话 |
 | POST | `/api/v1/admin/users/{id}/assign-class` | 管理员 | 把一个历史班级分配给班主任 |
 
@@ -52,7 +52,9 @@ cd <项目根目录>
 
 迁移前已有班级没有归属，只有管理员可见。管理员可以通过 `assign-class` 将它分配给一个尚未拥有班级的班主任。
 
-班主任和管理员可对有权限的班级调用 `DELETE /api/v1/classes/{class_id}`。该接口不是停用：它会先从 OpenClaw 配置移除班级 Agent、微信路由和 `agentClasses` 映射，删除隔离 workspace，再在一个数据库事务中删除班级、学生及关联业务数据。删除成功后 `GET /auth/me` 的 `class_id` 为空，该班主任可以重新创建一个班级。OpenClaw 清理失败时数据库不会删除，调用方可排除 Gateway 故障后重试。
+班主任和管理员可对有权限的班级调用 `DELETE /api/v1/classes/{class_id}`。该接口不是停用，执行的是可恢复的分阶段清理：先在 Gateway 中核对归属并停止该班活动（取消未完成的扫码、登出独占微信账号并清除本地凭据、确认班级智能体没有运行中任务），再移除 Agent、微信路由、`agentClasses` 映射（显式置 `null`）并回读校验，然后在一个数据库事务中删除班级、学生、关联业务数据和考试统计缓存，最后删除隔离 workspace 与 Agent 状态目录。删除成功后 `GET /auth/me` 的 `class_id` 为空，该班主任可以重新创建一个班级。
+
+任何阶段失败都会保留 `deletion_operations` 记录并返回明确错误，不会冒充成功；已经完成的步骤可安全重试。重复调用 `DELETE /classes/{id}` 或管理员调用 `POST /api/v1/admin/deletions/{id}/retry` 会从失败阶段继续。外部资源被其他班级共享（例如微信账号被其他智能体使用）或路径越界时拒绝删除并返回冲突。删除进行中会拒绝该班级的新写入（409 `DELETION_IN_PROGRESS`），包括新写提案的创建与已有预览的确认执行；只读查询仍然可用。
 
 ## 智能体和数据库调试
 
@@ -90,7 +92,9 @@ cd <项目根目录>
 - `GET /api/v1/admin/settings/catalog`：管理员专用分组目录，包含启动配置文件位置、版本、优先级及凭据配置状态；不依赖 OpenClaw 在线，不返回密钥内容，禁止缓存。
 - `GET|PATCH /api/v1/admin/settings/document`、`POST /api/v1/admin/settings/check`、`POST /api/v1/admin/settings/rollback`：非敏感 TOML 文档读取、校验、原子保存和恢复；环境变量锁定、版本冲突、同目录备份、失败恢复和仅键名 / hash 审计。
 - `GET|PATCH /api/v1/admin/openclaw/config/raw`：通过 Gateway RPC 读取脱敏 JSON，编辑仅接受三个白名单标量路径，必须携带 `base_hash`；冲突返回 409 并刷新配置。
-- `/app/#/admin/ops?tab=maintenance`：备份、恢复、附件检查、完整初始化及 OpenClaw 会话维护；日志 tab 下也保留会话维护卡，预览仍使用 `POST /api/v1/admin/openclaw/sessions/cleanup?enforce=false`，不自动删除聊天会话。
+- `/app/#/admin/ops?tab=maintenance`：备份、恢复、附件检查、完整初始化、未完成删除清理及 OpenClaw 会话维护；日志 tab 下也保留会话维护卡，预览仍使用 `POST /api/v1/admin/openclaw/sessions/cleanup?enforce=false`，不自动删除聊天会话。
+- `GET /api/v1/admin/deletions`：列出尚未完成的班级/账号删除记录（目标、阶段、错误码、是否可重试），不返回凭据或消息内容。
+- `POST /api/v1/admin/deletions/{id}/retry`：从失败阶段继续一次未完成的删除；完成状态不变，已不存在的资源视为完成。
 - `POST /api/v1/admin/system/initialize`：要求正文确认值 `INITIALIZE`，执行完整出厂重置。全部旧用户、登录会话、班级业务数据、临时草稿、附件、数据库运行状态、审计日志、AI/Token 统计和班级 Agent 都会删除；随后只重新创建启动配置指定的默认管理员。OpenClaw 的 `main` 与 `classclaw-extractor` 是两个默认智能体，不删除；Main 保持 OpenClaw 基础配置，提取智能体恢复 ClassClaw 默认工作区，两者的历史会话目录清空。程序代码、数据库表结构、`classclaw.toml`、`.env` 和 OpenClaw 安装本身不变。外部智能体、文件或日志有任何一项无法清理时，接口返回错误并保留数据库，便于修复后安全重试；只有全部预清理成功后才清空数据库并返回 `completed`。发起初始化的登录会话随全部会话一起失效。
 
 功能开关不是纯界面状态：文件解析、学生事件 AI 分类、微信绑定和主动提醒的对应后端接口都会执行开关检查。配置来自启动时读取的 `config/classclaw.toml`（环境变量可兼容覆盖），不再写入 `system_settings`；任何密钥都不能通过管理端配置接口读取或修改。详见 [静态配置说明](configuration.md)。
@@ -107,3 +111,15 @@ python run.py
 ```
 
 启动后打开 <http://127.0.0.1:8000/app/test.html>。验收台提供后端功能地图、管理员和班主任登录、用户管理、班级归属、智能体/微信二维码、脱敏数据库浏览、自动只读巡检及通用 API 请求调试。
+
+
+### 删除失败后的重试与维护边界
+
+- 原班主任可在班级业务记录已删除后重复 DELETE，由删除记录中的原所有者校验权限；管理员可在系统维护页重试。
+- 删除期间拒绝目标账号的新写入及管理员重新分配班级，退出登录与取消 AI 请求仍可用。不带浏览器任务 ID 的 AI 请求也参与忙碌检查。
+- 每次重试在清理 Gateway、删除目录前重新核对数据库与 Gateway 资源归属。异常配置结构直接拒绝操作，不能作为空列表写回；配置更新必须读回确认映射和频道账号均已移除。
+- 网页导入、聊天和班级 Agent 上传同时保存附件归属，数据库保存失败会清除新写入的文件。共享引用仍会阻止附件删除。
+- 班级资料页删除单个附件时，其他班级归属、业务引用或重复文件路径都会阻止删除。文件清理失败返回非成功状态并保留附件记录供重试；文件已不存在视为完成。先安全删除文件，再提交元数据删除，中断后仍可通过原附件记录重试；不返回“文件仍在”的普通成功提示。多文件上传逐个保存，失败后只重试尚未成功的部分。
+- `python scripts/cleanup_deletions.py` 默认只报告。执行前停止 ClassClaw 并备份业务库、用量库、附件及 OpenClaw 状态。
+- 维护脚本禁用 `--state-dirs` / `--attachments` 批量清理。`--state-dir` 必须有对应班级删除审计且 Gateway 无配置引用或运行任务；`--wechat-account` 必须无当前引用，并有历史配置和删除审计证明归属。
+- `--gateway` 仅清理已审计删除班级的失效映射；单独使用 `--wechat-account` 不会顺便清理其他映射。`--unknown-files` 仅删除 UUID 命名、无数据库记录且内容哈希匹配历史测试样例的文件。归属不明附件保持不动。

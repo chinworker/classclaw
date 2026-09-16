@@ -4,6 +4,7 @@ import { installDom, response, tick } from "./dom.mjs";
 import { trendChart, barList } from "../../web/js/charts.js";
 import { logViewer, logParams, logText } from "../../web/js/logViewer.js";
 import { gatewayChanges, gatewaySettingsEditor } from "../../web/js/gatewaySettingsEditor.js";
+import { proposalReview } from "../../web/js/components.js";
 import { adminView } from "../../web/js/adminView.js";
 import { agentPanel } from "../../web/js/adminAgentPanel.js";
 import { ADMIN_ALIASES, ADMIN_NAV } from "../../web/js/adminRoutes.js";
@@ -11,11 +12,12 @@ import * as usage from "../../web/js/pages/adminUsage.js";
 import * as access from "../../web/js/pages/adminAccess.js";
 import * as settings from "../../web/js/pages/adminSettings.js";
 import * as ops from "../../web/js/pages/adminOps.js";
+import * as maintenance from "../../web/js/pages/adminMaintenance.js";
 import { defineRoutes, setRouteResolver, dispatch, currentRoute, setNavigationGuard } from "../../web/js/router.js";
 
 let viewer;
 let view;
-afterEach(() => { viewer?.dispose(); view?.dispose(); usage.dispose(); access.dispose(); settings.dispose(); ops.dispose(); });
+afterEach(() => { viewer?.dispose(); view?.dispose(); usage.dispose(); access.dispose(); settings.dispose(); ops.dispose(); maintenance.dispose(); });
 const find = (tag, label, root = document.body) => root.querySelectorAll(tag).find((node) => node.getAttribute("aria-label") === label);
 const button = (label) => document.body.querySelectorAll("button").find((node) => node.textContent === label);
 const log = { timestamp: "2026-09-15T09:21:33.120+08:00", level: "ERROR", logger: "request", request_id: "req-a", message: "Failed" };
@@ -150,6 +152,63 @@ test("four admin entries and all old routes retain their documented landing page
   assert.deepEqual(ADMIN_ALIASES["/admin/agents"], ["/admin/access", { focus: "agents" }]);
   assert.deepEqual(ADMIN_ALIASES["/admin/openclaw/maintenance"], ["/admin/ops", { tab: "logs", source: "openclaw" }]);
   assert.equal(Object.keys(ADMIN_ALIASES).length, 12);
+});
+
+test("maintenance lists unfinished deletions and retries them in place", async () => {
+  installDom();
+  const calls = [];
+  globalThis.fetch = async (url, options = {}) => {
+    const method = options.method || "GET";
+    calls.push([url, method]);
+    if (url.endsWith("/admin/deletions")) return response([{
+      id: "job-1", target_type: "class", target_id: "12345678-aaaa-bbbb-cccc-123456789012",
+      phase: "gateway", status: "failed", error_code: "DELETION_WECHAT_INCOMPLETE",
+      updated_at: "2026-09-16T09:00:00+08:00", retryable: true,
+    }]);
+    if (url.endsWith("/admin/deletions/job-1/retry")) return response({ deletion_id: "job-1", cleanup_status: "complete" });
+    if (url.includes("/admin/openclaw/sessions/cleanup")) return response({ enabled: false, interval_hours: 0, last_run_at: null });
+    return response({});
+  };
+  const mount = document.createElement("main"); document.body.append(mount);
+  await maintenance.render(mount);
+  assert.ok(mount.textContent.includes("未完成的删除清理"));
+  assert.ok(mount.textContent.includes("DELETION_WECHAT_INCOMPLETE"));
+  button("重试清理").click();
+  await tick(); await tick();
+  assert.ok(calls.some(([url, method]) => url.endsWith("/admin/deletions/job-1/retry") && method === "POST"));
+});
+
+test("proposal review renders row-level student data, change details and preview students", () => {
+  installDom();
+  const batch = proposalReview({
+    preview_json: {
+      title: "批量登记作业状态", ready: true,
+      summary: { homework_title: "语文背诵", items: [
+        { student_no: "001", name: "张三", status: "missing" },
+        { student_no: "003", name: "王五", status: "missing" },
+      ] },
+      missing_fields: [], validation_errors: [], low_confidence_evidence: [],
+    },
+    revision: 1,
+  });
+  assert.ok(batch.textContent.includes("语文背诵"));
+  assert.ok(batch.textContent.includes("学号"));
+  assert.ok(batch.textContent.includes("张三"));
+  assert.ok(batch.textContent.includes("003"));
+  assert.ok(!batch.textContent.includes("student_id"));
+
+  const update = proposalReview({
+    preview_json: {
+      title: "批量修改学生档案", ready: true,
+      summary: { record_count: 2, changes: { gender: "女" }, only_if_empty: ["gender"] },
+      students: [{ student_no: "001", name: "张三", before: {} }, { student_no: "003", name: "王五", before: {} }],
+      missing_fields: [], validation_errors: [], low_confidence_evidence: [],
+    },
+    revision: 1,
+  });
+  assert.ok(update.textContent.includes('{"gender":"女"}'));
+  assert.ok(update.textContent.includes("变更前"));
+  assert.ok(update.textContent.includes("王五"));
 });
 
 test("route guard retains page and URL on cancellation and navigates after acceptance", async () => {

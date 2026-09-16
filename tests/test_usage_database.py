@@ -9,7 +9,7 @@ from sqlalchemy import func, inspect, select
 
 from alembic import command
 from app import database, usage_database
-from app.config import ConfigurationError, load_settings, settings
+from app.config import ConfigurationError, load_settings
 from app.models.entities import ClassRoom
 from app.models.usage import AiUsageRecord, UsageBase
 from app.services import usage
@@ -182,8 +182,12 @@ def test_usage_configuration_paths_and_same_file_rejection(tmp_path):
     assert load_settings(config, environ={"CLASSCLAW_USAGE_DATABASE_URL": override}).usage_database_url == override
     with pytest.raises(ConfigurationError, match="不同文件"):
         load_settings(config, environ={"CLASSCLAW_USAGE_DATABASE_URL": override, "CLASSCLAW_DATABASE_URL": override})
+    attachments = tmp_path / "attachments"
     with pytest.raises(ConfigurationError, match="不能包含用量数据库"):
-        load_settings(config, environ={"CLASSCLAW_USAGE_DATABASE_URL": f"sqlite:///{settings.attachment_dir / 'usage.db'}"})
+        load_settings(config, environ={
+            "CLASSCLAW_ATTACHMENT_DIR": str(attachments),
+            "CLASSCLAW_USAGE_DATABASE_URL": f"sqlite:///{attachments / 'usage.db'}",
+        })
     with pytest.raises(ConfigurationError, match="查询参数"):
         load_settings(config, environ={"CLASSCLAW_USAGE_DATABASE_URL": f"{override}?timeout=1"})
 

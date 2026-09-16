@@ -26,7 +26,7 @@ from app.models.entities import (
     SystemSetting,
 )
 from app.schemas.domain import ExamCreate, ExamSubjectInput
-from app.services import academic, openclaw_provisioning
+from app.services import academic, deletion_runtime, openclaw_provisioning
 from app.utils.time import now
 
 
@@ -79,12 +79,15 @@ def test_exam_list_returns_subjects_filters_and_scopes_teacher(client, db):
     assert forbidden.json()["error"]["code"] == "CLASS_ACCESS_DENIED"
 
 
-def test_hard_delete_class_removes_business_data_and_releases_account_slot(client, db):
+def test_hard_delete_class_removes_business_data_and_releases_account_slot(client, db, deletion_gateway):
     user = client.post("/api/v1/admin/users", json={"username": "deleteteacher"}, headers=_admin_header()).json()["data"]
     owned = ClassRoom(name="待删除班", grade="高一", owner_user_id=user["id"])
     other = ClassRoom(name="禁止删除班", grade="高二")
     db.add_all([owned, other])
     db.flush()
+    owned_workspace = settings.openclaw_class_workspace_root / owned.id
+    owned_workspace.mkdir(parents=True, exist_ok=True)
+    (owned_workspace / "SOUL.md").write_text("temporary", encoding="utf-8")
     student = Student(class_id=owned.id, student_no="01", name="测试学生", tags=[])
     db.add(student)
     db.flush()
@@ -140,7 +143,10 @@ def test_hard_delete_class_removes_business_data_and_releases_account_slot(clien
     assert deleted.status_code == 200
     result = deleted.json()["data"]
     assert result["deleted"] is True
-    assert result["agent_cleanup"]["binding_found"] is True
+    assert result["cleanup_status"] == "complete"
+    assert result["deletion_id"]
+    assert result["agent_cleanup"]["workspace_removed"] is True
+    assert not owned_workspace.exists()
     assert db.get(ClassRoom, owned.id) is None
     assert db.get(Student, student.id) is None
     assert db.get(Homework, homework.id) is None
@@ -155,59 +161,76 @@ def test_hard_delete_class_removes_business_data_and_releases_account_slot(clien
     assert restarted.status_code == 201
 
 
-def test_class_agent_cleanup_removes_runtime_route_and_workspace(db, tmp_path, monkeypatch):
+def test_class_agent_runtime_cleanup_uses_null_keys_and_removes_directories(db, tmp_path, monkeypatch):
     cls = ClassRoom(name="智能体清理班", grade="高一")
     db.add(cls)
-    db.flush()
-    workspace = tmp_path / cls.id
-    workspace.mkdir()
-    (workspace / "SOUL.md").write_text("temporary", encoding="utf-8")
-    binding = ClassAgentBinding(
-        class_id=cls.id,
-        agent_name=f"classclaw-{cls.id}",
-        workspace_path=str(workspace),
-        openclaw_agent_id="agent-delete",
-        channel_account_id="wechat-delete",
-        status="linked",
-    )
-    db.add(binding)
     db.commit()
+    workspace = tmp_path / "workspaces" / cls.id
+    workspace.mkdir(parents=True)
+    (workspace / "SOUL.md").write_text("temporary", encoding="utf-8")
+    agent_state = tmp_path / "state" / "agents" / "agent-delete"
+    agent_state.mkdir(parents=True)
+    (agent_state / "session.jsonl").write_text("old", encoding="utf-8")
+
     monkeypatch.setattr(
         openclaw_provisioning,
         "settings",
-        replace(settings, openclaw_class_workspace_root=tmp_path),
+        replace(settings, openclaw_class_workspace_root=tmp_path / "workspaces",
+                openclaw_state_dir=tmp_path / "state"),
     )
-    calls = []
+    plan = {
+        "class_id": cls.id,
+        "agent_id": "agent-delete",
+        "workspace": str(workspace),
+        "channel": settings.openclaw_wechat_channel,
+        "account_ids": ["wechat-delete"],
+    }
+    calls: list[tuple[str, dict | None]] = []
+    patched = {"done": False}
 
     async def fake_admin_rpc(method, params=None):
         calls.append((method, params))
         if method == "config.get":
-            return {
-                "hash": "config-hash",
-                "config": {
-                    "agents": {"list": [{"id": "agent-delete"}, {"id": "agent-keep"}]},
-                    "bindings": [
-                        {"agentId": "agent-delete", "match": {"channel": binding.channel_id, "accountId": "wechat-delete"}},
-                        {"agentId": "agent-keep", "match": {"channel": "other", "accountId": "keep"}},
-                    ],
-                    "plugins": {
-                        "entries": {
-                            "classclaw": {
-                                "config": {"agentClasses": {"agent-delete": cls.id, "agent-keep": "keep-class"}}
-                            }
-                        }
-                    },
-                },
-            }
-        return {"ok": True}
+            mapping = {"agent-keep": "keep-class"} if patched["done"] else {"agent-delete": cls.id, "agent-keep": "keep-class"}
+            agents = [{"id": "agent-keep"}] if patched["done"] else [{"id": "agent-delete"}, {"id": "agent-keep"}]
+            bindings = [] if patched["done"] else [
+                {"agentId": "agent-delete", "match": {"channel": settings.openclaw_wechat_channel, "accountId": "wechat-delete"}},
+                {"agentId": "agent-keep", "match": {"channel": "other", "accountId": "keep"}},
+            ]
+            return {"hash": "config-hash", "config": {"agents": {"list": agents}, "bindings": bindings,
+                    "plugins": {"entries": {"classclaw": {"config": {"agentClasses": mapping}}}}}}
+        if method == "channels.logout":
+            return {"cleared": True, "loggedOut": True}
+        if method == "tasks.list":
+            return {"tasks": []}
+        if method == "config.patch":
+            patched["done"] = True
+            return {"ok": True}
+        raise AssertionError(method)
+
+    async def cancel_wechat(class_id, action, **params):
+        assert action == "cancel" and class_id == cls.id
+        return {"cancelled": True, "accountIds": []}
 
     monkeypatch.setattr(openclaw_provisioning, "admin_rpc", fake_admin_rpc)
-    result = asyncio.run(openclaw_provisioning.cleanup_class_agent_resources(db, cls.id))
+    monkeypatch.setattr("app.services.wechat_login.call", cancel_wechat)
 
-    assert result["runtime_removed"] is True
-    assert result["workspace_removed"] is True
+    asyncio.run(deletion_runtime.cleanup(plan))
+
+    patch_params = next(params for method, params in calls if method == "config.patch")
+    raw = json.loads(patch_params["raw"])
+    # An explicit null deletes the agentClasses key; replacePaths only replaces arrays.
+    assert raw["plugins"]["entries"]["classclaw"]["config"]["agentClasses"] == {"agent-delete": None}
+    assert patch_params["replacePaths"] == ["agents.list", "bindings"]
+    assert raw["agents"]["list"] == [{"id": "agent-keep"}]
+    assert raw["bindings"] == [{"agentId": "agent-keep", "match": {"channel": "other", "accountId": "keep"}}]
+    assert [params for method, params in calls if method == "channels.logout"] == [
+        {"channel": settings.openclaw_wechat_channel, "accountId": "wechat-delete"},
+    ]
+
+    files = deletion_runtime.cleanup_files(plan)
+    assert files["runtime_removed"] is True
+    assert files["workspace_removed"] is True
+    assert files["agent_state_removed"] is True
     assert not workspace.exists()
-    patch = json.loads(calls[-1][1]["raw"])
-    assert patch["agents"]["list"] == [{"id": "agent-keep"}]
-    assert patch["bindings"] == [{"agentId": "agent-keep", "match": {"channel": "other", "accountId": "keep"}}]
-    assert patch["plugins"]["entries"]["classclaw"]["config"]["agentClasses"] == {"agent-keep": "keep-class"}
+    assert not agent_state.exists()

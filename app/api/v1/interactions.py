@@ -9,6 +9,7 @@ from app.core.responses import ok
 from app.core.security import principal_from_request, require_owned_class
 from app.database import get_db
 from app.schemas.domain import InteractionAnalyzeCreate
+from app.services import ai_tasks
 from app.services import interactions as service
 
 router = APIRouter(tags=["OpenClaw 统一输入分析"])
@@ -22,7 +23,10 @@ async def interaction_analyze(request: Request, body: InteractionAnalyzeCreate, 
             require_owned_class(request, body.class_id)
         else:
             body = body.model_copy(update={"class_id": principal.class_id})
-    result = await service.analyze(db, body)
+    if body.class_id:
+        require_owned_class(request, body.class_id)
+    async with ai_tasks.track(request, class_id=body.class_id):
+        result = await service.analyze(db, body)
     message = "输入已由 OpenClaw 清洗；高置信度写入已生成待复核预览，低置信度数据已附原因"
     return ok(request, result, message, 201)
 

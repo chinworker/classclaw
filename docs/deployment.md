@@ -237,7 +237,9 @@ openclaw plugins install --link ./integrations/openclaw/openclaw-weixin-compat
 openclaw config set plugins.entries.openclaw-weixin.enabled true
 ```
 
-`classclaw-manager` Skill 随插件安装。微信兼容层 `2.4.6-classclaw.2` 固定上游微信插件 `2.4.6`，必须保留其网页登录状态机，详见 [兼容层说明](../integrations/openclaw/openclaw-weixin-compat/README.md)。
+`classclaw-manager` Skill 随插件安装。微信兼容层 `2.4.6-classclaw.3` 固定上游微信插件 `2.4.6`，必须保留其网页登录状态机，详见 [兼容层说明](../integrations/openclaw/openclaw-weixin-compat/README.md)。
+
+兼容层 `.4` 提供带已保存账号清单的班级级扫码取消和 `channels.logout` 账号登出能力，班级删除依赖它们清理微信凭据。升级顺序固定为先更新兼容层（并在空闲时重启 Gateway），再升级后端；在旧兼容层上删除班级会停在 `WECHAT_PLUGIN_UPDATE_REQUIRED`，更新后从失败阶段重试即可，业务数据尚未删除。
 
 ### 5.2 同步两个 Token
 

@@ -105,6 +105,7 @@ Ubuntu 2 核 4 GB 同机部署可复制 [专用模板](../deploy/classclaw.2c4g.
 | `agent_id` | 默认 Main Agent ID |
 | `extractor_agent_id` | 一次性结构化提取 Agent ID |
 | `extractor_enabled` | 是否使用独立提取 Agent；关闭后回退 Main Agent |
+| `extractor_thinking` | JSON 提取（onboarding 导入、课表/座位文件、事件分类、interaction 清洗）的默认思考强度；默认 `off`。提高档位可改善模糊课表的抽取质量，但会增加耗时；实际模型须支持所选档位。环境覆盖：`CLASSCLAW_OPENCLAW_EXTRACTOR_THINKING` |
 | `class_agent_thinking` | 班级 Agent 在所有场景下的统一默认思考强度；默认 `off`，可选 `off/minimal/low/medium/high/xhigh/adaptive/max`，实际模型须支持所选档位。环境覆盖：`CLASSCLAW_OPENCLAW_CLASS_AGENT_THINKING` |
 | `timeout_seconds` | 后端请求 Gateway 的超时，上限 120 秒 |
 | `session_cleanup_hours` | 一次性会话清理间隔；`0` 关闭 |

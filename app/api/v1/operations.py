@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.core.errors import AppError
 from app.core.responses import ok
-from app.core.security import principal_from_request, require_owned_record, scoped_class_id
+from app.core.security import principal_from_request, require_owned_class, require_owned_record, scoped_class_id
 from app.database import get_db
 from app.models.entities import Arrangement, AuditLog
 from app.schemas.domain import ArrangementCreate, AttachmentLinkCreate
@@ -96,11 +96,31 @@ def attachment_upload(
     file: UploadFile = File(...),
     source_message_id: str | None = Form(None),
     description: str | None = Form(None),
+    class_id: str | None = Form(None),
     db: Session = Depends(get_db),
 ):
-    return ok(request, service.save_attachment(db, file, source_message_id, description), "附件已保存", 201)
+    principal = principal_from_request(request)
+    if class_id or (not principal.is_admin and principal.class_id):
+        class_id = scoped_class_id(request, class_id)
+    return ok(request, service.save_attachment(db, file, source_message_id, description, class_id=class_id), "附件已保存", 201)
 
 
 @router.post("/attachments/{attachment_id}/links", status_code=201)
 def attachment_link(request: Request, attachment_id: str, body: AttachmentLinkCreate, db: Session = Depends(get_db)):
     return ok(request, service.link_attachment(db, attachment_id, body.entity_type, body.entity_id), "附件关联已创建", 201)
+
+
+@router.get("/classes/{class_id}/attachments")
+def attachment_list(request: Request, class_id: str, db: Session = Depends(get_db)):
+    require_owned_class(request, class_id)
+    return ok(request, service.list_class_attachments(db, class_id))
+
+
+@router.delete("/attachments/{attachment_id}")
+def attachment_delete(request: Request, attachment_id: str, db: Session = Depends(get_db)):
+    attachment, class_id = service.get_class_attachment(db, attachment_id)
+    if not class_id:
+        raise AppError("CLASS_SCOPE_VIOLATION", "只能删除班级资料中的附件", 403, {"attachment_id": attachment_id})
+    require_owned_class(request, class_id)
+    return ok(request, service.delete_attachment(db, attachment, class_id=class_id,
+                                               operator_id=principal_from_request(request).user_id), "附件已删除")

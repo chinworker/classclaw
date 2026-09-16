@@ -490,6 +490,22 @@ class WriteProposal(Base, IdMixin, TimestampMixin):
     onboarding_session_id: Mapped[str | None] = mapped_column(ForeignKey("class_onboarding_sessions.id", ondelete="SET NULL"), index=True)
 
 
+class DeletionOperation(Base, IdMixin, TimestampMixin):
+    """Durable, secret-free cleanup journal; deliberately survives its target."""
+    __tablename__ = "deletion_operations"
+    __table_args__ = (UniqueConstraint("target_type", "target_id", name="uq_deletion_target"),)
+
+    target_type: Mapped[str] = mapped_column(String(20))
+    target_id: Mapped[str] = mapped_column(String(36))
+    operator_id: Mapped[str | None] = mapped_column(String(36))
+    owner_user_id: Mapped[str | None] = mapped_column(String(36))
+    status: Mapped[str] = mapped_column(String(20), default="pending")
+    phase: Mapped[str] = mapped_column(String(30), default="preflight")
+    resources_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    result_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    error_code: Mapped[str | None] = mapped_column(String(100))
+
+
 class AnalysisCache(Base, TimestampMixin):
     __tablename__ = "analysis_cache"
 

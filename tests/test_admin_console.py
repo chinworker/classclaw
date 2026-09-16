@@ -140,12 +140,19 @@ def test_admin_initialize_factory_resets_everything_and_recreates_defaults(clien
                     "plugins": {"entries": {"classclaw": {"config": {"agentClasses": {"classclaw-reset-agent": "pending"}}}}},
                 },
             }
+        if method == "channels.logout":
+            return {"cleared": True, "loggedOut": True}
         if method == "config.patch":
             runtime_patches.append(params or {})
             return {"ok": True}
         raise AssertionError(method)
 
+    async def cancel_wechat(class_id: str, action: str, **params):
+        assert action == "cancel"
+        return {"cancelled": True}
+
     monkeypatch.setattr(openclaw_provisioning, "admin_rpc", fake_rpc)
+    monkeypatch.setattr("app.services.wechat_login.call", cancel_wechat)
     login = client.post("/api/v1/auth/login", json={"username": settings.default_admin_username, "password": settings.default_admin_password})
     assert login.status_code == 200
     old_admin = db.scalar(select(User).where(User.role == "admin"))
@@ -161,16 +168,16 @@ def test_admin_initialize_factory_resets_everything_and_recreates_defaults(clien
     usage_db.commit()
     db.commit()
     assert db.scalar(select(func.count()).select_from(UserSession)) == 1
-    test_settings.attachment_dir.mkdir(parents=True)
+    test_settings.attachment_dir.mkdir(parents=True, exist_ok=True)
     (test_settings.attachment_dir / "old.txt").write_text("old attachment", encoding="utf-8")
-    test_settings.log_file.parent.mkdir(parents=True)
+    test_settings.log_file.parent.mkdir(parents=True, exist_ok=True)
     test_settings.log_file.write_text("old log marker\n", encoding="utf-8")
     for agent_id in (test_settings.openclaw_agent_id, test_settings.openclaw_extractor_agent_id):
         sessions = test_settings.openclaw_state_dir / "agents" / agent_id / "sessions"
-        sessions.mkdir(parents=True)
+        sessions.mkdir(parents=True, exist_ok=True)
         (sessions / "old.jsonl").write_text("old session", encoding="utf-8")
     class_agent_root = test_settings.openclaw_state_dir / "agents" / "classclaw-reset-agent"
-    class_agent_root.mkdir(parents=True)
+    class_agent_root.mkdir(parents=True, exist_ok=True)
     (class_agent_root / "old-state.json").write_text("old", encoding="utf-8")
 
     response = client.post(
@@ -220,8 +227,13 @@ def test_admin_initialize_keeps_database_when_openclaw_cleanup_fails(client, db,
     async def unavailable_rpc(method: str, params: dict | None = None):
         raise RuntimeError("gateway unavailable")
 
+    async def cancel_wechat(class_id: str, action: str, **params):
+        assert action == "cancel"
+        return {"cancelled": True}
+
     monkeypatch.setattr(openclaw_bridge, "ensure_extractor_agent", extractor_ready)
     monkeypatch.setattr(openclaw_provisioning, "admin_rpc", unavailable_rpc)
+    monkeypatch.setattr("app.services.wechat_login.call", cancel_wechat)
     assert client.post(
         "/api/v1/auth/login",
         json={"username": settings.default_admin_username, "password": settings.default_admin_password},
@@ -230,12 +242,21 @@ def test_admin_initialize_keeps_database_when_openclaw_cleanup_fails(client, db,
     binding = db.scalar(select(ClassAgentBinding).where(ClassAgentBinding.class_id == cls.id))
     binding.openclaw_agent_id = "classclaw-unavailable-agent"
     db.commit()
+    from pathlib import Path
+    marker = Path(binding.workspace_path) / "preserve.txt"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text("keep workspace on failure")
+    attachment = test_settings.attachment_dir / "preserve.txt"
+    attachment.parent.mkdir(parents=True, exist_ok=True)
+    attachment.write_text("keep attachment on failure")
 
     response = client.post(
         "/api/v1/admin/system/initialize",
         headers=_admin_header(),
         json={"confirmation": "INITIALIZE"},
     )
+    assert marker.read_text() == "keep workspace on failure"
+    assert attachment.read_text() == "keep attachment on failure"
     assert response.status_code == 503
     assert response.json()["error"]["code"] == "SYSTEM_INITIALIZATION_INCOMPLETE"
     assert response.json()["error"]["details"]["database_preserved_for_retry"] is True

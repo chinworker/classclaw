@@ -88,6 +88,9 @@ async def call(class_id: str, action: str, **params: Any) -> dict[str, Any]:
         raise AppError(code if code in known else "WECHAT_LOGIN_UNAVAILABLE", known.get(code, "微信登录暂不可用，请稍后重试"),
                        response.status_code if response.status_code in (400, 409, 422, 503) else 502)
     payload = result.get("payload")
+    if action == "cancel" and isinstance(payload, dict) and payload.get("cancelled") is True:
+        _attempts.pop(class_id, None)
+        return payload
     if not isinstance(payload, dict) or not isinstance(payload.get("loginId"), str):
         raise AppError("WECHAT_RESPONSE_INVALID", "微信登录接口返回了不完整响应", 502)
     try:

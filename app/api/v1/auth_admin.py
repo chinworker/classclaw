@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from typing import Annotated
 
 from fastapi import APIRouter, Body, Depends, Query, Request
 from sqlalchemy import select
@@ -11,9 +12,9 @@ from app.core.errors import AppError
 from app.core.responses import ok
 from app.core.security import Principal, require_admin, require_authenticated
 from app.database import get_db
-from app.models.entities import ClassAgentBinding, ClassRoom, User, UserSession
+from app.models.entities import ClassAgentBinding, ClassRoom, DeletionOperation, User, UserSession
 from app.schemas.auth import LoginRequest, PasswordChange, UserCreate, UserUpdate
-from app.services import accounts, admin_console, openclaw_provisioning
+from app.services import accounts, admin_console, deletions, openclaw_provisioning
 from app.utils.time import now
 
 public_router = APIRouter(tags=["账户"])
@@ -81,8 +82,8 @@ def user_update(request: Request, user_id: str, body: UserUpdate, db: Session = 
 
 
 @admin_router.delete("/users/{user_id}")
-def user_delete(request: Request, user_id: str, db: Session = Depends(get_db)):
-    return ok(request, accounts.delete_teacher(db, user_id), "用户已删除")
+async def user_delete(request: Request, user_id: str, db: Session = Depends(get_db)):
+    return ok(request, await deletions.delete_target(db, "user", user_id, request.state.principal.user_id), "用户已删除")
 
 
 @admin_router.post("/users/{user_id}/reset-password")
@@ -137,3 +138,17 @@ def database_table(
 ):
     limit = limit or int(admin_console.setting_value("admin.database_page_size"))
     return ok(request, admin_console.database_table(db, table_name, offset, limit))
+
+
+@admin_router.get("/deletions")
+def deletion_list(request: Request, db: Annotated[Session, Depends(get_db)]):
+    rows = db.scalars(select(DeletionOperation).where(DeletionOperation.status != "complete").order_by(DeletionOperation.created_at))
+    return ok(request, [deletions.public(row) for row in rows])
+
+
+@admin_router.post("/deletions/{deletion_id}/retry")
+async def deletion_retry(request: Request, deletion_id: str, db: Annotated[Session, Depends(get_db)]):
+    row = db.get(DeletionOperation, deletion_id)
+    if not row:
+        raise AppError("NOT_FOUND", "删除记录不存在", 404)
+    return ok(request, await deletions.execute(db, row), "清理已完成")

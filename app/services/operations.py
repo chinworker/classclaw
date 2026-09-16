@@ -15,6 +15,7 @@ from app.models.entities import (
     Arrangement,
     Attachment,
     AttachmentLink,
+    ClassOnboardingSession,
     Reminder,
 )
 from app.schemas.domain import ArrangementCreate
@@ -123,7 +124,18 @@ def mark_reminder(db: Session, reminder_id: str, success: bool, error: str | Non
     return obj
 
 
-def save_attachment(db: Session, upload: UploadFile, source_message_id: str | None, description: str | None) -> Attachment:
+def save_attachment(db: Session, upload: UploadFile, source_message_id: str | None, description: str | None,
+                    *, class_id: str | None = None, onboarding_session_id: str | None = None) -> Attachment:
+    from app.services import deletions
+    if class_id:
+        get_class(db, class_id, include_inactive=True)
+        deletions.require_available(db, "class", class_id)
+    if onboarding_session_id:
+        draft = db.get(ClassOnboardingSession, onboarding_session_id)
+        if not draft:
+            raise not_found("班级创建引导", onboarding_session_id)
+        deletions.require_available(db, "user", draft.owner_user_id)
+        deletions.require_available(db, "class", draft.class_id)
     original = Path(upload.filename or "attachment").name
     suffix = Path(original).suffix[:20]
     stored_name = f"{new_id()}{suffix}"
@@ -155,10 +167,18 @@ def save_attachment(db: Session, upload: UploadFile, source_message_id: str | No
         source_message_id=source_message_id,
         description=description,
     )
-    db.add(obj)
-    db.flush()
-    audit(db, "create", "attachment", obj.id, after=entity_dict(obj), source_message_id=source_message_id)
-    db.commit()
+    try:
+        db.add(obj)
+        db.flush()
+        for entity_type, entity_id in (("class", class_id), ("class_onboarding_session", onboarding_session_id)):
+            if entity_id:
+                db.add(AttachmentLink(attachment_id=obj.id, entity_type=entity_type, entity_id=entity_id))
+        audit(db, "create", "attachment", obj.id, after=entity_dict(obj), source_message_id=source_message_id)
+        db.commit()
+    except Exception:
+        db.rollback()
+        path.unlink(missing_ok=True)
+        raise
     return obj
 
 
@@ -178,3 +198,63 @@ def link_attachment(db: Session, attachment_id: str, entity_type: str, entity_id
     db.add(obj)
     db.commit()
     return obj
+
+
+def list_class_attachments(db: Session, class_id: str) -> list[dict]:
+    rows = db.scalars(
+        select(Attachment)
+        .join(AttachmentLink, AttachmentLink.attachment_id == Attachment.id)
+        .where(AttachmentLink.entity_type == "class", AttachmentLink.entity_id == class_id)
+        .order_by(Attachment.created_at.desc(), Attachment.id.desc())
+    ).all()
+    return [
+        {
+            "id": row.id,
+            "original_name": row.original_name,
+            "mime_type": row.mime_type,
+            "file_size": row.file_size,
+            "description": row.description,
+            "created_at": row.created_at,
+        }
+        for row in rows
+    ]
+
+
+def get_class_attachment(db: Session, attachment_id: str) -> tuple[Attachment, str | None]:
+    row = db.get(Attachment, attachment_id)
+    if not row:
+        raise not_found("附件", attachment_id)
+    class_id = db.scalar(
+        select(AttachmentLink.entity_id).where(
+            AttachmentLink.attachment_id == attachment_id,
+            AttachmentLink.entity_type == "class",
+        )
+    )
+    return row, class_id
+
+
+def delete_attachment(db: Session, attachment: Attachment, *, class_id: str, operator_id: str | None = None) -> dict:
+    from app.services import deletion_files
+    from app.services.class_student import referenced_attachment_ids
+
+    owners = set(db.scalars(select(AttachmentLink.entity_id).where(
+        AttachmentLink.attachment_id == attachment.id, AttachmentLink.entity_type == "class")))
+    shared = referenced_attachment_ids(db, {attachment.id}, ignore_entity_types={"class"})
+    same_path = db.scalar(select(Attachment.id).where(Attachment.stored_path == attachment.stored_path, Attachment.id != attachment.id))
+    if owners != {class_id} or shared or same_path:
+        raise AppError("ATTACHMENT_IN_USE", "附件已被其他记录引用，不能删除", 409, {"attachment_id": attachment.id})
+
+    stored_path = attachment.stored_path
+    original_name = attachment.original_name
+    # Keep ownership metadata until the file is gone. On I/O failure DELETE can
+    # be retried; a crash after unlink is safe because an absent file is complete.
+    path = deletion_files.safe_path(settings.attachment_dir, settings.attachment_dir.parent / stored_path)
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as exc:
+        raise AppError("ATTACHMENT_DELETE_FAILED", "附件文件删除失败，记录已保留，请重试", 503,
+                       {"attachment_id": attachment.id}) from exc
+    db.delete(attachment)
+    audit(db, "delete", "attachment", attachment.id, operator_id=operator_id, before={"original_name": original_name})
+    db.commit()
+    return {"id": attachment.id, "original_name": original_name, "file_removed": True}

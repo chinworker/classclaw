@@ -45,8 +45,8 @@ export function toolFailure(error: unknown, operation: "analysis" | "commit" = "
 }
 
 const requiredReadFields: Record<string, string[]> = {
-  class_summary: ["class_id"], student_search: ["class_id"], student_detail: ["student_id"],
-  daily_timetable: ["class_id"], morning_briefing: ["class_id"], student_analysis: ["student_id"],
+  class_summary: ["class_id"], student_search: ["class_id"],
+  daily_timetable: ["class_id"], morning_briefing: ["class_id"],
   class_analysis: ["class_id"], attention_students: ["class_id"], write_proposal: ["proposal_id"],
   interaction_analysis: ["analysis_id"], reminder_delivery: ["reminder_id"],
 };
@@ -55,6 +55,18 @@ export function validateReadParams(params: Row) {
   const missing = (requiredReadFields[String(params.resource)] ?? [])
     .filter((key) => typeof params[key] !== "string" || !(params[key] as string).trim());
   if (missing.length) throw new Error(`TOOL_ARGUMENT_REQUIRED: ${params.resource} requires ${missing.join(", ")}. Use returned IDs; ask for missing information instead of retrying.`);
+  if (["student_detail", "student_analysis"].includes(String(params.resource))) {
+    const hasId = typeof params.student_id === "string" && (params.student_id as string).trim();
+    const hasNo = typeof params.student_no === "string" && (params.student_no as string).trim();
+    if (!hasId && !hasNo) {
+      throw new Error(`TOOL_ARGUMENT_REQUIRED: ${params.resource} requires student_no (班内学号) or student_id.`);
+    }
+    const hasClass = typeof params.class_id === "string" && (params.class_id as string).trim();
+    if (hasNo && !hasId && !hasClass) {
+      // 学号只在班级内唯一：没有班级范围的学号搜索会跨班误匹配。
+      throw new Error(`TOOL_ARGUMENT_REQUIRED: ${params.resource} with student_no also requires class_id.`);
+    }
+  }
   if (["classes", "student_search"].includes(String(params.resource))) {
     for (const field of ["page", "page_size"]) {
       const value = params[field];

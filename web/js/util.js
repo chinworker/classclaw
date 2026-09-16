@@ -96,6 +96,13 @@ export function periodLabel(periodOrNo, customName = null) {
   return `第${number}节`;
 }
 
+export function fileSize(bytes) {
+  const value = Number(bytes) || 0;
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  return `${(value / 1024 / 1024).toFixed(1)} MB`;
+}
+
 export function debounce(fn, delay = 400) {
   let timer = null;
   const wrapped = (...args) => { clearTimeout(timer); timer = setTimeout(() => fn(...args), delay); };
@@ -188,7 +195,7 @@ function enhanceSelect(select) {
       .sort((a, b) => {
         if (!a.option.value && b.option.value) return -1;
         if (a.option.value && !b.option.value) return 1;
-        return b.count - a.count || a.index - b.index;
+        return (select.dataset.preserveOrder === "true" ? 0 : b.count - a.count) || a.index - b.index;
       });
   }
 

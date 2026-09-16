@@ -20,6 +20,7 @@ _PENDING_TTL_SECONDS = 60.0
 class _ActiveTask:
     owner: str
     event: asyncio.Event
+    class_id: str | None = None
 
 
 _active_tasks: dict[str, _ActiveTask] = {}
@@ -68,24 +69,18 @@ def cancel(request: Request, task_id: str) -> dict[str, object]:
 
 
 @asynccontextmanager
-async def track(request: Request, *, check_disconnect: bool = True) -> AsyncIterator[Callable[[], Awaitable[bool]]]:
+async def track(request: Request, *, class_id: str | None = None, check_disconnect: bool = True) -> AsyncIterator[Callable[[], Awaitable[bool]]]:
     """Register an AI request and expose a cancellation callback to OpenClaw calls."""
-    normalized = _task_id(request.headers.get(AI_TASK_ID_HEADER))
-    if normalized is None:
-        async def disconnected() -> bool:
-            return await request.is_disconnected() if check_disconnect else False
-        yield disconnected
-        return
+    # Browser cancellation IDs are optional; deletion still needs every run.
+    normalized = _task_id(request.headers.get(AI_TASK_ID_HEADER)) or str(uuid.uuid4())
 
     owner = _owner(request)
     checked_at = time.monotonic()
     _prune_pending(checked_at)
     previous = _active_tasks.get(normalized)
     if previous:
-        if previous.owner != owner:
-            raise AppError("AI_TASK_CONFLICT", "AI 任务标识已被占用", 409)
-        previous.event.set()
-    entry = _ActiveTask(owner=owner, event=asyncio.Event())
+        raise AppError("AI_TASK_CONFLICT", "AI 任务标识已被占用，请等待原任务结束", 409)
+    entry = _ActiveTask(owner=owner, event=asyncio.Event(), class_id=class_id)
     pending = _pending_cancellations.pop(normalized, None)
     if pending and pending[0] == owner:
         entry.event.set()
@@ -99,6 +94,24 @@ async def track(request: Request, *, check_disconnect: bool = True) -> AsyncIter
     finally:
         if _active_tasks.get(normalized) is entry:
             _active_tasks.pop(normalized, None)
+
+
+def has_active(*, class_id: str | None = None, user_id: str | None = None) -> bool:
+    """Report whether a tracked AI request still owns the given class or account.
+
+    Deletion uses this to refuse destroying resources an in-flight request may
+    still write to. Without a scope there is nothing to match, so it is False.
+    """
+    if class_id is None and user_id is None:
+        return False
+    owner = f"user:{user_id}" if user_id else None
+    for task in _active_tasks.values():
+        if class_id is not None and task.class_id != class_id:
+            continue
+        if owner is not None and task.owner != owner:
+            continue
+        return True
+    return False
 
 
 def reset_for_tests() -> None:

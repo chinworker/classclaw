@@ -21,6 +21,18 @@ test("a late 401 from the old identity does not log out a newly signed-in accoun
   assert.equal(loggedOut, 1);
 });
 
+test("a 401 from an unauthenticated request does not trigger the logout handler", async () => {
+  let loggedOut = 0;
+  onUnauthorized(() => { loggedOut += 1; });
+  setToken(null);
+  globalThis.fetch = () => Promise.resolve(new Response(
+    JSON.stringify({ success: false, error: { code: "INVALID_PASSWORD", message: "密码错误，请检查密码" } }),
+    { status: 401, headers: { "Content-Type": "application/json" } },
+  ));
+  await assert.rejects(api("/auth/login", { method: "POST", body: { username: "admin", password: "wrong" } }), (error) => error.code === "INVALID_PASSWORD");
+  assert.equal(loggedOut, 0);
+});
+
 test("explicit cancellation uses the task's original credential even after identity changes", async () => {
   let cancellationToken;
   globalThis.fetch = (path, options) => {

@@ -446,6 +446,14 @@ input[type="date"]::-webkit-calendar-picker-indicator, input[type="datetime-loca
 .dropzone.disabled:hover { border-color: var(--border); background: transparent; }
 .drop-progress { color: var(--primary); font-weight: 600; }
 .drop-selected { font-size: 12px; }
+.drop-file-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; text-align: left; }
+.drop-file-item {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 100%;
+  padding: 4px 6px 4px 10px; border: 1px solid var(--border); border-radius: 8px; background: #fff; font-size: 12px;
+}
+.drop-file-name { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.drop-file-remove { width: 20px; height: 20px; border-radius: 6px; color: var(--muted); font-size: 15px; line-height: 1; }
+.drop-file-remove:hover { background: #F7E6E4; color: var(--danger); }
 .ai-button-wrap {
   position: relative; display: inline-grid; justify-self: center; padding: 2px;
   overflow: hidden; border-radius: calc(var(--radius-control) + 2px);
@@ -477,6 +485,10 @@ input[type="date"]::-webkit-calendar-picker-indicator, input[type="datetime-loca
 .agent-conversation-list { padding: 14px; border: 1px solid var(--border); border-radius: 16px; background: #fff; }
 .agent-conversation-list h3 { margin: 0 0 12px; font-size: 14px; }
 .agent-conversation-items { display: grid; gap: 7px; max-height: min(50vh, 480px); overflow-y: auto; }
+.agent-conversation-row { display: grid; grid-template-columns: minmax(0, 1fr) 42px; align-items: center; gap: 3px; }
+.agent-conversation-delete { padding: 10px 4px; min-height: 44px; border: 0; border-radius: 8px; background: transparent; color: var(--danger); font-size: 12px; }
+.agent-conversation-delete:hover { background: var(--danger-soft, #FFF0EE); }
+.agent-conversation-delete:focus-visible { outline: 2px solid var(--danger); outline-offset: -2px; }
 .agent-conversation-item { display: grid; gap: 5px; width: 100%; text-align: left; padding: 11px; border: 1px solid transparent; border-radius: 10px; background: #F6F8F6; }
 .agent-conversation-item:hover { background: var(--primary-soft); }
 .agent-conversation-item.active { border-color: var(--primary); background: var(--primary-soft); }

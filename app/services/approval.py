@@ -48,7 +48,7 @@ from app.schemas.domain import (
     WriteProposalCreate,
 )
 from app.schemas.student_batch import StudentBatchUpdate
-from app.services import academic, class_student, duty, operations, seating, student_batch, timetable
+from app.services import academic, class_student, deletions, duty, operations, seating, student_batch, student_refs, timetable
 from app.services.common import audit, entity_dict
 from app.services.openclaw_provisioning import agent_name_for_class
 from app.utils.time import now
@@ -232,7 +232,7 @@ def normalize_and_preview(operation_type: str, payload: dict, evidence: list[dic
         }
     if operation_type == "student.update":
         if not payload.get("student_id"):
-            raise AppError("VALIDATION_ERROR", "student.update缺少student_id")
+            raise AppError("VALIDATION_ERROR", "student.update缺少student_no或student_id")
         changes = _model(StudentUpdate, payload.get("changes") or {}, exclude_unset=True)
         normalized = {"student_id": payload["student_id"], "changes": changes}
         return normalized, {"ready": True, "title": "修改学生档案", "summary": normalized, "missing_fields": [], "validation_errors": [], "confirmation_message": "即将修改学生档案，请核对变更字段。"}
@@ -266,6 +266,51 @@ def normalize_and_preview(operation_type: str, payload: dict, evidence: list[dic
     raise AppError("VALIDATION_ERROR", "操作类型尚未实现")
 
 
+def _student_briefs(db: Session, student_ids: list[str]) -> dict[str, dict[str, str]]:
+    ids = [student_id for student_id in dict.fromkeys(student_ids) if student_id]
+    rows = db.scalars(select(Student).where(Student.id.in_(ids))) if ids else []
+    return {row.id: {"student_no": row.student_no, "name": row.name} for row in rows}
+
+
+def _with_brief(row: dict, briefs: dict[str, dict[str, str]]) -> dict:
+    brief = briefs.get(str(row.get("student_id") or ""))
+    return {**{key: value for key, value in row.items() if key != "student_id"}, **(brief or {})}
+
+
+def _humanize_preview(db: Session, operation_type: str, normalized: dict, preview: dict) -> dict:
+    """Previews face the agent and the teacher: show 学号/姓名, not student UUIDs."""
+    summary = preview.get("summary")
+    if operation_type in {"student.update", "attendance.set", "student_event.create"} and isinstance(summary, dict):
+        briefs = _student_briefs(db, [str(normalized.get("student_id") or "")])
+        return {**preview, "summary": _with_brief(summary, briefs)}
+    if operation_type == "homework.status.batch" and isinstance(summary, dict):
+        items = [item for item in normalized.get("items") or [] if isinstance(item, dict)]
+        briefs = _student_briefs(db, [str(item.get("student_id") or "") for item in items])
+        summary = {**summary, "items": [_with_brief(item, briefs) for item in items]}
+        homework = db.get(Homework, str(normalized.get("homework_id") or ""))
+        if homework:
+            summary["homework_title"] = homework.title
+        return {**preview, "summary": summary}
+    if operation_type == "score.batch" and isinstance(summary, dict):
+        scores = [row for row in normalized.get("scores") or [] if isinstance(row, dict)]
+        briefs = _student_briefs(db, [str(row.get("student_id") or "") for row in scores])
+        summary = {**summary, "scores": [_with_brief(row, briefs) for row in scores]}
+        exam = db.get(Exam, str(normalized.get("exam_id") or ""))
+        if exam:
+            summary["exam_name"] = exam.name
+        return {**preview, "summary": summary}
+    if operation_type == "student_event.batch":
+        items = [item for item in normalized.get("items") or [] if isinstance(item, dict)]
+        briefs = _student_briefs(db, [str(item.get("student_id") or "") for item in items])
+        display = [{key: row.get(key) for key in ("student_no", "name", "event_type", "subtype", "event_date") if key in row} for row in (_with_brief(item, briefs) for item in items)]
+        return {**preview, "summary": {**(summary if isinstance(summary, dict) else {}), "items": display}}
+    if operation_type == "student.update.batch":
+        students = preview.get("students")
+        if isinstance(students, list):
+            preview = {**preview, "students": [{key: value for key, value in row.items() if key != "student_id"} for row in students if isinstance(row, dict)]}
+    return preview
+
+
 def create_proposal(db: Session, data: WriteProposalCreate, *, bound_class_id: str | None = None) -> WriteProposal:
     if data.idempotency_key:
         existing = db.scalar(select(WriteProposal).where(WriteProposal.idempotency_key == data.idempotency_key))
@@ -274,9 +319,11 @@ def create_proposal(db: Session, data: WriteProposalCreate, *, bound_class_id: s
                 raise AppError("CLASS_SCOPE_VIOLATION", "写入预览不属于本次分析的班级", 403)
             return existing
     evidence = [item.model_dump(mode="json") for item in data.evidence]
-    normalized, preview = normalize_and_preview(data.operation_type, data.payload, evidence)
+    resolved_payload = student_refs.apply_student_refs(db, data.operation_type, data.payload, bound_class_id=bound_class_id)
+    normalized, preview = normalize_and_preview(data.operation_type, resolved_payload, evidence)
     if data.operation_type == "student.update.batch":
         normalized, preview = student_batch.prepare(db, normalized, preview)
+    preview = _humanize_preview(db, data.operation_type, normalized, preview)
     obj = WriteProposal(
         operation_type=data.operation_type,
         payload_json=data.payload,
@@ -291,6 +338,8 @@ def create_proposal(db: Session, data: WriteProposalCreate, *, bound_class_id: s
     )
     if bound_class_id and _proposal_class_ids(db, obj) != {bound_class_id}:
         raise AppError("CLASS_SCOPE_VIOLATION", "写入预览不属于本次分析的班级", 403)
+    for class_id in sorted(_proposal_class_ids(db, obj)):
+        deletions.require_available(db, "class", class_id)
     db.add(obj)
     db.flush()
     if data.onboarding_session_id:
@@ -448,6 +497,10 @@ def _validate_confirmation(
             raise AppError("PENDING_CONFIRMATION_REQUIRED", "班级草稿在预览后已变化，请重新生成并核对预览", 409, {"proposal_id": proposal.id})
     if not proposal.preview_json.get("ready"):
         raise AppError("PENDING_CONFIRMATION_REQUIRED", "预览仍有缺失或错误字段，不能写入", 409, {"proposal_id": proposal.id, "preview": proposal.preview_json})
+    # The mapping was frozen at preview time; a deletion started afterwards must
+    # still block the execution, not just the creation, of the write.
+    for class_id in sorted(_proposal_class_ids(db, proposal)):
+        deletions.require_available(db, "class", class_id)
     return True
 
 

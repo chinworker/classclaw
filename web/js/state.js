@@ -3,6 +3,7 @@
 
 import { api, getToken, setToken } from "./api.js";
 import { agentChatStore } from "./agentChatStore.js";
+import { compareStudents } from "./studentOrder.js";
 
 const TOKEN_KEY = "classclaw.session.token";
 const ROUTE_KEY = "classclaw.ui.route";
@@ -60,7 +61,7 @@ export async function refreshStudents({ force = false } = {}) {
   if (!state.classId) { state.students = []; return []; }
   if (!force && state.students.length) return state.students;
   const data = await api(`/students?class_id=${state.classId}&page_size=100`);
-  state.students = data.items || [];
+  state.students = (data.items || []).sort(compareStudents);
   return state.students;
 }
 

@@ -492,6 +492,7 @@ export async function render(mount, ctx, helpers) {
       hint: "上传课表图片、PDF、Word、Excel 或文本文件",
       accept: ".xlsx,.xlsm,.docx,.pptx,.csv,.pdf,.png,.jpg,.jpeg,.webp,.txt,.md,.json",
       multiple: true,
+      maxFiles: 4,
       manualStart: true,
       busyText: "正在识别课表，请稍候…",
       disabled: !featureEnabled("file_analysis"),
@@ -514,9 +515,13 @@ export async function render(mount, ctx, helpers) {
           }
           importedPeriods = result.periods;
           showEditor(result.periods, result.items);
+          const analysis = result.analysis || {};
+          const review = Boolean(analysis.review_required);
+          const notes = review ? [...(analysis.reasons || []), ...(analysis.warnings || [])] : (analysis.warnings || []);
           analysisBox.append(
-            el("div", { class: "issue issue-ok" }, `已识别 ${result.items.length} 节课，请核对后保存。`),
-            ...(result.analysis?.warnings || []).map((text) => el("div", { class: "issue issue-warn" }, text)));
+            el("div", { class: review ? "issue issue-warn" : "issue issue-ok" },
+              review ? `已识别 ${result.items.length} 节课，置信度不足，请逐项核对修改后保存。` : `已识别 ${result.items.length} 节课，请核对后保存。`),
+            ...notes.map((text) => el("div", { class: "issue issue-warn" }, text)));
         } catch (error) {
           if (error.code === "REQUEST_CANCELLED") toast("已取消课表识别", "info");
           else analysisBox.append(errorPanel(error));

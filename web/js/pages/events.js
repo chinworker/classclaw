@@ -16,7 +16,7 @@ export async function render(mount) {
   const endInput = el("input", { type: "date", value: todayStr() });
   const typeSelect = el("select", {}, EVENT_TYPES.map(([v, l]) => el("option", { value: v }, l)));
   const subjectInput = el("select", {}, el("option", { value: "" }, "全部科目"), ...subjects.map((s) => el("option", { value: s.name }, s.name)));
-  const studentSelect = el("select", {}, el("option", { value: "" }, "全部学生"));
+  const studentSelect = el("select", { dataset: { preserveOrder: "true" } }, el("option", { value: "" }, "全部学生"));
   const eventAiEnabled = featureEnabled("event_ai");
   const createButton = el("button", { class: "primary", type: "button", disabled: !eventAiEnabled, onclick: () => openEventForm() }, eventAiEnabled ? "登记事件" : "智能分类已关闭");
 
@@ -81,7 +81,7 @@ export async function render(mount) {
   async function openEventForm() {
     const students = await refreshStudents().catch(() => []);
     if (!students.length) { toast("请先添加学生", "error"); return; }
-    const studentSel = el("select", {}, students.map((s) => el("option", { value: s.id }, `${s.name}（${s.student_no}）`)));
+    const studentSel = el("select", { dataset: { preserveOrder: "true" } }, students.map((s) => el("option", { value: s.id }, `${s.name}（${s.student_no}）`)));
     const dateInput = el("input", { type: "date", value: todayStr() });
     const subjectInput = el("select", {}, el("option", { value: "" }, "不指定科目"), ...subjects.map((s) => el("option", { value: s.name }, s.name)));
     const contentInput = el("textarea", { rows: "4", placeholder: "直接描述发生了什么，例如：上课忘带课本、主动帮助同学" });

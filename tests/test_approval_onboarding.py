@@ -412,7 +412,7 @@ def test_class_specific_agent_and_wechat_binding_flow(client, db, tmp_path, monk
     assert {"AGENTS.md", "SOUL.md", "IDENTITY.md", "TOOLS.md", "USER.md", "HEARTBEAT.md"} <= workspace_files
     assert "ClassClaw 助理" in (tmp_path / "class-agent" / "IDENTITY.md").read_text()
     assert "Fill this in" not in (tmp_path / "class-agent" / "IDENTITY.md").read_text()
-    assert sum((tmp_path / "class-agent" / name).stat().st_size for name in workspace_files) < 3000
+    assert sum((tmp_path / "class-agent" / name).stat().st_size for name in workspace_files) < 3400
     assert class_id in (tmp_path / "class-agent" / ".classclaw-agent.json").read_text()
     waited = client.post(f"/api/v1/classes/{class_id}/agent-binding/wait", json={"login_id": binding_result["login_id"]})
     assert waited.status_code == 200

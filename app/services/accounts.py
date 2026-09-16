@@ -140,6 +140,8 @@ def list_users(db: Session) -> list[dict]:
 
 
 def update_teacher(db: Session, user_id: str, data: UserUpdate) -> User:
+    from app.services import deletions
+    deletions.require_available(db, "user", user_id)
     user = db.get(User, user_id)
     if not user:
         raise AppError("NOT_FOUND", "用户不存在", 404, {"id": user_id})
@@ -168,7 +170,7 @@ def update_teacher(db: Session, user_id: str, data: UserUpdate) -> User:
     return user
 
 
-def delete_teacher(db: Session, user_id: str) -> dict:
+def delete_teacher(db: Session, user_id: str, *, operator_id: str | None = None, commit: bool = True) -> dict:
     user = db.get(User, user_id)
     if not user:
         raise AppError("NOT_FOUND", "用户不存在", 404, {"id": user_id})
@@ -179,13 +181,16 @@ def delete_teacher(db: Session, user_id: str) -> dict:
     db.query(UserSession).filter(UserSession.user_id == user.id, UserSession.revoked_at.is_(None)).update({"revoked_at": now()})
     for cls in db.scalars(select(ClassRoom).where(ClassRoom.owner_user_id == user.id)):
         cls.owner_user_id = None
-    audit(db, "delete", "user", user.id, operator_type="admin", before={"username": username, "class_ids": class_ids})
+    audit(db, "delete", "user", user.id, operator_type="admin", operator_id=operator_id, before={"username": username, "class_ids": class_ids})
     db.delete(user)
-    db.commit()
+    if commit:
+        db.commit()
     return {"id": user_id, "username": username, "deleted": True, "unassigned_class_ids": class_ids}
 
 
 def reset_teacher_password(db: Session, user_id: str) -> User:
+    from app.services import deletions
+    deletions.require_available(db, "user", user_id)
     user = db.get(User, user_id)
     if not user:
         raise AppError("NOT_FOUND", "用户不存在", 404, {"id": user_id})
@@ -248,6 +253,9 @@ def user_class_id(db: Session, user_id: str) -> str | None:
 
 
 def assign_class(db: Session, user_id: str, class_id: str) -> ClassRoom:
+    from app.services import deletions
+    deletions.require_available(db, "user", user_id)
+    deletions.require_available(db, "class", class_id)
     user = db.get(User, user_id)
     if not user or user.role != "head_teacher":
         raise AppError("NOT_FOUND", "班主任用户不存在", 404, {"user_id": user_id})

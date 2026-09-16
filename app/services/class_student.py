@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.core.errors import AppError, not_found
 from app.models.entities import (
+    AnalysisCache,
     Arrangement,
     Attachment,
     AttachmentLink,
@@ -19,6 +20,7 @@ from app.models.entities import (
     ClassPeriod,
     ClassRoom,
     ClassSubject,
+    DeletionOperation,
     DutyAssignment,
     DutyEvaluation,
     DutyEvaluationDetail,
@@ -41,6 +43,7 @@ from app.models.entities import (
 )
 from app.schemas.domain import ClassCreate, ClassUpdate, StudentCreate, StudentUpdate
 from app.services.common import audit, entity_dict
+from app.services.student_ordering import student_order_by
 from app.utils.time import now, today
 
 
@@ -94,7 +97,45 @@ def _attachment_ids_from_value(value: object) -> set[str]:
     return found
 
 
-def hard_delete_class(db: Session, class_id: str, *, operator_id: str | None = None) -> dict:
+def referenced_attachment_ids(db: Session, attachment_ids: set[str], *, ignore_entity_types: set[str] | None = None) -> set[str]:
+    remaining_attachment_ids: set[str] = set()
+    if attachment_ids:
+        link_query = select(AttachmentLink.attachment_id).where(AttachmentLink.attachment_id.in_(attachment_ids))
+        if ignore_entity_types:
+            link_query = link_query.where(AttachmentLink.entity_type.notin_(ignore_entity_types))
+        remaining_attachment_ids.update(db.scalars(link_query))
+        remaining_attachment_ids.update(
+            value
+            for value in db.scalars(
+                select(HomeworkStudentStatus.attachment_id).where(HomeworkStudentStatus.attachment_id.in_(attachment_ids))
+            )
+            if value
+        )
+        remaining_attachment_ids.update(
+            value
+            for value in db.scalars(select(StudentEvent.attachment_id).where(StudentEvent.attachment_id.in_(attachment_ids)))
+            if value
+        )
+        remaining_attachment_ids.update(
+            value
+            for value in db.scalars(select(Arrangement.attachment_id).where(Arrangement.attachment_id.in_(attachment_ids)))
+            if value
+        )
+        for row in db.scalars(select(InteractionAnalysis)):
+            remaining_attachment_ids.update(str(value) for value in (row.attachment_ids_json or []) if value)
+            remaining_attachment_ids.update(_attachment_ids_from_value(row.structured_json))
+        for row in db.scalars(select(ClassOnboardingSession)):
+            remaining_attachment_ids.update(_attachment_ids_from_value(row.draft_json))
+            remaining_attachment_ids.update(_attachment_ids_from_value(row.field_evidence_json))
+        for proposal in db.scalars(select(WriteProposal)):
+            remaining_attachment_ids.update(_attachment_ids_from_value(proposal.payload_json))
+            remaining_attachment_ids.update(_attachment_ids_from_value(proposal.normalized_payload_json))
+            remaining_attachment_ids.update(_attachment_ids_from_value(proposal.preview_json))
+            remaining_attachment_ids.update(_attachment_ids_from_value(proposal.result_json))
+    return remaining_attachment_ids
+
+
+def hard_delete_class(db: Session, class_id: str, *, operator_id: str | None = None, operation: DeletionOperation | None = None) -> dict:
     cls = get_class(db, class_id, include_inactive=True)
     class_name = cls.name
     owner_user_id = cls.owner_user_id
@@ -208,6 +249,7 @@ def hard_delete_class(db: Session, class_id: str, *, operator_id: str | None = N
         if arrangement_ids:
             db.execute(delete(Arrangement).where(Arrangement.id.in_(arrangement_ids)))
         if exam_ids:
+            db.execute(delete(AnalysisCache).where(AnalysisCache.kind.in_([f"exam_statistics:{exam_id}" for exam_id in exam_ids])))
             db.execute(delete(Exam).where(Exam.id.in_(exam_ids)))
         if homework_ids:
             db.execute(delete(Homework).where(Homework.id.in_(homework_ids)))
@@ -228,39 +270,7 @@ def hard_delete_class(db: Session, class_id: str, *, operator_id: str | None = N
         db.delete(cls)
         db.flush()
 
-        remaining_attachment_ids: set[str] = set()
-        if attachment_ids:
-            remaining_attachment_ids.update(
-                db.scalars(select(AttachmentLink.attachment_id).where(AttachmentLink.attachment_id.in_(attachment_ids)))
-            )
-            remaining_attachment_ids.update(
-                value
-                for value in db.scalars(
-                    select(HomeworkStudentStatus.attachment_id).where(HomeworkStudentStatus.attachment_id.in_(attachment_ids))
-                )
-                if value
-            )
-            remaining_attachment_ids.update(
-                value
-                for value in db.scalars(select(StudentEvent.attachment_id).where(StudentEvent.attachment_id.in_(attachment_ids)))
-                if value
-            )
-            remaining_attachment_ids.update(
-                value
-                for value in db.scalars(select(Arrangement.attachment_id).where(Arrangement.attachment_id.in_(attachment_ids)))
-                if value
-            )
-            for row in db.scalars(select(InteractionAnalysis)):
-                remaining_attachment_ids.update(str(value) for value in (row.attachment_ids_json or []) if value)
-                remaining_attachment_ids.update(_attachment_ids_from_value(row.structured_json))
-            for row in db.scalars(select(ClassOnboardingSession)):
-                remaining_attachment_ids.update(_attachment_ids_from_value(row.draft_json))
-                remaining_attachment_ids.update(_attachment_ids_from_value(row.field_evidence_json))
-            for proposal in db.scalars(select(WriteProposal)):
-                remaining_attachment_ids.update(_attachment_ids_from_value(proposal.payload_json))
-                remaining_attachment_ids.update(_attachment_ids_from_value(proposal.normalized_payload_json))
-                remaining_attachment_ids.update(_attachment_ids_from_value(proposal.preview_json))
-                remaining_attachment_ids.update(_attachment_ids_from_value(proposal.result_json))
+        remaining_attachment_ids = referenced_attachment_ids(db, attachment_ids)
         orphan_attachment_ids = attachment_ids - remaining_attachment_ids
         orphan_attachments = (
             list(db.scalars(select(Attachment).where(Attachment.id.in_(orphan_attachment_ids)))) if orphan_attachment_ids else []
@@ -268,7 +278,16 @@ def hard_delete_class(db: Session, class_id: str, *, operator_id: str | None = N
         attachment_paths = [attachment.stored_path for attachment in orphan_attachments]
         for attachment in orphan_attachments:
             db.delete(attachment)
+        if operation is not None:
+            operation.resources_json = {**operation.resources_json, "attachment_paths": attachment_paths}
+            operation.phase = "files"
+            operation.result_json = {"class_id": class_id, "class_name": class_name, "deleted": True,
+                                     "owner_user_id": owner_user_id,
+                                     "deleted_counts": {**{k: len(v) for k, v in entity_ids_by_type.items() if v},
+                                                        "attachments": len(orphan_attachments)}}
         db.commit()
+        if operation is not None:
+            return operation.result_json
     except Exception:
         db.rollback()
         raise
@@ -402,10 +421,13 @@ def search_students(
     page: int,
     page_size: int,
     exact_name: bool = False,
+    student_no: str | None = None,
 ) -> dict:
     stmt = select(Student).where(Student.deleted_at.is_(None))
     if class_id:
         stmt = stmt.where(Student.class_id == class_id)
+    if student_no:
+        stmt = stmt.where(Student.student_no == student_no.strip())
     if query:
         if exact_name:
             stmt = stmt.where(Student.name == query)
@@ -417,7 +439,7 @@ def search_students(
     if status:
         stmt = stmt.where(Student.status == status)
     total = db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
-    items = list(db.scalars(stmt.order_by(Student.student_no).offset((page - 1) * page_size).limit(page_size)))
+    items = list(db.scalars(stmt.order_by(*student_order_by()).offset((page - 1) * page_size).limit(page_size)))
     result = {"items": items, "total": total, "page": page, "page_size": page_size}
     if exact_name and total > 1:
         result["ambiguous"] = True

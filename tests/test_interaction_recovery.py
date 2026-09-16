@@ -30,15 +30,16 @@ def test_full_roster_gender_fill_uses_two_reviewed_groups(client, db, sample, mo
     async def analyze_interaction(**kwargs):
         context = kwargs["context"]
         assert len(context["students"]) == 42
+        assert all("id" not in row for row in context["students"])
         assert next(row for row in context["students"] if row["student_no"] == "003")["gender"] == "女"
         groups = {"男": [], "女": []}
         for row in context["students"]:
             if not (row["gender"] or "").strip():
-                groups["男" if int(row["student_no"]) <= 21 else "女"].append(row["id"])
+                groups["男" if int(row["student_no"]) <= 21 else "女"].append(row["student_no"])
         return {"status": "ready", "confidence": 1, "reasons": ["范围和规则明确"], "operations": [
             {"operation_type": "student.update.batch", "confidence": 1, "reasons": ["按数值学号补充空值"],
-             "payload": {"class_id": cls.id, "student_ids": ids, "changes": {"gender": gender}, "only_if_empty": ["gender"]}}
-            for gender, ids in groups.items()
+             "payload": {"class_id": cls.id, "student_nos": nos, "changes": {"gender": gender}, "only_if_empty": ["gender"]}}
+            for gender, nos in groups.items()
         ]}
 
     monkeypatch.setattr(openclaw_bridge, "analyze_interaction", analyze_interaction)

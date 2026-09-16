@@ -45,7 +45,7 @@ openclaw gateway restart
 
 “账户设置 → 班级 Agent · 绑定与设置”提供班级独立模型设置和微信绑定，对话页仅保留会话级思考设置。主模型写入该班 `agents.list` runtime，网页和微信共用；图片模型只在该班网页图片消息上通过受控 `x-openclaw-model` 覆盖生效，避免修改全局 `agents.defaults.imageModel` 而影响其他班；语音识别模型使用 `provider/model` 调用 `openclaw infer audio transcribe`。浏览器录音只写入临时文件，转写结束后立即删除，文字仍需在输入框复核后发送。未选择服务端 STT 时继续使用 Web Speech API，不上传录音。候选来自 Gateway `models.list` 和 OpenClaw 音频 Provider 目录；不可用的主/图片模型及未配置凭据的 STT Provider 会被后端拒绝。
 
-JSON 提取默认走自动创建的轻量提取智能体（详见 [专属智能体与微信使用说明](class-agent-onboarding.md) §5.1）：服务启动和首次分析时，后端会通过 admin RPC 创建并校正 `classclaw-extractor` 的独立 runtime。该 runtime 显式保存模型、开启 fast mode，关闭思考、推理、记忆与技能，并以 `minimal` profile 加 `deny: [session_status]` 将可调用工具降为零；不会继承 Main 的 coding profile。清洗规范自动写入 `data/openclaw-agents/_extractor/AGENTS.md`。管理员在 Agent Studio 保存的文件会记录为自定义内容，后续自动检查不会覆盖；需要跟随 ClassClaw 新默认规则时，可在管理端恢复系统默认。因此 OpenClaw 侧必须启用 `admin-http-rpc`；未启用时后端自动回退主智能体。
+JSON 提取默认走自动创建的轻量提取智能体（详见 [专属智能体与微信使用说明](class-agent-onboarding.md) §5.1）：服务启动和首次分析时，后端会通过 admin RPC 创建并校正 `classclaw-extractor` 的独立 runtime。该 runtime 显式保存模型、开启 fast mode，按 `openclaw.extractor_thinking` 设置思考档位（默认 `off`，仅在配置变化时重启 Gateway），并关闭推理、记忆与技能，以 `minimal` profile 加 `deny: [session_status]` 将可调用工具降为零；不会继承 Main 的 coding profile。清洗规范自动写入 `data/openclaw-agents/_extractor/AGENTS.md`。管理员在 Agent Studio 保存的文件会记录为自定义内容，后续自动检查不会覆盖；需要跟随 ClassClaw 新默认规则时，可在管理端恢复系统默认。因此 OpenClaw 侧必须启用 `admin-http-rpc`；未启用时后端自动回退主智能体。
 
 回合守卫以 Agent、会话和 run ID 隔离，在进程内跨插件注册实例共享有时效的计数和参数哈希，防止嵌套提取加载插件后丢失状态。单条/批量提交失败会返回不可自动重试的结构化错误，本轮不允许重新分析、替换预览或重复提交；新预览仍需重新复核。班级默认工作区要求省略工具前自述，工具结束后再给结果。批量提取的主要等待在模型生成，优化方向（如短学生引用、更低延迟模型）需先做协议与质量验证，不得静默替换用户选择的模型或思考档位。
 
@@ -100,7 +100,7 @@ openclaw doctor
 
 1. OpenClaw 收到原始文字或微信消息；附件先用 `classclaw_upload_file` 保存原件和哈希。
 2. 调用 `classclaw_analyze_interaction`，传入未经删改的原文、`channel`、稳定消息 id、已知 `class_id` 和附件 ids。
-3. 后端创建 `interaction_analysis`，并通过 Gateway Responses API 让 OpenClaw 在只读上下文中完成意图识别、姓名/班级匹配和字段清洗。
+3. 后端创建 `interaction_analysis`，并通过 Gateway Responses API 让 OpenClaw 在只读上下文中完成意图识别、学生按班内学号匹配和字段清洗。上下文名单只含学号、姓名、性别和状态，不携带学生 UUID；分析输出的学生引用（`student_no`/`student_nos`，座位 layout 同）由后端在绑定班级内确定性解析为内部 UUID，跨班或不存在的引用直接拒绝。
 4. 所有分析顶层及每项数据都必须返回 `confidence` 和非空 `reasons`，统一门槛为 0.75。低于门槛，或同名、日期、科目、分数、考勤时段、批量范围等不明确时，返回 `needs_clarification`、具体 `rejected_reasons` 和问题；低置信度数据不会生成 proposal。
 5. 如果可确定，后端用 Pydantic schema 校验每个 operation，生成一个或多个 `pending_review` proposal；此时仍未改变业务表。
 6. OpenClaw 展示对象、日期、关键字段、数量和实质性警告。用户修改信息时要重新分析或重建 proposal，不能确认旧版本。
@@ -109,7 +109,7 @@ openclaw doctor
 
 `classclaw_register_message` 和 `classclaw_propose_write` 保留给兼容流程及已经确定的结构化操作。微信、自然语言、粘贴名单、OCR 和附件不得用它们绕过 `classclaw_analyze_interaction`。
 
-班级档案批量补充直接分析原文，上下文提供完整名单及现有 `gender`、`status`。相同变更用 `student.update.batch` 分组，例如按学号数值分别生成男女两组，仅补空值须带 `only_if_empty:["gender"]`。预览包含完整名单和变更字段旧值，确认时重新校验；任一组档案已变更则整批回滚。这样避免逐人生成大量 operation 导致输出截断或超过单次 10 个预览的限制。
+班级档案批量补充直接分析原文，上下文提供完整名单及现有 `gender`、`status`（按学号排序，不含内部 UUID）。相同变更用 `student.update.batch` 分组，按 `student_nos` 引用学生，例如按学号数值分别生成男女两组，仅补空值须带 `only_if_empty:["gender"]`。预览包含完整名单和变更字段旧值，确认时重新校验；任一组档案已变更则整批回滚。这样避免逐人生成大量 operation 导致输出截断或超过单次 10 个预览的限制。
 
 `classclaw_read` 的名单分页参数为 `page`、`page_size`，必须传到 REST 接口；分析查询返回 `{analysis, proposals}`，归属从 `analysis.class_id` 校验。分析取消会标记 `failed`，不会遗留永久 `analyzing`。工具分析错误保留真实 `analysis_id`（若已返回），并明确禁止本轮自动重试和绕过分析写入。
 
@@ -131,6 +131,17 @@ ClassClaw 不直接连接微信；微信连接器属于 OpenClaw。只要微信�
 4. 重放同一个微信消息 id。预期：返回原 analysis/proposal，不重复生成业务记录。
 
 用户修改任一字段时，不应确认旧 proposal，而应取消并重新生成预览。
+
+### 班级删除与微信清理
+
+兼容层 `.4` 的取消响应包含 `accountIds`：覆盖已完成扫码保存、但 ClassClaw 尚未写入路由的账号。后端先将这些 ID 存入删除记录，再核对归属并登出；缺少该字段时拒绝继续删除。原始微信账号别名与规范化 ID 按同一账号检查共享引用。
+
+班级删除会先停止该班的活动再删业务数据，依赖兼容层与 Gateway 的以下能力：
+
+1. 兼容层 `2.4.6-classclaw.4` 提供私有 `POST /api/v1/classclaw/wechat-login` 的 `cancel` 动作（按班级取消未完成扫码，并阻止该班再次发起登录）和 `channels.logout` 的 `gateway.logoutAccount` 实现（停用账号监控并删除 `accounts.json` 注册、账号 JSON、同步状态、上下文令牌和 `allowFrom` 文件）。
+2. 后端在 `preflight` 阶段读取 `config.get` 的 `hash` 并核对归属，`gateway` 阶段依次执行 `cancel`、`channels.logout`、`tasks.list` 空闲校验，然后用 `baseHash` 提交 `config.patch` 并回读校验。
+3. `agentClasses` 与频道账号必须用显式 `null` 删除；把它们放进 `replacePaths` 不会生效（该字段只替换数组）。
+4. 共享微信账号、越界路径、配置版本冲突和未结束的 `tasks.list` 任务都会拒绝删除并保留可重试记录；升级后端前必须先更新兼容层，否则删除会停在 `WECHAT_PLUGIN_UPDATE_REQUIRED`，业务数据尚未删除。
 
 ## 4. OpenClaw 对话不能创建班级
 
@@ -158,6 +169,8 @@ ClassClaw 不直接连接微信；微信连接器属于 OpenClaw。只要微信�
 每次 AI 请求都带随机 `X-ClassClaw-AI-Task-ID`。按钮取消或前端超时时，网页会在终止原请求之外调用 `POST /api/v1/ai/tasks/{task_id}/cancel`；后端以当前登录主体校验任务归属，设置进程内取消事件，并取消正在执行的 HTTPX 请求。OpenClaw Responses API 会在上游连接关闭时中止对应 run。取消端点只改变进程内任务状态，特意使用只读数据库会话，避免被原 AI POST 长时间占用的单写者锁阻塞。这个机制依赖项目规定的单进程、单 Uvicorn worker；改为多 worker 前必须换成跨进程任务注册表。
 
 班级对话页的“停止”按钮也使用同一取消机制，只停止选中对话的当前请求。新建对话会立即加入列表，可查看处理中、已回复、失败和未读回复状态。每个对话保留独立 UUID、消息、输入草稿、待发送附件与请求控制器；同一对话同时只允许一个请求，不同对话可以分别等待，乱序回复只写回原对话。
+
+对话列表每项提供“删除”，确认后移除本标签页内存中的消息、草稿与待发送附件，并取消该对话的在途请求；迟到的能力检查、流式片段和最终回复不能恢复已删除内容。删除当前对话后切到相邻对话，删除最后一项后自动新建空白对话；其他对话不受影响。离开页面或退出登录会关闭尚未确认的删除弹窗。此操作不撤销已保存的业务数据、不删除已上传附件，也不删除 Gateway 保存的会话历史。
 
 网页聊天 POST 支持 multipart 字段 `stream=true`（网页默认使用）及可选 `thinking_level`。省略思考强度时使用 `openclaw.class_agent_thinking`；显式设置仅属于本会话，详见 [配置说明](configuration.md)。后端生成 `agent:{agent_id}:openresponses-user:classclaw-web-chat:{class_id}:{sender_id}:{conversation_id}`，通过 `x-openclaw-session-key` 精确关联会话；客户端不能自行指定 Gateway key。
 
