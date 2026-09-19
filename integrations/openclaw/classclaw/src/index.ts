@@ -9,11 +9,14 @@ import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import type { OpenClawPluginDefinition } from "openclaw/plugin-sdk/plugin-entry";
 import { sharedTurnGuard, toolFailure, toolResult as result, validateReadParams } from "./toolRuntime.js";
 import { sessionThinkingHandler } from "./sessionThinking.js";
+import { chatReasoningHandler } from "./chatReasoning.js";
+import { memoryPromptHook } from "./agentMemory.js";
 
 type JsonObject = Record<string, unknown>;
 type ClassClawConfig = { baseUrl: string; apiToken?: string; timeoutMs: number; allowedUploadRoots: string[]; agentClasses: Record<string, string> };
 
 const operationTypes = [
+  "memory.upsert", "memory.forget",
   "student.create", "student.update", "student.update.batch", "seating.update",
   "attendance.set", "homework.create", "homework.status.batch", "student_event.create",
   "student_event.batch", "exam.create", "score.batch", "lesson_override.create", "arrangement.create",
@@ -21,6 +24,7 @@ const operationTypes = [
 ] as const;
 
 const readResources = [
+  "agent_memory",
   "classes", "class_summary", "student_search", "student_detail", "daily_timetable", "morning_briefing",
   "student_analysis", "class_analysis", "attention_students", "write_proposal", "interaction_analysis", "reminder_delivery",
 ] as const;
@@ -163,9 +167,15 @@ const plugin: OpenClawPluginDefinition = definePluginEntry({
   register(api) {
     const config = resolveConfig(api.pluginConfig);
     const client = createClient(config);
+    api.on("before_prompt_build", memoryPromptHook(config.agentClasses, createClient({ ...config, timeoutMs: 3_000 }).get));
     api.registerHttpRoute({
       path: "/api/v1/classclaw/web-session-thinking", auth: "gateway", match: "exact",
       gatewayRuntimeScopeSurface: "trusted-operator", handler: sessionThinkingHandler(config.agentClasses),
+    });
+    api.registerHttpRoute({
+      path: "/api/v1/classclaw/web-chat-reasoning", auth: "gateway", match: "exact",
+      gatewayRuntimeScopeSurface: "trusted-operator",
+      handler: chatReasoningHandler(config.agentClasses, (listener) => api.runtime.events.onAgentEvent(listener)),
     });
     const guard = sharedTurnGuard();
     const turnKey = (context: { agentId?: string; sessionKey?: string; runId?: string }, runId?: string) =>
@@ -210,7 +220,7 @@ const plugin: OpenClawPluginDefinition = definePluginEntry({
     api.registerTool({
       name: "classclaw_analyze_interaction",
       label: "用 OpenClaw 清洗 ClassClaw 输入",
-      description: "Analyze the original write request once. Includes the full class roster and current genders; no preliminary roster enumeration needed. Returns validated proposals or clarification. On timeout, in-progress or failure, explain once and end the turn; do not retry, poll or bypass analysis.",
+      description: "Analyze the original write request once, including reusable schedules, preferences and facts worth remembering even without an explicit remember command. Includes confirmed class memory and the full roster. Returns validated previews or clarification; memory is saved only after confirmation. On failure, explain and end the turn; do not retry or bypass analysis.",
       parameters: Type.Object({
         channel: Type.String(), external_message_id: Type.Optional(Type.String()), sender_id: Type.Optional(Type.String()),
         message_type: Type.Optional(Type.String()), text: Type.Optional(Type.String()),
@@ -263,6 +273,7 @@ const plugin: OpenClawPluginDefinition = definePluginEntry({
         }
         let path: string;
         switch (values.resource) {
+          case "agent_memory": path = `/api/v1/classes/${encodeURIComponent(String(values.class_id ?? ""))}/agent-memories${query(values, ["date", "q"])}`; break;
           case "classes": path = `/api/v1/classes${query(values, ["page", "page_size"])}`; break;
           case "class_summary": path = `/api/v1/classes/${encodeURIComponent(String(values.class_id ?? ""))}/summary`; break;
           case "student_search": path = `/api/v1/students${query(values, ["class_id", "q", "exact_name", "student_no", "page", "page_size"])}`; break;

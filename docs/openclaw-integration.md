@@ -176,7 +176,11 @@ ClassClaw 不直接连接微信；微信连接器属于 OpenClaw。只要微信�
 
 当前 Gateway 的 Responses `reasoning` 字段未传给执行器，管理员 HTTP RPC 也不放行 `sessions.patch`。因此 ClassClaw 插件提供固定、Gateway 鉴权的私有 `POST /api/v1/classclaw/web-session-thinking`：仅接受 `key` 和 `thinkingLevel`，校验 key 是已绑定班级的网页会话后固定分派 `sessions.patch`；不开放会话删除、任意 RPC 或任意 Agent 配置。浏览器只调用 ClassClaw，绝不获取 Gateway Token。更新版本后须重新构建插件，并在无进行中对话时重启 Gateway 和 ClassClaw；缺少新插件端点会返回 `CHAT_PLUGIN_UPDATE_REQUIRED`。
 
-流式响应为 SSE：`delta` 帧使用统一成功 envelope，`data.text` 为公开回复片段；`done` 的 `data` 与旧 JSON 回复一致；`error` 使用统一错误 envelope 和 `request_id`。心跳仅使用 SSE 注释，不展示推理文本或工具参数。仅收到完整 `response.completed` 才算完成，断流/超时保留并标记部分回复，不能据此声称业务已执行。旧客户端不传 `stream` 仍返回 JSON。取消和超时覆盖整个响应体读取周期，任务归属与站内切页行为不变。新增隐私安全的流式总耗时与首片段耗时日志。
+流式响应为 SSE：`delta` 帧使用统一成功 envelope，`data.text` 为回复正文片段；`thinking` 帧的 `data` 为 `{state:"started",level}` 或 `{state:"delta",text}`，与正文分开显示；`done` 的 `data` 与旧 JSON 回复一致；`error` 使用统一错误 envelope 和 `request_id`。心跳仅使用 SSE 注释，不转发工具参数。仅收到完整 `response.completed` 才算完成，断流/超时保留并标记部分回复与思考内容，不能据此声称业务已执行。旧客户端不传 `stream` 仍返回 JSON。取消和超时覆盖整个响应体读取周期，任务归属与站内切页行为不变。流式总耗时与首片段耗时日志不含消息或思考原文。
+
+[Gateway 标准 Responses 流](https://docs.openclaw.ai/gateway/openresponses-http-api) 不提供独立思考事件。ClassClaw 插件增加 Gateway 鉴权的只读 `POST /api/v1/classclaw/web-chat-reasoning`，只接受后端生成的已绑定班级网页会话 `key`；订阅 `runtime.events.onAgentEvent`，仅投影该会话的 `thinking` 文本和生命周期结束信号。后端在发起 Responses 前建立订阅，再用 `response.created` 的响应 ID 匹配具体 run，排除上一轮/其他运行；浏览器拿不到 Gateway key、run ID、工具事件或管理 Token。该端点不修改 `reasoningDefault`、会话或 Agent 配置，也不注册模型工具。
+
+思考订阅不落库、不写日志；只维护连接期间的文本边界，限制体积、背压和最长 180 秒生命周期。主请求完成/取消时关闭订阅，慢消费者或思考流中断不影响正文完成判定。缺少端点、旧 Gateway 不提供事件或模型不返回思考文本时，网页保留计时并明确显示无可展示内容。部署此功能须重新构建 ClassClaw 插件并在无进行中对话时重启 Gateway、ClassClaw。
 
 插件将工具执行结果与业务状态分离：`details={success:true,data:...}`，读取/取消一个 `cancelled` 预览不再被误判为执行失败。发送给模型的结果删除预览中重复的原始/归一化 payload，并保留完整预览、ID、revision、有效期及澄清证据；原数据库记录不变，不自动清除历史会话或未确认预览。
 
@@ -210,7 +214,13 @@ POST  /api/v1/classes/{class_id}/agent-binding/wait
 
 ## 支持范围与原则
 
-当前 proposal 白名单覆盖班级/学生、座位、考勤、作业、学生事件、考试/成绩、调课、安排和值日确认。后续新写操作必须同时增加 Pydantic 校验、预览摘要、固定执行器、测试和 Skill 文档，不能增加“任意接口调用”工具。
+当前 proposal 白名单覆盖班级/学生、座位、考勤、作业、学生事件、考试/成绩、调课、安排、值日确认和班级 Agent 记忆（`memory.upsert`/`memory.forget`）。后续新写操作必须同时增加 Pydantic 校验、预览摘要、固定执行器、测试和 Skill 文档，不能增加“任意接口调用”工具。
+
+### 班级 Agent 记忆
+
+Agent 从对话中提炼可重复使用的作息（`schedule`，必须含起止时间和适用星期）、固定偏好（`preference`）和其他长期约定（`fact`），统一走分析 → 预览（展示记住/更正/忘记的具体变化）→ 确认流程，确认前不写入。`class_agent_memories` 按班隔离、上限 100 条，只保存简短事实，不保存消息原文、凭据或学生敏感档案；名称与别名做归一化匹配，重复事实合并到原条目（别名并入），完全相同则返回 `MEMORY_UNCHANGED` 不重复保存。“今天/本周临时调整”必须另存带 `valid_from`/`valid_to` 的同名条目：有效期内覆盖同名长期规则，到期后自动恢复长期规则，且不得用 `memory_id` 改写长期规则的有效期（`MEMORY_SCOPE_CONFLICT`）。更正需用 `memory_id` 明确目标，名称/别名与多条记忆范围重叠时拒绝并要求澄清（`MEMORY_CONFLICT`）；批量确认前冻结全部记忆预览，预览后记忆发生变化返回 `MEMORY_STALE`。
+
+插件通过 `before_prompt_build` 钩子（`agentMemory.ts`，需启用 `hooks.allowConversationAccess`/`allowPromptInjection`，配置运行时已自动写入）在每轮对话前注入本班已确认记忆快照；快照不缓存，更正和忘记下一轮即生效，读取失败时提示改用 `classclaw_read` 的 `agent_memory` 复核，不沿用历史旧值。教师可在账户设置中查看本班已保存的记忆（含已过期标记），更正或忘记仍在对话中完成。
 
 OpenClaw 能可靠读取的任何类型都可以进入流程。对于加密文件、损坏文件或缺少解析器的专有格式，正确行为是保留原附件并请用户提供密码或导出为 PDF、图片、CSV/XLSX、音频或文本，而不是猜测内容。
 

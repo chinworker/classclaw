@@ -23,7 +23,7 @@ from app.models.entities import (
     WriteProposal,
 )
 from app.schemas.domain import InteractionAnalyzeCreate, WriteProposalCreate
-from app.services import approval, openclaw_bridge
+from app.services import agent_memory, approval, openclaw_bridge
 from app.services import operations as operations_service
 from app.services.ai_confidence import evaluate_ai_output
 from app.services.student_ordering import student_order_by
@@ -75,6 +75,7 @@ def _context(db: Session, class_id: str | None) -> dict[str, Any]:
             for row in db.scalars(select(Student).where(Student.id.in_({item.student_id for item in recent_duty})))
         } if recent_duty else {}
         result["selected_class"] = {"id": cls.id, "name": cls.name, "grade": cls.grade}
+        result["agent_memory"] = agent_memory.read(db, class_id)
         result["students"] = [{"student_no": row.student_no, "name": row.name, "gender": row.gender,
                                "status": row.status} for row in students]
         result["subjects"] = [{"name": row.name, "teacher": row.teacher, "default_full_score": row.default_full_score} for row in subjects]
@@ -167,6 +168,7 @@ async def analyze(db: Session, data: InteractionAnalyzeCreate) -> dict[str, Any]
             warnings.append("单次最多生成 10 个写入预览，其余操作未处理")
             operations = operations[:10]
         accepted_operations: list[dict[str, Any]] = []
+        unchanged_memories = 0
         for index, operation in enumerate(operations):
             if not isinstance(operation, dict) or not isinstance(operation.get("payload"), dict):
                 rejected_reasons.append(f"第 {index + 1} 项数据格式无效")
@@ -195,6 +197,9 @@ async def analyze(db: Session, data: InteractionAnalyzeCreate) -> dict[str, Any]
                 proposal_ids.append(proposal.id)
                 accepted_operations.append(operation)
             except AppError as exc:
+                if exc.code == "MEMORY_UNCHANGED":
+                    unchanged_memories += 1
+                    continue
                 rejected_reasons.append(f"{operation_decision['summary']}：{exc.message}")
 
         rejected_reasons = list(dict.fromkeys(rejected_reasons))
@@ -202,6 +207,9 @@ async def analyze(db: Session, data: InteractionAnalyzeCreate) -> dict[str, Any]
             questions.append("请根据以上问题补充或更正数据后重新发送")
         structured["operations"] = accepted_operations
         structured["rejected_reasons"] = rejected_reasons
+        if unchanged_memories and not proposal_ids and not rejected_reasons:
+            structured["status"] = "no_action"
+            structured["summary"] = "这些内容已经记住，无需重复保存"
 
         analysis.structured_json = structured
         analysis.proposal_ids_json = proposal_ids

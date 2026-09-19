@@ -66,6 +66,63 @@ function setup() {
   return { store, scope, calls, first: store.selectedConversation(scope) };
 }
 
+test("reasoning follows the originating turn, pauses on answers and freezes on failure", async () => {
+  const { store, scope, first, calls } = setup();
+  store.setThinkingLevel(scope, first, "high");
+  const run = store.sendMessage(scope, first, "分析");
+  await tick();
+  const partial = first.messages.at(-1);
+  assert.equal(partial.thinking.active, true);
+  calls[0].options.onThinking({ state: "delta", text: "第一段思考" });
+  const second = store.createConversation(scope);
+  calls[0].options.onThinking({ state: "delta", text: "第二段" });
+  assert.equal(partial.thinking.text, "第一段思考第二段");
+  assert.equal(second.messages.length, 0);
+  calls[0].options.onDelta("正文");
+  assert.equal(partial.thinking.active, false);
+  calls[0].options.onThinking({ state: "delta", text: "继续思考" });
+  assert.equal(partial.thinking.active, true);
+  calls[0].reject(Object.assign(new Error("连接断开"), { code: "STREAM_INTERRUPTED" }));
+  await run;
+  assert.equal(partial.thinking.active, false);
+  assert.equal(partial.thinking.interrupted, true);
+  assert.equal(partial.incomplete, true);
+  assert.equal(partial.text, "正文");
+  const snapshot = JSON.stringify(partial);
+  calls[0].options.onThinking({ state: "delta", text: "过期事件" });
+  assert.equal(JSON.stringify(partial), snapshot);
+});
+
+for (const action of ["stop", "logout", "delete"]) test(`${action} discards late reasoning and stops its timer`, async () => {
+  const { store, scope, first, calls } = setup();
+  store.setThinkingLevel(scope, first, "high");
+  const run = store.sendMessage(scope, first, "分析");
+  await tick();
+  calls[0].options.onThinking({ state: "delta", text: "已有内容" });
+  const partial = first.messages.at(-1);
+  if (action === "stop") store.stopMessage(first);
+  else if (action === "delete") store.deleteConversation(scope, first.id);
+  else store.clear();
+  calls[0].options.onThinking({ state: "delta", text: "迟到内容" });
+  await run;
+  assert.equal(partial.thinking.text, "已有内容");
+  if (action === "stop") assert.equal(partial.thinking.active, false);
+  else assert.equal(scope.conversations.includes(first), false);
+});
+
+test("server-resolved thinking can correct a stale default without affecting another turn", async () => {
+  const { store, scope, first, calls } = setup();
+  const run = store.sendMessage(scope, first, "跟随默认");
+  await tick();
+  calls[0].options.onThinking({ state: "started", level: "medium" });
+  assert.equal(first.messages.at(-1).thinking.active, true);
+  calls[0].options.onThinking({ state: "started", level: "off" });
+  calls[0].options.onThinking({ state: "delta", text: "关闭后不展示" });
+  assert.equal(first.messages.at(-1).thinking, undefined);
+  calls[0].resolve({ reply: "完成" });
+  await run;
+});
+
 test("thinking overrides belong to individual conversations and are frozen for a running turn", async () => {
   const { store, scope, first, calls } = setup();
   assert.equal(first.thinkingLevel, null);

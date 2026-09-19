@@ -20,6 +20,10 @@ npm run plugin:validate
 
 网页流式对话的独立思考设置需要此版本插件。`/api/v1/classclaw/web-session-thinking` 只接受 Gateway 鉴权的后端请求，只能修改绑定班级网页会话的 `thinkingLevel`；不是智能体工具，也不开放通用会话 RPC。修改后须重新构建插件，并在无进行中对话时重启 Gateway。工具返回采用显式成功 envelope，避免将 `cancelled` 等业务状态当成执行错误；完整预览和确认信息保留，重复 payload 不再进入模型上下文。
 
+网页的可折叠思考内容通过只读 `/api/v1/classclaw/web-chat-reasoning` SSE 订阅返回，同样要求 Gateway 鉴权，仅接受绑定班级的网页会话 key。只转发该会话的思考文本和 run 结束信号，后端继续用 Responses run ID 隔离具体请求；不转发工具参数，不修改会话推理可见性或 Agent 全局默认，不保存文本。断开连接、背压或最长 180 秒后释放监听器；未安装新插件或模型不返回思考内容时，正文仍可正常回复。
+
+班级长期记忆（作息、固定偏好和约定）由插件的 `before_prompt_build` 钩子每轮从后端读取已确认快照注入，需要 Gateway 配置 `plugins.entries.classclaw.hooks.allowConversationAccess` 与 `allowPromptInjection`（班级 Agent 配置运行时自动写入）。快照只是数据、不缓存，确认后的更正与忘记下一轮即生效；读取失败时注入明确提示，要求用 `classclaw_read` 的 `agent_memory` 资源复核而不是沿用旧值。记忆的新增、更正和忘记一律经 `classclaw_analyze_interaction` 与预览确认流程，插件不直接写记忆。
+
 ## 安装到 OpenClaw
 
 先启动 ClassClaw 后端，再从仓库根目录运行：

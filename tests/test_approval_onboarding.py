@@ -768,12 +768,12 @@ def test_batch_confirmation_rolls_back_every_write_when_one_fails(client, db, sa
     original_execute = approval_service._execute
     calls = 0
 
-    def fail_second(database, proposal):
+    def fail_second(database, proposal, **kwargs):
         nonlocal calls
         calls += 1
         if calls == 2:
             raise AppError("TEST_BATCH_FAILURE", "模拟第二条写入失败", 409)
-        return original_execute(database, proposal)
+        return original_execute(database, proposal, **kwargs)
 
     monkeypatch.setattr(approval_service, "_execute", fail_second)
     response = client.post("/api/v1/write-proposals/confirm-batch", json={

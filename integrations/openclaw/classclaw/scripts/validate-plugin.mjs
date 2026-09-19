@@ -32,9 +32,12 @@ if (!tools.some((item) => item.name === "classclaw_commit_write" && item.optiona
 if (!tools.some((item) => item.name === "classclaw_commit_writes" && item.optional)) {
   throw new Error("classclaw_commit_writes must be registered as an optional tool");
 }
-if (JSON.stringify(hooks.sort()) !== JSON.stringify(["after_tool_call", "before_tool_call"])) throw new Error("Class scope and turn guard hooks are required");
-if (routes.length !== 1 || routes[0].auth !== "gateway" || routes[0].path !== "/api/v1/classclaw/web-session-thinking") {
-  throw new Error("Only the authenticated, fixed web-session thinking route is allowed");
+if (JSON.stringify(hooks.sort()) !== JSON.stringify(["after_tool_call", "before_prompt_build", "before_tool_call"])) throw new Error("Class scope, memory and turn guard hooks are required");
+if (routes.length !== 2 || routes.some((route) => route.auth !== "gateway")
+  || JSON.stringify(routes.map((route) => route.path).sort()) !== JSON.stringify([
+    "/api/v1/classclaw/web-chat-reasoning", "/api/v1/classclaw/web-session-thinking",
+  ])) {
+  throw new Error("Only the authenticated session-thinking and read-only reasoning routes are allowed");
 }
 if (!manifest.contracts?.gatewayMethodDispatch?.includes("authenticated-request")) throw new Error("Authenticated dispatch contract is required");
 for (const skill of manifest.skills ?? []) await access(resolve(root, skill, "SKILL.md"));

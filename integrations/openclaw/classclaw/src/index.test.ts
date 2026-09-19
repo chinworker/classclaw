@@ -188,7 +188,7 @@ describe("classclaw plugin", () => {
       pluginConfig: { baseUrl: "http://127.0.0.1:8000" },
       registerHttpRoute(route: { auth: string; path: string }) {
         expect(route.auth).toBe("gateway");
-        expect(route.path).toBe("/api/v1/classclaw/web-session-thinking");
+        expect(["/api/v1/classclaw/web-session-thinking", "/api/v1/classclaw/web-chat-reasoning"]).toContain(route.path);
       },
       registerTool(tool: { name: string } | ((context: object) => { name: string })) {
         const resolved = typeof tool === "function" ? tool({ agentId: "class-agent", sessionKey: "session-1" }) : tool;
@@ -204,7 +204,7 @@ describe("classclaw plugin", () => {
     expect(tools).not.toContain("classclaw_direct_write");
     expect(tools).not.toContain("classclaw_onboarding_start");
     expect(tools).not.toContain("classclaw_onboarding_update");
-    expect(hooks).toEqual(["after_tool_call", "before_tool_call"]);
+    expect(hooks).toEqual(["before_prompt_build", "after_tool_call", "before_tool_call"]);
   });
 
   it("schedules committed reminders as proactive agent turns", async () => {

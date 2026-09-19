@@ -82,3 +82,18 @@ test("a buffered JSON response remains compatible", async () => {
   const value = await api("/chat", { onDelta() { assert.fail("JSON must not be a delta"); } });
   assert.equal(value.reply, "完整回复");
 });
+
+test("thinking events remain separate from answer text and do not complete an interrupted stream", async () => {
+  const server = endpoint();
+  const thinking = [], deltas = [];
+  const run = api("/chat", { onDelta: (text) => deltas.push(text), onThinking: (event) => thinking.push(event) });
+  const rejected = assert.rejects(run, (error) => error.code === "STREAM_INTERRUPTED");
+  await tick();
+  server.send(frame("thinking", { success: true, data: { state: "started", level: "high" } }));
+  server.send(frame("thinking", { success: true, data: { state: "delta", text: "思考片段" } }));
+  server.send(frame("delta", { success: true, data: { text: "正文" } }));
+  server.close();
+  await rejected;
+  assert.deepEqual(deltas, ["正文"]);
+  assert.deepEqual(thinking, [{ state: "started", level: "high" }, { state: "delta", text: "思考片段" }]);
+});

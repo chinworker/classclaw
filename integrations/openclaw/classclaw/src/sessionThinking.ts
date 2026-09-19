@@ -5,14 +5,19 @@ const levels = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "ada
 const uuid = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
 const webKey = new RegExp(`^agent:([a-z0-9_-]{1,100}):openresponses-user:classclaw-web-chat:(${uuid}):([a-z0-9_-]{1,100}):(${uuid})$`);
 
+export function validateWebSessionKey(key: unknown, agentClasses: Record<string, string>): string {
+  const match = typeof key === "string" ? webKey.exec(key) : null;
+  if (!match || agentClasses[match[1]] !== match[2]) throw new Error("Only bound ClassClaw web-chat sessions are allowed");
+  return key as string;
+}
+
 export function validateThinkingRequest(body: unknown, agentClasses: Record<string, string>) {
   if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("Expected an object");
   const row = body as Record<string, unknown>;
   if (Object.keys(row).some((key) => !["key", "thinkingLevel"].includes(key))) throw new Error("Only key and thinkingLevel are allowed");
-  const match = typeof row.key === "string" ? webKey.exec(row.key) : null;
-  if (!match || agentClasses[match[1]] !== match[2]) throw new Error("Only bound ClassClaw web-chat sessions may be changed");
+  const key = validateWebSessionKey(row.key, agentClasses);
   if (typeof row.thinkingLevel !== "string" || !levels.has(row.thinkingLevel)) throw new Error("Unsupported thinking level");
-  return { key: row.key as string, thinkingLevel: row.thinkingLevel };
+  return { key, thinkingLevel: row.thinkingLevel };
 }
 
 export function thinkingFailure(error: { code?: string; message?: string } | undefined) {

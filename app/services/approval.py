@@ -48,12 +48,15 @@ from app.schemas.domain import (
     WriteProposalCreate,
 )
 from app.schemas.student_batch import StudentBatchUpdate
-from app.services import academic, class_student, deletions, duty, operations, seating, student_batch, student_refs, timetable
+from app.schemas.agent_memory import MemoryForget, MemoryUpsert
+from app.services import academic, agent_memory, class_student, deletions, duty, operations, seating, student_batch, student_refs, timetable
 from app.services.common import audit, entity_dict
 from app.services.openclaw_provisioning import agent_name_for_class
 from app.utils.time import now
 
 SUPPORTED_OPERATIONS = {
+    "memory.upsert",
+    "memory.forget",
     "class.onboarding.commit",
     "student.create",
     "student.update",
@@ -209,6 +212,8 @@ def normalize_and_preview(operation_type: str, payload: dict, evidence: list[dic
     if operation_type == "class.onboarding.commit":
         return _onboarding_preview(payload, evidence)
     specs: dict[str, tuple[Any, str]] = {
+        "memory.upsert": (MemoryUpsert, "记住或更正班级约定"),
+        "memory.forget": (MemoryForget, "忘记班级约定"),
         "student.create": (StudentCreate, "新增学生"),
         "attendance.set": (AttendanceSet, "登记考勤"),
         "homework.create": (HomeworkCreate, "创建作业"),
@@ -323,6 +328,8 @@ def create_proposal(db: Session, data: WriteProposalCreate, *, bound_class_id: s
     normalized, preview = normalize_and_preview(data.operation_type, resolved_payload, evidence)
     if data.operation_type == "student.update.batch":
         normalized, preview = student_batch.prepare(db, normalized, preview)
+    if data.operation_type in {"memory.upsert", "memory.forget"}:
+        normalized, preview = agent_memory.prepare(db, data.operation_type, normalized, preview)
     preview = _humanize_preview(db, data.operation_type, normalized, preview)
     obj = WriteProposal(
         operation_type=data.operation_type,
@@ -420,8 +427,10 @@ def _execute_onboarding(db: Session, proposal: WriteProposal) -> dict:
     return {"class_id": cls.id, "class_name": cls.name, "agent_binding_id": binding.id, "agent_status": binding.status, "student_count": len(data["students"]), "subject_count": len(data["subjects"]), "period_count": len(data["periods"]), "timetable_item_count": len(data["base_timetable"])}
 
 
-def _execute(db: Session, proposal: WriteProposal) -> Any:
+def _execute(db: Session, proposal: WriteProposal, *, memory_prevalidated: bool = False) -> Any:
     op, p = proposal.operation_type, proposal.normalized_payload_json
+    if op in {"memory.upsert", "memory.forget"}:
+        return agent_memory.execute(db, p, prevalidated=memory_prevalidated)
     if op == "class.onboarding.commit":
         return _execute_onboarding(db, proposal)
     if op == "student.create":
@@ -504,9 +513,10 @@ def _validate_confirmation(
     return True
 
 
-def _complete_proposal(db: Session, proposal: WriteProposal, *, confirmed_by: str, confirmation_note: str | None) -> None:
+def _complete_proposal(db: Session, proposal: WriteProposal, *, confirmed_by: str, confirmation_note: str | None,
+                       memory_prevalidated: bool = False) -> None:
     before = entity_dict(proposal)
-    result = _execute(db, proposal)
+    result = _execute(db, proposal, memory_prevalidated=memory_prevalidated)
     timestamp = now()
     proposal.status = "completed"
     proposal.confirmed_by = confirmed_by
@@ -554,8 +564,11 @@ def confirm_proposals_batch(db: Session, data: WriteProposalBatchConfirm) -> lis
         )
     ]
     try:
+        agent_memory.validate_batch(db, [proposal.normalized_payload_json for proposal in executable
+                                        if proposal.operation_type in {"memory.upsert", "memory.forget"}])
         for proposal in executable:
-            _complete_proposal(db, proposal, confirmed_by=data.confirmed_by, confirmation_note=data.confirmation_note)
+            _complete_proposal(db, proposal, confirmed_by=data.confirmed_by, confirmation_note=data.confirmation_note,
+                               memory_prevalidated=True)
         db.commit()
     except Exception:
         db.rollback()

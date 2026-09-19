@@ -45,6 +45,7 @@ export function toolFailure(error: unknown, operation: "analysis" | "commit" = "
 }
 
 const requiredReadFields: Record<string, string[]> = {
+  agent_memory: ["class_id"],
   class_summary: ["class_id"], student_search: ["class_id"],
   daily_timetable: ["class_id"], morning_briefing: ["class_id"],
   class_analysis: ["class_id"], attention_students: ["class_id"], write_proposal: ["proposal_id"],

@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.core.errors import AppError
 from app.models.entities import Attachment
 from app.services import openclaw_bridge, openclaw_provisioning, operations
+from app.services.agent_reasoning import ThinkingHandler
 from app.services.agent_stream import DeltaHandler
 
 MAX_CHAT_FILES = 8
@@ -70,6 +71,7 @@ async def send_message(
     cancelled: Callable[[], Awaitable[bool]] | None = None,
     thinking_level: str | None = None,
     on_delta: DeltaHandler | None = None,
+    on_thinking: ThinkingHandler | None = None,
 ) -> dict[str, Any]:
     """Send one authenticated web turn to the class-scoped OpenClaw agent."""
     normalized_conversation_id = _conversation_id(conversation_id)
@@ -102,6 +104,7 @@ async def send_message(
         cancelled=cancelled,
         thinking_level=thinking_level,
         on_delta=on_delta,
+        on_thinking=on_thinking,
     )
     return {
         "conversation_id": normalized_conversation_id,

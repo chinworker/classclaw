@@ -12,6 +12,8 @@ from app.services.student_ordering import student_order_by
 
 # Operations whose payload carries a class_id field directly.
 _CLASS_PAYLOAD_OPS = {
+    "memory.upsert",
+    "memory.forget",
     "student.create",
     "student.update.batch",
     "seating.update",

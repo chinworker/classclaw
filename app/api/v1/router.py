@@ -4,6 +4,7 @@ from app.api.v1 import (
     academic,
     admin_console,
     agent_chat,
+    agent_memory,
     ai_tasks,
     analytics,
     approval,
@@ -27,6 +28,7 @@ protected_router.include_router(auth_admin.admin_router)
 protected_router.include_router(admin_console.router)
 protected_router.include_router(ai_tasks.router)
 protected_router.include_router(agent_chat.router)
+protected_router.include_router(agent_memory.router)
 protected_router.include_router(approval.router)
 protected_router.include_router(interactions.router)
 protected_router.include_router(classes_students.router)

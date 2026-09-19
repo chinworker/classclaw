@@ -565,6 +565,22 @@ input[type="date"]::-webkit-calendar-picker-indicator, input[type="datetime-loca
 .agent-chat-thinking i { width: 5px; height: 5px; border-radius: 50%; background: #8EA49B; animation: agent-dot 1.2s infinite ease-in-out; }
 .agent-chat-thinking i:nth-of-type(2) { animation-delay: .15s; }
 .agent-chat-thinking i:nth-of-type(3) { animation-delay: .3s; }
+.agent-reasoning { margin: 0 0 10px; color: var(--muted); font-size: 13px; }
+.agent-reasoning-toggle { display: flex; align-items: center; gap: 8px; width: fit-content; padding: 8px 11px; border-radius: 9px; background: #EDF2EF; cursor: pointer; list-style: none; user-select: none; }
+.agent-reasoning-toggle::-webkit-details-marker { display: none; }
+.agent-reasoning-toggle:hover { background: #E3ECE7; }
+.agent-reasoning-toggle:focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
+.agent-reasoning-mark { color: var(--primary); font-size: 16px; }
+.agent-reasoning.is-thinking .agent-reasoning-mark { animation: agent-dot 1.4s infinite ease-in-out; }
+.agent-reasoning-time { font-variant-numeric: tabular-nums; }
+.agent-reasoning-chevron { margin-left: 4px; transition: transform .15s; }
+.agent-reasoning[open] .agent-reasoning-chevron { transform: rotate(180deg); }
+.agent-reasoning-content { margin: 12px 0 4px 10px; padding: 0 0 0 16px; border-left: 2px solid #D7E2DC; line-height: 1.8; white-space: pre-wrap; overflow-wrap: anywhere; }
+.agent-reasoning-content.is-placeholder { font-size: 12px; }
+@media (prefers-reduced-motion: reduce) {
+  .agent-reasoning.is-thinking .agent-reasoning-mark { animation: none; }
+  .agent-reasoning-chevron { transition: none; }
+}
 @keyframes agent-dot { 0%, 60%, 100% { transform: translateY(0); opacity: .4; } 30% { transform: translateY(-3px); opacity: 1; } }
 .agent-chat-composer { padding: 10px 14px 12px; border-top: 1px solid var(--border); background: #FBFCFA; }
 .agent-chat-selected { display: flex; gap: 7px; overflow-x: auto; padding: 0 2px 9px; }

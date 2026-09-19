@@ -18,6 +18,7 @@ from app.models.entities import (
     ClassAgentBinding,
     ClassOnboardingSession,
     ClassPeriod,
+    ClassAgentMemory,
     ClassRoom,
     ClassSubject,
     DeletionOperation,
@@ -179,6 +180,7 @@ def hard_delete_class(db: Session, class_id: str, *, operator_id: str | None = N
     entity_ids_by_type = {
         "classes": {class_id},
         "class_agent_bindings": ids(ClassAgentBinding, ClassAgentBinding.class_id == class_id),
+        "class_agent_memories": ids(ClassAgentMemory, ClassAgentMemory.class_id == class_id),
         "class_subjects": ids(ClassSubject, ClassSubject.class_id == class_id),
         "students": student_ids,
         "seating_snapshots": ids(SeatingSnapshot, SeatingSnapshot.class_id == class_id),

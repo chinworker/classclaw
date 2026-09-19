@@ -47,7 +47,8 @@ export class ApiError extends Error {
 }
 
 // path 以 "/" 开头；body 传对象自动 JSON 化，传 FormData 走 multipart。
-export async function api(path, { method = "GET", body, headers = {}, timeoutMs = 0, signal = null, aiTaskId = null, onDelta = null } = {}) {
+export async function api(path, { method = "GET", body, headers = {}, timeoutMs = 0, signal = null, aiTaskId = null,
+  onDelta = null, onThinking = null } = {}) {
   const requestToken = authToken;
   const finalHeaders = { "X-ClassClaw-Surface": "web", ...headers };
   if (aiTaskId) finalHeaders["X-ClassClaw-AI-Task-ID"] = aiTaskId;
@@ -74,7 +75,7 @@ export async function api(path, { method = "GET", body, headers = {}, timeoutMs 
   try {
     response = await fetch(`${API_PREFIX}${path}`, { method, headers: finalHeaders, body: payload, signal: controller?.signal });
     if (response.ok && onDelta && response.headers.get("Content-Type")?.includes("text/event-stream")) {
-      return await readChatStream(response, onDelta);
+      return await readChatStream(response, onDelta, onThinking);
     }
     let data = {};
     try { data = await response.json(); } catch (error) {
@@ -109,7 +110,7 @@ function responseError(data, response) {
   });
 }
 
-export async function readChatStream(response, onDelta) {
+export async function readChatStream(response, onDelta, onThinking = null) {
   const reader = response.body?.getReader();
   if (!reader) throw new ApiError("浏览器未获得回复流", { code: "INVALID_RESPONSE" });
   const decoder = new TextDecoder();
@@ -140,6 +141,14 @@ export async function readChatStream(response, onDelta) {
         if (event === "delta") {
           if (typeof data.data?.text !== "string") throw new ApiError("回复片段格式错误", { code: "INVALID_RESPONSE" });
           await onDelta(data.data.text);
+        }
+        if (event === "thinking") {
+          const thinking = data.data;
+          if (!thinking || !(thinking.state === "started" && typeof thinking.level === "string"
+            || thinking.state === "delta" && typeof thinking.text === "string")) {
+            throw new ApiError("思考片段格式错误", { code: "INVALID_RESPONSE" });
+          }
+          await onThinking?.(thinking);
         }
         if (event === "done") {
           if (typeof data.data?.reply !== "string") throw new ApiError("缺少完整回复", { code: "INVALID_RESPONSE" });

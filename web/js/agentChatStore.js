@@ -1,5 +1,6 @@
 // 对话和请求属于当前登录会话，不属于页面 DOM；原文只保留在标签页内存。
 import { api, AI_REQUEST_TIMEOUT_MS, createAiTaskId } from "./api.js";
+import { thinkingChoices } from "./agentThinking.js";
 
 export function createChatStore({ request = api, newId = createAiTaskId, timestamp = () => new Date() } = {}) {
   const scopes = new Map();
@@ -74,8 +75,8 @@ export function createChatStore({ request = api, newId = createAiTaskId, timesta
 
   function setThinkingLevel(scope, conversation, value) {
     if (scope.disposed || !scope.conversations.includes(conversation) || conversation.activeController) return false;
-    if (value !== null && !["off", "minimal", "low", "medium", "high", "xhigh", "adaptive", "max"].includes(value)) return false;
-    if (value !== null && scope.thinkingOptions && !scope.thinkingOptions.levels.some((item) => item.id === value)) return false;
+    if (value !== null && !["off", "low", "medium", "high"].includes(value)) return false;
+    if (value !== null && scope.thinkingOptions && !thinkingChoices(scope.thinkingOptions).some((item) => item.id === value)) return false;
     conversation.thinkingLevel = value;
     conversation.thinkingNotice = "";
     conversation.revision += 1;
@@ -85,7 +86,7 @@ export function createChatStore({ request = api, newId = createAiTaskId, timesta
 
   function reconcileThinking(scope, conversation) {
     if (!scope.thinkingOptions || conversation.activeController || conversation.thinkingLevel === null) return;
-    if (scope.thinkingOptions.levels.some((item) => item.id === conversation.thinkingLevel)) return;
+    if (thinkingChoices(scope.thinkingOptions).some((item) => item.id === conversation.thinkingLevel)) return;
     conversation.thinkingLevel = null;
     conversation.thinkingNotice = "原思考强度不适用于当前模型，已恢复为跟随默认。";
     conversation.revision += 1;
@@ -131,6 +132,30 @@ export function createChatStore({ request = api, newId = createAiTaskId, timesta
     let partial = null;
     let thinkingLoaded = false;
     let messageStarted = false;
+    let effectiveThinking = null;
+    const live = () => !scope.disposed && !conversation.deleted && !controller.signal.aborted && conversation.activeController === controller;
+    function ensurePartial() {
+      if (!partial) {
+        partial = { role: "assistant", text: "", time: time(), streaming: true };
+        conversation.messages.push(partial);
+      }
+      return partial;
+    }
+    function startThinking() {
+      const message = ensurePartial();
+      message.thinking ||= { text: "", elapsedMs: 0, startedAt: timestamp().getTime(), active: false, expanded: false };
+      if (!message.thinking.active) {
+        message.thinking.startedAt = timestamp().getTime();
+        message.thinking.active = true;
+      }
+    }
+    function finishThinking(interrupted = false) {
+      const thinking = partial?.thinking;
+      if (!thinking) return;
+      if (thinking.active) thinking.elapsedMs += Math.max(0, timestamp().getTime() - thinking.startedAt);
+      thinking.active = false;
+      thinking.interrupted = interrupted;
+    }
     notify(scope);
     try {
       // The preflight belongs to this conversation's request too: navigation
@@ -139,7 +164,7 @@ export function createChatStore({ request = api, newId = createAiTaskId, timesta
       if (scope.disposed || controller.signal.aborted) throw Object.assign(new Error("cancelled"), { code: "REQUEST_CANCELLED" });
       thinkingLoaded = true;
       setThinkingOptions(scope, profile);
-      if (thinkingLevel !== null && !profile.levels.some((item) => item.id === thinkingLevel)) {
+      if (thinkingLevel !== null && !thinkingChoices(profile).some((item) => item.id === thinkingLevel)) {
         throw Object.assign(new Error("模型支持的思考选项已更新，请核对后再次发送。"), { code: "CHAT_THINKING_UNSUPPORTED" });
       }
       if (thinkingLevel === null && !profile.default_level) {
@@ -147,21 +172,36 @@ export function createChatStore({ request = api, newId = createAiTaskId, timesta
       }
       if (scope.disposed || controller.signal.aborted) throw Object.assign(new Error("cancelled"), { code: "REQUEST_CANCELLED" });
       messageStarted = true;
+      effectiveThinking = thinkingLevel ?? profile.default_level;
+      if (effectiveThinking !== "off") startThinking();
+      conversation.revision += 1;
+      notify(scope);
       const result = await request(`/classes/${scope.classId}/agent-chat/messages`, {
         method: "POST", body, timeoutMs: AI_REQUEST_TIMEOUT_MS, signal: controller.signal, aiTaskId: taskId,
-        onDelta(delta) {
-          if (scope.disposed || controller.signal.aborted || !delta) return;
-          if (!partial) {
-            partial = { role: "assistant", text: "", time: time(), streaming: true };
-            conversation.messages.push(partial);
+        onThinking(event) {
+          if (!live()) return;
+          if (event.state === "started") {
+            effectiveThinking = event.level;
+            if (effectiveThinking !== "off") startThinking();
+            else if (partial?.thinking) { finishThinking(); delete partial.thinking; }
+          } else if (event.state === "delta" && effectiveThinking !== "off" && event.text) {
+            startThinking();
+            partial.thinking.text += event.text;
           }
-          partial.text += delta;
+          conversation.revision += 1;
+          notify(scope);
+        },
+        onDelta(delta) {
+          if (!live() || !delta) return;
+          finishThinking();
+          ensurePartial().text += delta;
           conversation.revision += 1;
           notify(scope);
         },
       });
       if (!scope.disposed && !conversation.deleted) {
         if (controller.signal.aborted) throw Object.assign(new Error("cancelled"), { code: "REQUEST_CANCELLED" });
+        finishThinking();
         if (partial) Object.assign(partial, { text: result.reply, streaming: false });
         else conversation.messages.push({ role: "assistant", text: result.reply, time: time() });
         conversation.revision += 1;
@@ -171,6 +211,7 @@ export function createChatStore({ request = api, newId = createAiTaskId, timesta
       if (!scope.disposed && !conversation.deleted) {
         if (!thinkingLoaded) scope.thinkingOptions = null;
         if (!messageStarted) { conversation.draft = text; conversation.files = uploads; }
+        finishThinking(true);
         if (partial) Object.assign(partial, { streaming: false, incomplete: true });
         const stopped = error.code === "REQUEST_CANCELLED";
         conversation.status = stopped ? "stopped" : "failed";
@@ -180,6 +221,7 @@ export function createChatStore({ request = api, newId = createAiTaskId, timesta
         });
       }
     } finally {
+      finishThinking(conversation.status !== "completed");
       conversation.activeController = null;
       if (!scope.disposed && !conversation.deleted) {
         reconcileThinking(scope, conversation);

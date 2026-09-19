@@ -6,6 +6,7 @@ import { appConfig, featureEnabled } from "../config.js";
 import { state, refreshOpenclaw } from "../state.js";
 import { pageHeader, errorPanel, skeleton, statusBadge, openclawBlocked, emptyState, confirmDanger } from "../components.js";
 import { agentChatStore } from "../agentChatStore.js";
+import { thinkingChoices, thinkingSeconds } from "../agentThinking.js";
 
 const MAX_FILES = 8;
 const ACCEPTED_FILES = ".xlsx,.xlsm,.docx,.pptx,.csv,.tsv,.pdf,.png,.jpg,.jpeg,.gif,.webp,.heic,.heif,.json,.xml,.rtf,.md,.markdown,.txt";
@@ -24,18 +25,56 @@ function fileSize(bytes) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
+function updateThinkingNode(node, message) {
+  const details = node.querySelector(".agent-reasoning");
+  if (!details) return;
+  const thinking = message.thinking;
+  details.classList.toggle("hidden", !thinking);
+  if (!thinking) return;
+  details.classList.toggle("is-thinking", thinking.active);
+  node.querySelector(".agent-reasoning-status").textContent = thinking.active ? "正在思考" : thinking.interrupted ? "思考已中断" : "已思考";
+  node.querySelector(".agent-reasoning-time").textContent = `${thinkingSeconds(thinking)} 秒`;
+  const content = node.querySelector(".agent-reasoning-content");
+  const text = thinking.text || (thinking.active ? "正在等待模型返回思考内容…" : "本次未返回可展示的思考内容。");
+  if (content.textContent !== text) content.textContent = text;
+  content.classList.toggle("is-placeholder", !thinking.text);
+}
+
+function updateMessageNode(node, message) {
+  const text = node.querySelector(".agent-chat-text");
+  text.textContent = message.text;
+  text.classList.toggle("hidden", !message.text);
+  node.querySelector(".agent-chat-waiting")?.classList.toggle("hidden", Boolean(message.text || message.thinking || !message.streaming));
+  updateThinkingNode(node, message);
+}
+
 function messageNode(message) {
   const isUser = message.role === "user";
   const files = message.files || [];
-  return el("article", { class: `agent-chat-message ${isUser ? "from-user" : "from-agent"}` },
+  const reasoning = isUser ? null : el("details", { class: "agent-reasoning hidden" },
+    el("summary", { class: "agent-reasoning-toggle" },
+      el("span", { class: "agent-reasoning-mark", aria: { hidden: "true" } }, "✦"),
+      el("span", { class: "agent-reasoning-status" }),
+      el("span", { class: "agent-reasoning-time", aria: { live: "off" } }),
+      el("span", { class: "agent-reasoning-chevron", aria: { hidden: "true" } }, "⌄")),
+    el("div", { class: "agent-reasoning-content", aria: { live: "off", label: "模型思考内容" } }));
+  if (reasoning) {
+    reasoning.open = Boolean(message.thinking?.expanded);
+    reasoning.addEventListener("toggle", () => { if (message.thinking) message.thinking.expanded = reasoning.open; });
+  }
+  const node = el("article", { class: `agent-chat-message ${isUser ? "from-user" : "from-agent"}` },
     el("div", { class: "agent-chat-avatar", aria: { hidden: "true" } }, isUser ? "我" : "AI"),
     el("div", { class: "agent-chat-bubble" },
       el("div", { class: "agent-chat-meta" }, isUser ? "你" : "班级 Agent", el("span", {}, message.time || "")),
       files.length ? el("div", { class: "agent-chat-files" }, files.map((file) =>
         el("span", { class: "agent-chat-file" }, "文件 · ", file.name, el("small", {}, fileSize(file.size || file.file_size || 0))))) : null,
+      reasoning,
+      isUser ? null : el("small", { class: "agent-chat-waiting muted hidden" }, "正在处理…"),
       el("div", { class: `agent-chat-text${message.error ? " is-error" : ""}` }, message.text),
       message.incomplete ? el("small", { class: "field-error" }, "以上仅为未完成的部分回复，不能据此确认操作结果。") : null,
       message.error && message.requestId ? el("small", { class: "muted" }, `问题编号：${message.requestId}`) : null));
+  updateMessageNode(node, message);
+  return node;
 }
 
 function welcomeNode(onSuggestion) {
@@ -66,6 +105,7 @@ function chatPanel(binding, scope, conversation) {
   let renderedTail = null;
   let renderedThinkingOptions = null;
   let renderedPendingThinking = null;
+  let thinkingTimer = null;
   const fileAnalysisEnabled = featureEnabled("file_analysis");
   const maxBytes = Number(appConfig.storage.max_attachment_bytes) || 20 * 1024 * 1024;
   const messages = el("div", { class: "agent-chat-messages", role: "log", aria: { live: "polite", label: "班级 Agent 对话消息" } });
@@ -120,7 +160,7 @@ function chatPanel(binding, scope, conversation) {
       clear(thinkingSelect);
       thinkingSelect.append(el("option", { value: "", disabled: Boolean(profile && !defaultLabel) },
         profile ? defaultLabel ? `跟随默认（${defaultLabel}）` : "默认不适用，请选择" : "正在读取模型支持的选项…"));
-      for (const item of profile?.levels || []) thinkingSelect.append(el("option", { value: item.id }, item.label));
+      for (const item of thinkingChoices(profile)) thinkingSelect.append(el("option", { value: item.id }, item.label));
       if (pendingLevel) {
         thinkingSelect.append(el("option", { value: pendingLevel, disabled: true }, "本轮使用的原设置"));
       }
@@ -144,12 +184,20 @@ function chatPanel(binding, scope, conversation) {
     } else {
       const nodes = conversation.messages.map(messageNode);
       messages.append(...nodes);
-      renderedTail = nodes.at(-1)?.querySelector(".agent-chat-text");
+      renderedTail = nodes.at(-1);
     }
     if (conversation.activeController && !conversation.messages.at(-1)?.streaming) messages.append(el("article", { class: "agent-chat-message from-agent agent-chat-thinking" },
       el("div", { class: "agent-chat-avatar" }, "AI"),
-      el("div", { class: "agent-chat-bubble" }, el("span", {}, "正在思考"), el("i"), el("i"), el("i"))));
+      el("div", { class: "agent-chat-bubble" }, el("span", {}, "正在处理"), el("i"), el("i"), el("i"))));
     scrollBottom();
+  }
+
+  function syncThinkingTimer() {
+    const active = Boolean(conversation.activeController && conversation.messages.at(-1)?.thinking?.active);
+    if (active && thinkingTimer === null) thinkingTimer = window.setInterval(() => {
+      if (!disposed && renderedTail) updateThinkingNode(renderedTail, conversation.messages.at(-1));
+    }, 250);
+    if (!active && thinkingTimer !== null) { window.clearInterval(thinkingTimer); thinkingTimer = null; }
   }
 
   function renderFiles() {
@@ -367,11 +415,12 @@ function chatPanel(binding, scope, conversation) {
   function refresh() {
     if (disposed) return;
     renderThinking();
+    syncThinkingTimer();
     const sameLayout = renderedMessageCount === conversation.messages.length && renderedController === conversation.activeController;
     if (sameLayout && renderedRevision === conversation.revision) return;
     renderedRevision = conversation.revision;
     if (sameLayout && renderedTail && conversation.messages.at(-1)?.streaming) {
-      renderedTail.textContent = conversation.messages.at(-1).text;
+      updateMessageNode(renderedTail, conversation.messages.at(-1));
       scrollBottom();
       return;
     }
@@ -403,6 +452,8 @@ function chatPanel(binding, scope, conversation) {
         conversation.files = selectedFiles;
       }
       disposed = true;
+      if (thinkingTimer !== null) window.clearInterval(thinkingTimer);
+      thinkingTimer = null;
       chatRuntime.voiceController?.abort();
       chatRuntime.discardRecording = true;
       try { chatRuntime.recognition?.stop(); } catch { /* 已停止 */ }

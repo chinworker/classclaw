@@ -81,7 +81,7 @@ async def class_agent_chat_message(
     principal = principal_from_request(request)
     sender_id = principal.user_id or principal.username
 
-    async def run(on_delta=None):
+    async def run(on_delta=None, on_thinking=None):
         with agent_chat.conversation_turn(class_id, sender_id, conversation_id):
             # StreamingResponse owns ASGI disconnect events. Its cancellation
             # closes the producer; do not have two consumers race on receive().
@@ -89,7 +89,7 @@ async def class_agent_chat_message(
                 return await agent_chat.send_message(
                     db, class_id=class_id, conversation_id=conversation_id, text=text, uploads=uploads,
                     sender_id=sender_id, requested_by=principal.username, cancelled=cancelled,
-                    thinking_level=thinking_level, on_delta=on_delta,
+                    thinking_level=thinking_level, on_delta=on_delta, on_thinking=on_thinking,
                 )
 
     if not stream:
@@ -106,9 +106,16 @@ async def class_agent_chat_message(
         return f"event: {event}\ndata: {json.dumps(jsonable_encoder(payload), ensure_ascii=False)}\n\n"
 
     async def events():
-        queue: asyncio.Queue[str] = asyncio.Queue(maxsize=32)
+        queue: asyncio.Queue[tuple[str, dict]] = asyncio.Queue(maxsize=32)
+
+        async def answer_delta(text):
+            await queue.put(("delta", {"text": text}))
+
+        async def thinking_delta(data):
+            await queue.put(("thinking", data))
+
         started = time.monotonic()
-        producer = asyncio.create_task(run(queue.put))
+        producer = asyncio.create_task(run(answer_delta, thinking_delta))
         next_delta = None
         outcome = "interrupted"
         try:
@@ -117,7 +124,7 @@ async def class_agent_chat_message(
                 next_delta = asyncio.create_task(queue.get())
                 completed, _ = await asyncio.wait({producer, next_delta}, timeout=10, return_when=asyncio.FIRST_COMPLETED)
                 if next_delta in completed:
-                    yield frame("delta", {"text": next_delta.result()})
+                    yield frame(*next_delta.result())
                 else:
                     next_delta.cancel()
                     with suppress(asyncio.CancelledError):
@@ -125,7 +132,7 @@ async def class_agent_chat_message(
                 next_delta = None
                 if producer.done():
                     while not queue.empty():
-                        yield frame("delta", {"text": queue.get_nowait()})
+                        yield frame(*queue.get_nowait())
                     result = producer.result()
                     outcome = "completed"
                     yield frame("done", result)

@@ -41,6 +41,8 @@ def test_stream_route_delivers_deltas_final_metadata_and_private_thinking(client
 
     async def chat(**kwargs):
         captured.update(kwargs)
+        await kwargs["on_thinking"]({"state": "started", "level": "high"})
+        await kwargs["on_thinking"]({"state": "delta", "text": "思考内容"})
         await kwargs["on_delta"]("第一段")
         await kwargs["on_delta"]("第二段")
         return {"reply": "第一段第二段", "response_id": "response-1"}
@@ -54,7 +56,9 @@ def test_stream_route_delivers_deltas_final_metadata_and_private_thinking(client
     assert response.headers["content-type"].startswith("text/event-stream")
     assert response.headers["x-accel-buffering"] == "no"
     events = frames(response)
-    assert [e["data"].get("text") for e in events[:-1]] == ["第一段", "第二段"]
+    assert events[0]["data"] == {"state": "started", "level": "high"}
+    assert events[1]["data"] == {"state": "delta", "text": "思考内容"}
+    assert [e["data"].get("text") for e in events[2:-1]] == ["第一段", "第二段"]
     assert events[-1]["data"]["reply"] == "第一段第二段"
     assert events[-1]["data"]["conversation_id"] == CONVERSATION
     assert all(e["request_id"] == response.headers["x-request-id"] for e in events)

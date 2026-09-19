@@ -38,6 +38,24 @@ class ClassRoom(Base, IdMixin, TimestampMixin, SoftDeleteMixin):
     owner_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True, unique=True, index=True)
 
 
+class ClassAgentMemory(Base, IdMixin, TimestampMixin):
+    __tablename__ = "class_agent_memories"
+    __table_args__ = (UniqueConstraint("class_id", "memory_key", name="uq_class_agent_memory_key"),)
+
+    class_id: Mapped[str] = mapped_column(ForeignKey("classes.id", ondelete="CASCADE"), index=True)
+    memory_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    name: Mapped[str] = mapped_column(String(60), nullable=False)
+    aliases_json: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    content: Mapped[str] = mapped_column(String(400), default="", nullable=False)
+    start_time: Mapped[str | None] = mapped_column(String(5))
+    end_time: Mapped[str | None] = mapped_column(String(5))
+    weekdays_json: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    valid_from: Mapped[date | None] = mapped_column(Date)
+    valid_to: Mapped[date | None] = mapped_column(Date)
+    revision: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+
+
 class User(Base, IdMixin, TimestampMixin):
     __tablename__ = "users"
     __table_args__ = (

@@ -103,14 +103,95 @@ test("sending refreshes stale model choices and preserves the draft for review",
   await tick();
 });
 
-test("model-specific defaults are displayed and explicit choices remain available", async () => {
+test("model-specific defaults remain visible without adding advanced intensity choices", async () => {
   thinkingProfile = { model: "other/adaptive", levels: [{ id: "adaptive", label: "自适应" }, { id: "max", label: "最高" }],
     configured_default_level: "off", default_level: "adaptive", default_adjusted: true };
   const mount = await mountPage();
   const selector = mount.querySelector(".agent-thinking-select");
   assert.equal(selector.querySelector("option").textContent, "跟随默认（自适应）");
   assert.match(mount.querySelector(".agent-thinking-note").textContent, /默认采用自适应/);
-  assert.deepEqual(selector.querySelectorAll("option").map((option) => option.value), ["", "adaptive", "max"]);
+  assert.deepEqual(selector.querySelectorAll("option").map((option) => option.value), [""]);
+});
+
+test("the selector offers at most off, low, medium and high from the current model", async () => {
+  thinkingProfile = { levels: ["max", "high", "xhigh", "medium", "low", "minimal", "off"].map((id) => ({ id, label: id })),
+    default_level: "off" };
+  const mount = await mountPage();
+  assert.deepEqual(mount.querySelector(".agent-thinking-select").querySelectorAll("option").map((option) => option.value),
+    ["", "off", "low", "medium", "high"]);
+});
+
+test("reasoning expands safely, ticks, and retains its text and expansion after navigation", async () => {
+  const fallback = globalThis.fetch;
+  const timers = new Map();
+  const originalTimers = [window.setInterval, window.clearInterval];
+  window.setInterval = (fn) => { timers.set(fn, fn); return fn; };
+  window.clearInterval = (id) => timers.delete(id);
+  let writer;
+  globalThis.fetch = async (path, options) => path.includes("/agent-chat/messages")
+    ? new Response(new ReadableStream({ start(controller) { writer = controller; } }), { headers: { "Content-Type": "text/event-stream" } })
+    : fallback(path, options);
+  const push = (event, data) => writer.enqueue(new TextEncoder().encode(`event: ${event}\ndata: ${JSON.stringify({ success: true, data })}\n\n`));
+  try {
+    let mount = await mountPage();
+    const select = mount.querySelector(".agent-thinking-select");
+    select.value = "high";
+    select.dispatchEvent(new Event("change"));
+    await send(mount, "分析班级情况");
+    assert.equal(mount.querySelector(".agent-reasoning-status").textContent, "正在思考");
+    assert.equal(timers.size, 1);
+    const conversation = agentChatStore.selectedConversation(agentChatStore.getScope("teacher-a", "class-a"));
+    conversation.messages.at(-1).thinking.startedAt = Date.now() - 5100;
+    for (const timer of timers.values()) timer();
+    assert.equal(mount.querySelector(".agent-reasoning-time").textContent, "5 秒");
+    const details = mount.querySelector("details");
+    details.open = true;
+    details.dispatchEvent(new Event("toggle"));
+    push("thinking", { state: "delta", text: "先查看记录。\n<script>不是 HTML</script>" });
+    await tick();
+    assert.equal(mount.querySelector("details"), details);
+    assert.equal(details.open, true);
+    assert.equal(mount.querySelector(".agent-reasoning-content").querySelector("script"), null);
+    assert.ok(mount.querySelector(".agent-reasoning-content").textContent.includes("<script>"));
+    assert.equal(mount.querySelector(".from-agent").querySelector(".agent-chat-text").textContent, "");
+    page.dispose();
+    mount.remove();
+    assert.equal(timers.size, 0);
+    push("thinking", { state: "delta", text: "再比较变化。" });
+    await tick();
+    mount = await mountPage();
+    assert.equal(mount.querySelector("details").open, true);
+    assert.equal(timers.size, 1);
+    push("delta", { text: "这是回答" });
+    await tick();
+    assert.equal(timers.size, 0);
+    assert.equal(mount.querySelector(".agent-reasoning-status").textContent, "已思考");
+    push("done", { reply: "这是完整回答" });
+    await tick();
+    assert.equal(mount.querySelector("details").open, true);
+    assert.match(mount.querySelector(".agent-reasoning-content").textContent, /再比较变化/);
+    assert.equal(mount.querySelectorAll(".agent-chat-message").length, 2);
+  } finally {
+    page.dispose();
+    [window.setInterval, window.clearInterval] = originalTimers;
+  }
+});
+
+test("off shows processing while enabled models without reasoning explain the empty disclosure", async () => {
+  const mount = await mountPage();
+  await send(mount, "关闭思考");
+  assert.equal(mount.querySelector(".agent-chat-thinking").textContent.includes("正在思考"), false);
+  calls[0].resolve("完成");
+  await tick();
+  newChat(mount);
+  const select = mount.querySelector(".agent-thinking-select");
+  select.value = "high";
+  select.dispatchEvent(new Event("change"));
+  await send(mount, "开启思考");
+  calls[1].resolve("没有思考文本的完成回复");
+  await tick();
+  assert.equal(mount.querySelector(".agent-reasoning-status").textContent, "已思考");
+  assert.equal(mount.querySelector(".agent-reasoning-content").textContent, "本次未返回可展示的思考内容。");
 });
 
 test("unknown capabilities disable choices and a failed preflight preserves the draft", async () => {

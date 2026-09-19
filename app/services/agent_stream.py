@@ -26,6 +26,7 @@ def completed_response(payload: Any) -> dict[str, Any]:
 async def request_stream(
     body: dict[str, Any], *, gateway_url: str, headers: dict[str, str], timeout: float,
     on_delta: DeltaHandler, request_id: str | None,
+    on_response_id: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     """Consume only public answer deltas, never reasoning/tool arguments.
 
@@ -47,6 +48,8 @@ async def request_stream(
                     # Some older proxies buffer the response despite stream=true.
                     await response.aread()
                     result = completed_response(response.json())
+                    if on_response_id:
+                        on_response_id(result.get("id"))
                     outcome = "completed"
                     return result
                 if content_type != "text/event-stream":
@@ -69,7 +72,11 @@ async def request_stream(
                         if not isinstance(event, dict):
                             raise ValueError("Invalid stream event")
                         kind = event.get("type")
-                        if kind == "response.output_text.delta":
+                        if kind in {"response.created", "response.in_progress"} and on_response_id:
+                            resource = event.get("response")
+                            if isinstance(resource, dict):
+                                on_response_id(resource.get("id"))
+                        elif kind == "response.output_text.delta":
                             delta = event.get("delta")
                             if not isinstance(delta, str):
                                 raise ValueError("Invalid answer delta")
@@ -81,6 +88,8 @@ async def request_stream(
                             if kind != "response.completed":
                                 raise AppError("OPENCLAW_PROCESSING_FAILED", "班级助手未能完整完成回复；涉及写入时请先核对结果再重试", 502)
                             result = completed_response(event.get("response"))
+                            if on_response_id:
+                                on_response_id(result.get("id"))
                             outcome = "completed"
                             return result
                         elif kind == "error":

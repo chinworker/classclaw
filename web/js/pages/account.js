@@ -79,6 +79,33 @@ export async function render(mount) {
     return;
   }
 
+  const memoryHost = el("div", { class: "account-agent-memories" });
+  const memoryButton = el("button", { type: "button", class: "secondary" }, "查看记忆");
+  let memoryRevision = 0;
+  memoryButton.addEventListener("click", async () => {
+    if (!live()) return;
+    const revision = ++memoryRevision;
+    memoryButton.disabled = true;
+    clear(memoryHost).append(skeleton(2));
+    try {
+      const result = await api(`/classes/${classId}/agent-memories?include_expired=true`);
+      if (!live() || revision !== memoryRevision) return;
+      clear(memoryHost);
+      if (!result.items.length) memoryHost.append(el("p", { class: "muted" }, "还没有已确认的记忆。可以在对话中告诉 Agent 作息表或固定偏好。"));
+      for (const item of result.items) {
+        memoryHost.append(el("p", {}, item.description, item.expired ? el("span", { class: "muted" }, " · 已过期，不再使用") : null));
+      }
+      memoryButton.textContent = "刷新记忆";
+    } catch (error) {
+      if (live()) clear(memoryHost).append(errorPanel(error));
+    } finally { memoryButton.disabled = false; }
+  });
+  mount.append(el("section", { class: "card", aria: { label: "班级 Agent 记忆" } },
+    el("h3", {}, "班级 Agent · 记忆"),
+    el("p", { class: "muted" }, "Agent 会从你提供的作息、偏好和约定中提炼记忆，经你确认后用于后续对话。临时规则到期后自动恢复长期约定。"),
+    el("p", { class: "muted" }, "需要更正或忘记时，直接在对话中告诉 Agent，并核对它给出的变化。"),
+    el("div", { class: "row-gap" }, memoryButton, el("a", { href: "#/agent" }, "前往对话")), memoryHost));
+
   function showProvision() {
     const button = el("button", { class: "primary", type: "button" }, "创建班级 Agent");
     const errorHost = el("div");
