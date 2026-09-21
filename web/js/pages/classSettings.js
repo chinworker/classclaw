@@ -3,9 +3,9 @@
 import { el, clear, toast } from "../util.js";
 import { api } from "../api.js";
 import { appConfig } from "../config.js";
-import { state, refreshClassInfo, refreshIdentity } from "../state.js";
+import { refreshClassInfo, refreshIdentity } from "../state.js";
 import { navigate } from "../router.js";
-import { pageHeader, field, errorPanel, skeleton, confirmDanger, statusBadge, openModal } from "../components.js";
+import { pageHeader, field, errorPanel, skeleton, confirmDanger, statusBadge } from "../components.js";
 import { deleteClass } from "../featureGaps.js";
 
 export async function render(mount, ctx, helpers) {

@@ -3,7 +3,7 @@
 import { el, clear, toast, fmtDateTime } from "../util.js";
 import { api } from "../api.js";
 import { state } from "../state.js";
-import { pageHeader, field, fieldError, errorPanel, skeleton, emptyState, statusBadge, openModal, confirmDanger } from "../components.js";
+import { pageHeader, field, fieldError, errorPanel, skeleton, emptyState, statusBadge, openModal } from "../components.js";
 
 const GROUPS = [
   ["pending", "待处理"], ["in_progress", "进行中"], ["overdue", "已逾期"], ["completed", "已完成"],

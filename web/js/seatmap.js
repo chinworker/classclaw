@@ -217,8 +217,3 @@ export function seatMapEditor({ students = [], rows = 5, cols = 6, layout = null
     unseated,
   };
 }
-
-// 只读查看历史快照
-export function seatMapView({ students = [], rows, cols, layout, keyFn = (s) => s.id }) {
-  return seatMapEditor({ students, rows, cols, layout, keyFn, editable: false });
-}

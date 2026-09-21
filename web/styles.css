@@ -119,12 +119,6 @@ button:disabled { opacity: 0.55; cursor: not-allowed; }
 .content { padding: 22px; max-width: 1280px; width: 100%; margin: 0 auto; }
 .hamburger { display: none; }
 
-.password-banner {
-  background: #FBF3E2; border: 1px solid #E8D9B8; color: var(--warning);
-  padding: 10px 16px; border-radius: var(--radius-control); margin-bottom: 14px;
-  display: flex; gap: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap;
-}
-
 /* ---------- 卡片与页面 ---------- */
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-card); box-shadow: var(--shadow); padding: 18px 20px; margin-bottom: 18px; }
 .card > h3 { margin-bottom: 10px; }
@@ -361,7 +355,6 @@ input[type="date"]::-webkit-calendar-picker-indicator, input[type="datetime-loca
 .weekend-box { margin-top: 12px; }
 .weekend-box summary { cursor: pointer; font-weight: 600; color: var(--muted); padding: 8px 4px; }
 .daily-changed { background: #FBF3E2; }
-.daily-cancelled { text-decoration: line-through; opacity: 0.6; }
 
 /* ---------- 课表与调课工作区 ---------- */
 .timetable-section { padding: 22px; }
@@ -445,7 +438,6 @@ input[type="date"]::-webkit-calendar-picker-indicator, input[type="datetime-loca
 .dropzone.disabled { cursor: not-allowed; opacity: .68; }
 .dropzone.disabled:hover { border-color: var(--border); background: transparent; }
 .drop-progress { color: var(--primary); font-weight: 600; }
-.drop-selected { font-size: 12px; }
 .drop-file-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; text-align: left; }
 .drop-file-item {
   display: inline-flex; align-items: center; gap: 6px; max-width: 100%;
@@ -670,9 +662,6 @@ input[type="date"]::-webkit-calendar-picker-indicator, input[type="datetime-loca
 .admin-shell .metric-value { color: #1D4ED8; }
 .admin-shell .data-table thead th { background: #EDF3FB; color: #334155; font-family: var(--font-num); font-weight: 600; }
 .admin-shell code { background: #E9EEF6; color: #334155; border-radius: 4px; }
-.admin-status-line { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding: 12px 14px; margin-bottom: 14px; border: 1px solid #CBD6E4; border-radius: 8px; background: #fff; }
-.admin-status-line > div { display: flex; align-items: center; gap: 7px; padding-right: 10px; border-right: 1px solid #D8E0EA; }
-.admin-status-line code { margin-left: auto; }
 .admin-quick-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 4px 0 18px; }
 .admin-quick-card { display: grid; gap: 5px; padding: 16px; text-align: left; border: 1px solid var(--border); border-radius: 9px; background: #fff; }
 .admin-quick-card:hover { border-color: var(--primary); box-shadow: var(--shadow); }
@@ -685,7 +674,6 @@ input[type="date"]::-webkit-calendar-picker-indicator, input[type="datetime-loca
 .admin-kv { display: grid; gap: 3px; min-width: 0; padding: 9px 10px; border: 1px solid #DCE3ED; border-radius: 7px; background: #F8FAFC; }
 .admin-kv > span { color: var(--muted); font-size: 11px; font-family: var(--font-num); text-transform: uppercase; }
 .admin-kv code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; background: transparent; padding: 0; }
-.admin-agent-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(390px, 1fr)); gap: 14px; }
 .admin-agent-card { margin: 0; }
 .admin-error-log { overflow: auto; max-height: 120px; padding: 10px; border-radius: 6px; background: #2A1517; color: #FCA5A5; font: 12px/1.5 var(--font-num); white-space: pre-wrap; }
 .agent-config-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-bottom: 14px; }
@@ -695,12 +683,9 @@ input[type="date"]::-webkit-calendar-picker-indicator, input[type="datetime-loca
 .agent-file-toolbar { display: grid; grid-template-columns: minmax(260px, 1fr) auto; gap: 14px; align-items: end; }
 .agent-file-meta { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 8px; min-width: 0; }
 .agent-file-meta code { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.agent-file-editor { width: 100%; min-height: 430px; resize: vertical; tab-size: 2; font: 13px/1.6 var(--font-num); color: #DCE7F7; background: #101827; border-color: #334155; }
-.agent-file-editor:focus { border-color: #60A5FA; box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.18); }
 .mono { font-family: var(--font-num); }
 .log-filters { display: grid; grid-template-columns: 190px 150px minmax(260px, 1fr) 120px auto auto; gap: 12px; align-items: end; }
 .log-filters .field { margin: 0; }
-.log-auto { align-self: center; white-space: nowrap; }
 .log-status { font-family: var(--font-num); font-size: 12px; }
 .log-status code { max-width: 500px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .log-console { overflow: hidden; border: 1px solid #2A3A52; border-radius: 8px; background: #0B1220; color: #CBD5E1; }
@@ -713,21 +698,14 @@ input[type="date"]::-webkit-calendar-picker-indicator, input[type="datetime-loca
 .level-error .log-level, .level-critical .log-level { color: #F87171; }
 .level-debug .log-level { color: #A78BFA; }
 .log-message { min-width: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
-.log-expand { color: #93C5FD; font: inherit; }
 .log-detail { grid-column: 1 / -1; overflow: auto; max-height: 340px; margin: 2px 0 4px; padding: 10px; border: 1px solid #26364F; border-radius: 5px; color: #AFC3DE; background: #080D17; font: inherit; white-space: pre-wrap; }
-.settings-list { display: grid; }
 .config-file-guide code, .config-setting-row code { white-space: normal; overflow-wrap: anywhere; }
 .config-file-guide details { margin: 12px 0; }
 .config-file-guide summary, .agent-runtime-advanced summary { cursor: pointer; font-weight: 600; }
 .config-file-guide li { margin: 8px 0; }
-.config-filter { display: grid; grid-template-columns: minmax(180px, 2fr) minmax(150px, 1fr) auto; align-items: end; gap: 14px; }
-.config-filter .field { margin-bottom: 0; }
-.config-filter > [role="status"] { padding-bottom: 12px; white-space: nowrap; }
 .config-field-meta { display: grid; gap: 6px; color: var(--muted); }
 .config-field-meta code { justify-self: start; font-size: 11px; }
 .setting-row.config-setting-row { grid-template-columns: minmax(0, 3fr) minmax(150px, 2fr); }
-.config-setting-value { min-width: 0; text-align: right; }
-.config-setting-value code { display: inline-block; max-width: 100%; }
 .agent-runtime-section { min-width: 0; border: 1px solid var(--border); border-radius: 8px; padding: 14px; margin: 16px 0; }
 .agent-runtime-section legend { padding: 0 6px; font-weight: 600; }
 .agent-runtime-advanced { margin: 16px 0; }
@@ -776,8 +754,7 @@ input[type="date"]::-webkit-calendar-picker-indicator, input[type="datetime-loca
   .seating-version-bar { grid-template-columns: 1fr; }
   .seating-version-row, .duty-rule-row { align-items: flex-start; flex-direction: column; }
   .attendance-options { min-width: 260px; }
-  .admin-quick-grid, .admin-config-grid, .admin-two-col, .admin-agent-grid, .agent-config-summary, .agent-runtime-grid, .agent-file-toolbar, .log-filters, .config-filter { grid-template-columns: 1fr; }
-  .config-setting-value { text-align: left; }
+  .admin-quick-grid, .admin-config-grid, .admin-two-col, .agent-config-summary, .agent-runtime-grid, .agent-file-toolbar, .log-filters { grid-template-columns: 1fr; }
   .agent-file-meta { justify-content: flex-start; }
   .setting-row, .setting-row.config-setting-row { grid-template-columns: 1fr; }
   .setting-control { min-width: 0; }
@@ -807,7 +784,6 @@ input[type="date"]::-webkit-calendar-picker-indicator, input[type="datetime-loca
 
 /* ---------- 设置中心 ---------- */
 .settings-domains { margin-bottom: 18px; }
-.settings-subnav { margin-bottom: 20px; }
 .settings-editor { min-width: 0; }
 .settings-document-meta { margin: 0 0 14px; color: var(--muted); font-size: 12px; }
 .settings-document-meta summary { cursor: pointer; }

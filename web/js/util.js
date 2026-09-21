@@ -6,10 +6,6 @@ export function configureTime(config) {
   if (typeof config?.timezone === "string" && config.timezone) displayTimeZone = config.timezone;
 }
 
-export function escapeHtml(value) {
-  return String(value ?? "").replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[char]));
-}
-
 // el("div", {class: "x", onclick: fn, dataset: {...}, aria: {...}}, ...children)
 // children 可以是 Node、字符串（作为 textContent，安全）、数组或 null。
 export function el(tag, attrs = {}, ...children) {
@@ -125,10 +121,6 @@ export function toast(message, kind = "info") {
 export function pct(value) {
   if (value === null || value === undefined) return "—";
   return `${Math.round(value * 1000) / 10}%`;
-}
-
-export function uuid() {
-  return crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
 export function copyText(text) {

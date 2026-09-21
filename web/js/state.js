@@ -39,7 +39,6 @@ export function saveSession(token) {
 }
 
 export function saveRoute(hash) { sessionStorage.setItem(ROUTE_KEY, hash); }
-export function loadRoute() { return sessionStorage.getItem(ROUTE_KEY) || null; }
 
 export async function refreshIdentity() {
   const me = await api("/auth/me");

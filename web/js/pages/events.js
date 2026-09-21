@@ -5,7 +5,7 @@ import { api, AI_REQUEST_TIMEOUT_MS } from "../api.js";
 import { featureEnabled } from "../config.js";
 import { state, refreshStudents, refreshSubjects } from "../state.js";
 import {
-  pageHeader, dataTable, statusBadge, openModal, field, fieldError, errorPanel, skeleton, emptyState, aiButton, showAiRejection,
+  pageHeader, dataTable, statusBadge, openModal, field, fieldError, errorPanel, skeleton, aiButton, showAiRejection,
 } from "../components.js";
 
 const EVENT_TYPES = [["", "全部类型"], ["homework", "作业"], ["attendance", "考勤"], ["behavior", "行为"], ["communication", "沟通"], ["honor", "荣誉"], ["other", "其他"]];

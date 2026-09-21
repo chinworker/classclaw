@@ -4,9 +4,9 @@ import { el, clear, toast, todayStr, installEnhancedControls, configureTime } fr
 import { configureApi, onUnauthorized } from "./js/api.js";
 import { appConfig, loadAppConfig } from "./js/config.js";
 import { login, logout, restoreSession } from "./js/auth.js";
-import { state, clearSession, refreshIdentity, refreshClassInfo, refreshOpenclaw, savePrefs } from "./js/state.js";
+import { state, clearSession, refreshClassInfo, refreshOpenclaw } from "./js/state.js";
 import { defineRoutes, setRouteResolver, startRouter, dispatch, navigate, parseHash } from "./js/router.js";
-import { field, fieldError } from "./js/components.js";
+import { field } from "./js/components.js";
 import { ADMIN_NAV, ADMIN_ALIASES } from "./js/adminRoutes.js";
 
 const root = document.getElementById("root");
@@ -90,7 +90,6 @@ const routes = [
 defineRoutes(routes);
 
 let shell = null; // { content, navMap, topTitle, topSub, classChip, statusDot, sidebar }
-let loginNotice = null;
 let activePage = null;
 let pageRevision = 0;
 

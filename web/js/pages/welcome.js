@@ -3,7 +3,6 @@
 import { el, clear, fmtDateTime } from "../util.js";
 import { api } from "../api.js";
 import { navigate } from "../router.js";
-import { state } from "../state.js";
 import { emptyState, errorPanel, skeleton, statusBadge } from "../components.js";
 
 export async function render(mount) {

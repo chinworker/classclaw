@@ -8,7 +8,7 @@ import { appConfig, featureEnabled } from "../config.js";
 import { state, refreshIdentity, refreshClassInfo, refreshOpenclaw } from "../state.js";
 import { navigate } from "../router.js";
 import {
-  field, fieldError, fileDropzone, proposalReview, qrBindingPanel, statusBadge, openclawBlocked, emptyState, showAiRejection,
+  field, fileDropzone, proposalReview, qrBindingPanel, openclawBlocked, emptyState, showAiRejection,
 } from "../components.js";
 import { compareStudents } from "../studentOrder.js";
 import { timetableGridEditor } from "../timetableGrid.js";

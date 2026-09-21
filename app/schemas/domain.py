@@ -412,7 +412,6 @@ class ClassOnboardingUpdate(BaseModel):
 
 
 class WechatLoginWait(BaseModel):
-    current_qr_data_url: str | None = Field(default=None, max_length=20_000)
     login_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
 

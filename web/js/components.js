@@ -1,7 +1,7 @@
 // 可复用组件：Modal、Drawer、DataTable、状态徽章、错误面板、指标卡、上传区、二维码面板等。
 // 组件只接受结构化数据，动态文本一律经 textContent 安全插入。
 
-import { el, clear, escapeHtml, fmtDateTime, toast, copyText, fileSize } from "./util.js";
+import { el, clear, fmtDateTime, toast, copyText, fileSize } from "./util.js";
 import { api, ApiError, createAiTaskId } from "./api.js";
 import { appConfig, featureEnabled } from "./config.js";
 import { compareStudents } from "./studentOrder.js";

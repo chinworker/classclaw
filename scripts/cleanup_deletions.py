@@ -313,11 +313,6 @@ def apply(args) -> None:
             print(f"已删除内容匹配历史测试且无数据库记录的文件 {removed} 个")
 
 
-def disk_only_files_standalone() -> list[Path]:
-    with reader_session() as db:
-        return disk_only_files(db)
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description="定向清理删除残留；默认只检查，--apply 才执行。")
     parser.add_argument("--apply", action="store_true", help="执行清理（默认只报告）")

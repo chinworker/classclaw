@@ -951,7 +951,7 @@ async def _complete_wechat_binding(db: Session, binding: ClassAgentBinding, logi
 
 
 async def wait_wechat_binding(
-    db: Session, class_id: str, current_qr_data_url: str | None = None, *, login_id: str | None = None,
+    db: Session, class_id: str, *, login_id: str | None = None,
     challenge_id: str | None = None, code: str | None = None,
 ) -> dict[str, Any]:
     binding = get_binding(db, class_id)

@@ -5,7 +5,7 @@ import { api } from "../api.js";
 import { state, refreshStudents, refreshSubjects } from "../state.js";
 import {
   pageHeader, dataTable, statusBadge, openModal, openDrawer, field, fieldError,
-  errorPanel, skeleton, emptyState,
+  errorPanel, skeleton,
 } from "../components.js";
 
 const STATUS_OPTIONS = [["pending", "待交"], ["submitted", "已交"], ["late", "迟交"], ["missing", "未交"], ["exempt", "免交"], ["revision_required", "需订正"], ["revised", "已订正"]];

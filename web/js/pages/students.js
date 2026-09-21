@@ -1,11 +1,11 @@
 // 学生档案：搜索/筛选列表 + 详情 Drawer + 新增/编辑/软删除（直接调领域接口）。
 
-import { el, clear, toast, fmtDate, fmtDateTime } from "../util.js";
+import { el, clear, toast, fmtDate } from "../util.js";
 import { api } from "../api.js";
 import { state, refreshStudents } from "../state.js";
 import {
   pageHeader, dataTable, statusBadge, openModal, openDrawer, confirmDanger, field, fieldError,
-  errorPanel, skeleton, pagination, emptyState,
+  errorPanel, skeleton, pagination,
 } from "../components.js";
 
 export async function render(mount, ctx) {

@@ -1,6 +1,6 @@
 // 管理员 · 数据库调试（只读）：表清单、行数、分页浏览；密码哈希与会话令牌由后端脱敏。
 
-import { el, clear, toast, copyText } from "../util.js";
+import { el, clear, copyText } from "../util.js";
 import { adminView } from "../adminView.js";
 import { appConfig } from "../config.js";
 import { pageHeader, errorPanel, skeleton, jsonDetails, pagination } from "../components.js";
