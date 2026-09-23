@@ -112,13 +112,16 @@ test("shared Agent panel previews only this class's changed model and keeps pend
     class: { id: "class-a" }, binding: { status: "awaiting_qr", channel_account_id: "pending-alias" }, model_summary: {},
   }, view));
   await tick();
-  assert.ok(document.body.textContent.includes("尚未绑定完成"));
+  assert.ok(document.body.textContent.includes("尚未连接"));
   const main = document.body.querySelectorAll("select")[0]; main.value = "provider/main"; main.dispatchEvent(new Event("change"));
   assert.equal(view.isDirty(), true);
   button("保存模型").click(); await tick(); assert.equal(writes.length, 0);
   button("确认保存").click(); await tick();
   assert.deepEqual(writes, [{ url: "/api/v1/classes/class-a/agent-chat/models", body: { main_model: "provider/main" } }]);
   assert.equal(view.isDirty(), false);
+  button("ClassClaw Channels").click(); await tick();
+  assert.ok(document.body.querySelector(".classclaw-channels-panel"));
+  assert.ok(document.body.textContent.includes("微信尚未绑定完成"));
 });
 
 test("usage remains usable when Gateway is offline and displays unknown cost honestly", async () => {

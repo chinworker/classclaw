@@ -763,10 +763,13 @@ async def _configure_runtime(binding: ClassAgentBinding, snapshot: dict[str, Any
             "match": {"channel": binding.channel_id, "accountId": binding.channel_account_id},
             "session": {"dmScope": "per-account-channel-peer"},
         }
+        # Legacy storage has one account for this provider. Rebinding must not
+        # erase the same Agent's routes for other ClassClaw Channels providers.
         filtered = [
             item for item in existing
             if not (
                 item.get("agentId") == binding.openclaw_agent_id
+                and (item.get("match") or {}).get("channel") == binding.channel_id
                 or (item.get("match") or {}).get("channel") == binding.channel_id
                 and (item.get("match") or {}).get("accountId") == binding.channel_account_id
             )
@@ -778,7 +781,7 @@ async def _configure_runtime(binding: ClassAgentBinding, snapshot: dict[str, Any
             # the same patch, so the listener starts with the correct route.
             raw["channels"] = {binding.channel_id: {"channelConfigUpdatedAt": now().isoformat()}}
         replace_paths.insert(0, "bindings")
-        note = f"Bind {binding.agent_name} to its WeChat account"
+        note = f"Bind {binding.agent_name} to its {binding.channel_id} channel account"
     patch_params: dict[str, Any] = {
         "raw": json.dumps(raw, ensure_ascii=False),
         "replacePaths": replace_paths,

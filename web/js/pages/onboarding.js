@@ -1,5 +1,5 @@
 // 班级创建向导（onboarding）：网页专属。
-// 流程：班级信息 → 学生名单 → 课表与节次 → 预览确认 → 智能体与微信。
+// 流程：班级信息 → 学生名单 → 课表与节次 → 预览确认 → Agent 与 ClassClaw Channels。
 // 只有最终确认走 /preview + /write-proposals/{id}/confirm；草稿反复编辑用 PATCH + expected_revision。
 
 import { el, clear, toast, debounce } from "../util.js";
@@ -8,10 +8,11 @@ import { appConfig, featureEnabled } from "../config.js";
 import { state, refreshIdentity, refreshClassInfo, refreshOpenclaw } from "../state.js";
 import { navigate } from "../router.js";
 import {
-  field, fileDropzone, proposalReview, qrBindingPanel, openclawBlocked, emptyState, showAiRejection,
+  field, fileDropzone, proposalReview, openclawBlocked, emptyState, showAiRejection,
 } from "../components.js";
 import { compareStudents } from "../studentOrder.js";
 import { timetableGridEditor } from "../timetableGrid.js";
+import { classclawChannelsPanel } from "../classclawChannels.js";
 
 let activeView = null;
 
@@ -431,7 +432,7 @@ export async function render(mount, ctx, helpers) {
     }
   }
 
-  /* ---------- 创建成功后：智能体 + 微信 ---------- */
+  /* ---------- 创建成功后：Agent + ClassClaw Channels ---------- */
 
   async function afterClassCreated() {
     await refreshIdentity();
@@ -451,6 +452,8 @@ export async function render(mount, ctx, helpers) {
 
   let doneBox = null;
   function renderDone() {
+    local.qrPanel?.dispose();
+    local.qrPanel = null;
     clear(mount);
     const result = local.classResult || {};
     doneBox = el("div", { class: "card" },
@@ -462,7 +465,7 @@ export async function render(mount, ctx, helpers) {
             el("span", { class: "metric-label" }, { student_count: "学生", subject_count: "科目", period_count: "节次", timetable_item_count: "课程" }[k])))),
       el("h3", { style: { marginTop: "14px" } }, "班级专属助手"),
       local.provisionDone
-        ? el("p", { class: "muted" }, "专属智能体已创建。微信绑定是可选项，可稍后到“账户设置”中绑定。")
+        ? el("p", { class: "muted" }, "专属智能体已创建。渠道绑定是可选项，可稍后到“账户设置 → ClassClaw Channels”中连接。")
         : local.provisionError
           ? el("div", {},
               el("p", { class: "field-error" }, `智能体创建失败：${local.provisionError.message}`),
@@ -475,7 +478,8 @@ export async function render(mount, ctx, helpers) {
                 },
               }, "重试创建智能体"))
           : el("p", { class: "muted" }, "正在创建专属智能体…"),
-      local.provisionDone ? (local.qrPanel = qrBindingPanel(result.class_id, { onDone: () => navigate("/dashboard") })).el : null,
+      local.provisionDone ? el("h3", {}, "ClassClaw Channels") : null,
+      local.provisionDone ? (local.qrPanel = classclawChannelsPanel(result.class_id, { onDone: () => navigate("/dashboard") })).el : null,
       el("div", { class: "row-gap", style: { marginTop: "16px" } },
         el("button", { class: "primary", type: "button", onclick: () => navigate("/dashboard") }, "进入班级工作台"),
         local.provisionDone ? el("button", { class: "secondary", type: "button", onclick: () => { local.qrPanel?.stop(); navigate("/agent"); } }, "暂不绑定") : null));

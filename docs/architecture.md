@@ -1,5 +1,7 @@
 # 架构
 
+外部渠道统一命名为 **ClassClaw Channels**，按“网页绑定入口 → 后端归属校验与绑定服务 → 渠道兼容层 → OpenClaw Channels → 本班 Agent”接入。当前开放微信，后续扩展多个渠道连接到同一 Agent，共享班级记忆与业务权限。当前实现边界及一对多连接迁移要求见 [ClassClaw Channels](classclaw-channels.md)。
+
 请求沿固定分层流动：OpenClaw/网页端 → FastAPI 路由 → Pydantic Schema → Service → SQLAlchemy → SQLite。网页结构化操作可直接进入领域 Service；自然语言和微信写入先经过 proposal 复核。路由负责 HTTP、身份和班级归属，跨表校验、事务、快照、排班、调课与分析位于 Service。
 
 网页班级对话由 FastAPI 完成登录与班级归属校验、附件留存和任务取消，再代理到绑定的 OpenClaw class agent。Gateway 管理凭据不会进入浏览器；网页文字只进入 OpenClaw 会话，不写入 ClassClaw 数据库。班级模型偏好保存在 `class_agent_bindings`：主模型同步到该 Agent runtime，网页图片 turn 使用后端受控模型覆盖，服务端语音识别通过临时录音调用 OpenClaw STT 并在结束后删除录音。

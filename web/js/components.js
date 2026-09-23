@@ -186,7 +186,7 @@ const STATUS_LABELS = {
   revision_required: ["需订正", "warn"], revised: ["已订正", "ok"],
   present: ["出勤", "ok"], absent: ["缺勤", "error"], leave: ["请假", "warn"],
   pending_agent: ["待创建智能体", "warn"], agent_created: ["智能体已创建", "info"], awaiting_qr: ["待扫码", "warn"],
-  linked: ["已绑定微信", "ok"], failed: ["失败", "error"],
+  linked: ["渠道已连接", "ok"], failed: ["失败", "error"],
   unavailable: ["运行时不存在", "error"], disabled: ["已禁用", "muted"],
   replaced: ["已替换", "muted"],
   positive: ["正向", "ok"], neutral: ["中性", "muted"], negative: ["负向", "error"],

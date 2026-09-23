@@ -469,7 +469,7 @@ def _class_agent_descriptors(db: Session, config: dict[str, Any]) -> list[dict[s
             "identifier": cls.id,
             "kind": "class",
             "label": cls.name,
-            "description": "班级专属智能体，拥有独立提示词、工具和可选微信绑定。",
+            "description": "班级专属智能体，拥有独立提示词、工具和可选 ClassClaw Channels 连接。",
             "agent_id": binding.openclaw_agent_id if binding else None,
             "workspace_path": binding.workspace_path if binding else None,
             "present": bool(binding and binding.openclaw_agent_id and _agent_runtime_row(config, binding.openclaw_agent_id)),

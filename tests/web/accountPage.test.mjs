@@ -46,6 +46,9 @@ function button(mount, text) { return mount.querySelectorAll("button").find((nod
 test("teacher with a pending account alias can see and generate QR in account settings", async () => {
   const mount = await mountPage();
   assert.ok(mount.textContent.includes("微信尚未绑定完成"));
+  assert.ok(mount.textContent.includes("ClassClaw Channels"));
+  assert.ok(mount.querySelector(".account-channels").querySelector(".qr-panel"));
+  assert.equal(mount.querySelector(".account-agent-settings").querySelector(".qr-panel"), null);
   assert.ok(mount.querySelector("form"));
   assert.ok(button(mount, "模型设置"));
   assert.equal(calls.some(({ path }) => path.endsWith("/start")), false);

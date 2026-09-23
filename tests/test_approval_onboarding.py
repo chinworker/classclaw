@@ -471,6 +471,31 @@ def test_linked_binding_check_repairs_missing_openclaw_route(client, db, sample,
     assert patch["plugins"]["entries"]["classclaw"]["config"]["agentClasses"][binding.openclaw_agent_id] == cls.id
 
 
+def test_rebinding_one_channel_preserves_other_agent_channels(sample, monkeypatch):
+    cls, _, _ = sample
+    binding = ClassAgentBinding(class_id=cls.id, agent_name="class-agent", openclaw_agent_id="class-agent",
+                                workspace_path="/tmp/classclaw-test", channel_id="openclaw-weixin", channel_account_id="new-wx")
+    other_channel = {"agentId": "class-agent", "match": {"channel": "future-channel", "accountId": "other-account"}}
+    other_class = {"agentId": "other-agent", "match": {"channel": "openclaw-weixin", "accountId": "other-wx"}}
+    old_wechat = {"agentId": "class-agent", "match": {"channel": "openclaw-weixin", "accountId": "old-wx"}}
+    duplicate_target = {"agentId": "class-agent", "match": {"channel": "openclaw-weixin", "accountId": "new-wx"}}
+    snapshot = {"hash": "config-hash", "config": {"bindings": [other_channel, old_wechat, other_class, duplicate_target]}}
+    calls = []
+
+    async def rpc(method, params=None):
+        calls.append((method, params))
+        return {"ok": True}
+
+    monkeypatch.setattr(openclaw_provisioning, "admin_rpc", rpc)
+    asyncio.run(openclaw_provisioning._configure_runtime(binding, snapshot, include_route=True))
+    patch = __import__("json").loads(calls[0][1]["raw"])
+    assert patch["bindings"][:2] == [other_channel, other_class]
+    assert len(patch["bindings"]) == 3
+    assert patch["bindings"][2]["match"] == {"channel": "openclaw-weixin", "accountId": "new-wx"}
+    assert patch["channels"]["openclaw-weixin"]["channelConfigUpdatedAt"]
+    assert calls[0][1]["baseHash"] == "config-hash"
+
+
 def test_binding_recovers_agent_created_before_local_id_was_saved(client, db, tmp_path, monkeypatch):
     cls = ClassRoom(name="高二二班", grade="高二")
     db.add(cls)

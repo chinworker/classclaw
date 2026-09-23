@@ -38,7 +38,8 @@ ClassClaw 是供 OpenClaw 智能体和网页端共用的轻量班级管理系统
 - `scripts/reset_admin_password.py`：仅限本地终端将现有唯一管理员密码重置为 `.env` 的 `CLASSCLAW_DEFAULT_ADMIN_PASSWORD`；不输出密码，事务性撤销旧会话并审计，不允许新增 HTTP/Agent 重置入口
 - `web/`：网页前端（`index.html` 班级创建引导 + 业务页面；`test.html` 后端综合验收台）
 - `web/js/agentChatStore.js`：按用户/班级隔离的内存对话列表与在途请求；新建/切换对话、站内页面卸载不能取消已发送聊天请求，原文不写入浏览器持久存储。页面 `dispose()` 只释放视图和输入设备资源；退出登录须清空对话并取消请求
-- 教师网页“班级 Agent”只负责对话；创建、模型设置、微信绑定/重新绑定在 `web/js/pages/account.js` 的账户设置中。微信 account alias 不代表已绑定，等待结果未返回新二维码时必须保留当前图片；二维码只存视图内存，离页清理扫码轮询不能取消聊天请求
+- 教师网页“班级 Agent”只负责对话；创建、模型设置和 `ClassClaw Channels` 在 `web/js/pages/account.js` 的账户设置中。渠道统一入口为 `web/js/classclawChannels.js`，当前仅开放微信；微信 account alias 不代表已绑定，等待结果未返回新二维码时必须保留当前图片；二维码只存视图内存，离页清理扫码轮询不能取消聊天请求
+- **ClassClaw Channels** 是外部渠道产品总称。每个班级 Agent 通过 OpenClaw Channels 与渠道兼容层接入，后续开放同 Agent 多渠道绑定。当前仍使用单个微信账号字段，不能宣称已支持多个绑定；新增渠道前须迁移为独立连接表，并同步扩展路由、登录状态、提醒目标和分阶段删除。微信重绑必须保留本 Agent 的其他渠道路由。详见 `docs/classclaw-channels.md`。
 - 班级思考强度统一来自 `openclaw.class_agent_thinking` / `CLASSCLAW_OPENCLAW_CLASS_AGENT_THINKING`，网页会话可独立覆盖，禁止用修改 Agent 全局配置实现会话覆盖。网页默认 SSE，断流不得视为成功；Gateway 私有会话设置端点只允许已绑定班级网页 key 和 `thinkingLevel`，不得扩为任意 RPC
 - 网页思考选项必须来自 Gateway `agents.list` 返回的本班模型 `thinkingLevels`，区分档位 ID 与显示标签（如 `low` / `on`）；发送前刷新并由后端复核，不得写死模型能力表。配置默认不兼容时使用 Gateway 有效默认并在网页提示，显式不支持的选择不得静默替换
 - 网页常用思考档位只列模型支持的 `off/low/medium/high`，二态模型保留“关闭／开启”标签。思考文本与正文分开，通过插件 Gateway 鉴权的只读 `web-chat-reasoning` 订阅获取；后端同时匹配班级网页会话 key 与本次 Responses run ID，不向浏览器转发工具事件、内部 key 或凭据。折叠状态和计时只存内存，离页清理界面定时器不能取消聊天；无思考文本时明确提示，不伪造内容
@@ -138,6 +139,7 @@ python scripts/cleanup_deletions.py     # 定向清理删除残留；默认只�
 - `docs/database-splitting.md`：业务库与独立用量库拆分
 - `docs/accounts-admin.md`：账户与管理员
 - `docs/class-agent-onboarding.md`：班级专属智能体与微信绑定
+- `docs/classclaw-channels.md`：统一渠道入口、OpenClaw 兼容层与多渠道扩展边界
 - `docs/analytics.md`：分析口径
 - `docs/configuration.md`：TOML 与环境变量配置分层
 - `docs/deployment.md`：Ubuntu 同机部署与运维

@@ -91,7 +91,7 @@ export async function render(mount, ctx = {}) {
       lines: [
         "全部班级、学生、业务记录、草稿和附件将被彻底删除。",
         "全部用户、登录会话、数据库运行状态、审计日志、Token 和调用统计将被删除；静态配置文件保持不变。",
-        "全部班级智能体及微信绑定将被删除；只保留 Main 和数据提取两个默认智能体。",
+        "全部班级智能体及 ClassClaw Channels 绑定将被删除；只保留 Main 和数据提取两个默认智能体。",
         "完成后只存在新建的默认管理员，当前登录会立即失效。",
       ],
       requireText: "INITIALIZE", confirmLabel: "执行初始化",

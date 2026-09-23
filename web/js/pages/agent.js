@@ -88,7 +88,7 @@ function welcomeNode(onSuggestion) {
 }
 
 function provisionPanel() {
-  return el("div", { class: "card" }, emptyState("需要先创建班级 Agent", "请到账户设置中创建本班专属 Agent；网页对话不要求绑定微信。",
+  return el("div", { class: "card" }, emptyState("需要先创建班级 Agent", "请到账户设置中创建本班专属 Agent；网页对话不要求绑定渠道。",
     el("a", { href: "#/account" }, "前往账户设置")));
 }
 

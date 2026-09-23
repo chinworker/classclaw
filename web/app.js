@@ -82,7 +82,7 @@ const routes = [
   { path: "/admin/access", title: "班级与账号", loader: () => import("./js/pages/adminAccess.js"), adminOnly: true },
   { path: "/admin/ops", title: "运维中心", loader: () => import("./js/pages/adminOps.js"), adminOnly: true },
   ...Object.entries(ADMIN_ALIASES).map(([path, redirect]) => ({ path, redirect, adminOnly: true })),
-  { path: "/account", title: "账户设置", loader: () => import("./js/pages/account.js?v=20260911-wechat-verification") },
+  { path: "/account", title: "账户设置", loader: () => import("./js/pages/account.js?v=20260923-classclaw-channels") },
   { path: "/welcome", title: "创建班级", loader: () => import("./js/pages/welcome.js"), bare: true },
   { path: "/onboarding", title: "班级创建向导", loader: () => import("./js/pages/onboarding.js?v=20260901-onboarding-actions") },
   { path: "/onboarding/:id", title: "班级创建向导", loader: () => import("./js/pages/onboarding.js?v=20260901-onboarding-actions") },

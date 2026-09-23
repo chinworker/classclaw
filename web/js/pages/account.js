@@ -1,11 +1,12 @@
-// 账户设置：资料、密码，以及本班 Agent 的创建、模型设置和微信绑定。
+// 账户设置：资料、密码、本班 Agent 和 ClassClaw Channels。
 
 import { el, clear, toast, fmtDateTime } from "../util.js";
 import { changePassword } from "../auth.js";
 import { state } from "../state.js";
 import { api } from "../api.js";
 import { openAgentModelSettings } from "../agentModelSettings.js";
-import { pageHeader, field, fieldError, statusBadge, errorPanel, skeleton, qrBindingPanel } from "../components.js";
+import { pageHeader, field, fieldError, statusBadge, errorPanel, skeleton } from "../components.js";
+import { classclawChannelsPanel } from "../classclawChannels.js";
 
 let activeView = null;
 
@@ -71,9 +72,13 @@ export async function render(mount) {
   const agentHost = el("div", { class: "account-agent-settings" });
   mount.append(el("section", { class: "card", aria: { label: "班级 Agent 绑定与设置" } },
     el("h3", {}, "班级 Agent · 绑定与设置"),
-    el("p", { class: "muted" }, "网页对话无需绑定微信。主模型、图片理解和语音识别在此设置；每个对话的思考强度仍在该对话内独立选择。"),
+    el("p", { class: "muted" }, "网页对话无需绑定渠道。主模型、图片理解和语音识别在此设置；每个对话的思考强度仍在该对话内独立选择。"),
     agentHost));
+  const channelsHost = el("div", { class: "account-channels" });
+  mount.append(el("section", { class: "card", aria: { label: "ClassClaw Channels" } },
+    el("h3", {}, "ClassClaw Channels"), channelsHost));
   if (!classId) {
+    channelsHost.append(el("p", { class: "muted" }, "创建班级和专属 Agent 后即可连接渠道。"));
     agentHost.append(el("p", { class: "muted" }, "尚未创建班级。创建班级后即可管理专属 Agent。"),
       el("a", { href: "#/onboarding" }, "前往创建班级"));
     return;
@@ -107,6 +112,7 @@ export async function render(mount) {
     el("div", { class: "row-gap" }, memoryButton, el("a", { href: "#/agent" }, "前往对话")), memoryHost));
 
   function showProvision() {
+    clear(channelsHost).append(el("p", { class: "muted" }, "请先创建本班 Agent，再连接渠道。"));
     const button = el("button", { class: "primary", type: "button" }, "创建班级 Agent");
     const errorHost = el("div");
     button.addEventListener("click", async () => {
@@ -134,12 +140,14 @@ export async function render(mount) {
     view.qr?.dispose();
     view.qr = null;
     clear(agentHost).append(skeleton(3));
+    clear(channelsHost).append(skeleton(2));
     let binding;
     try {
       binding = await api(`/classes/${classId}/agent-binding`);
     } catch (error) {
       if (!current()) return;
       clear(agentHost);
+      clear(channelsHost).append(el("p", { class: "muted" }, "暂时无法读取渠道信息，请重试加载 Agent。"));
       if (error.code === "NOT_FOUND") showProvision();
       else agentHost.append(errorPanel(error, { onRetry: loadAgent }));
       return;
@@ -147,7 +155,6 @@ export async function render(mount) {
     if (!current()) return;
     clear(agentHost);
     if (!binding.openclaw_agent_id) { showProvision(); return; }
-    const linked = binding.status === "linked" && Boolean(binding.channel_account_id);
     const modelButton = el("button", { class: "secondary agent-model-button", type: "button" }, "模型设置");
     modelButton.addEventListener("click", async () => {
       if (!live() || view.modelDialog) return;
@@ -166,16 +173,13 @@ export async function render(mount) {
       } finally { modelButton.disabled = false; }
     });
     agentHost.append(
-      el("p", {}, el("b", {}, binding.agent_name), " ", statusBadge(binding.status)),
-      el("p", { class: "muted" }, linked
-        ? `微信已绑定${binding.linked_at ? ` · ${fmtDateTime(binding.linked_at)}` : ""}，需要时可重新扫码绑定。`
-        : "微信尚未绑定完成，请点击下方按钮生成二维码并扫码。"),
+      el("p", {}, el("b", {}, binding.agent_name)),
       binding.last_error ? el("p", { class: "field-error" }, `最近错误：${binding.last_error}`) : null,
       el("div", { class: "row-gap" }, modelButton, el("a", { href: "#/agent" }, "进入班级 Agent")));
     // An account alias exists as soon as QR login starts; it is not proof of a
     // completed binding. Always keep the explicit (re)binding action available.
-    view.qr = qrBindingPanel(classId, { onDone: () => { if (live()) void loadAgent(); } });
-    agentHost.append(view.qr.el);
+    view.qr = classclawChannelsPanel(classId, { binding, onDone: () => { if (live()) void loadAgent(); } });
+    clear(channelsHost).append(view.qr.el);
   }
 
   await loadAgent();

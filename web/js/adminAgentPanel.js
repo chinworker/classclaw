@@ -1,7 +1,7 @@
 import { el, clear, toast as notify } from "./util.js";
-import { statusBadge, emptyState, qrBindingPanel, openDrawer as drawer, openModal as modal, field, confirmDanger as danger, errorPanel } from "./components.js";
+import { statusBadge, emptyState, openDrawer as drawer, openModal as modal, field, confirmDanger as danger, errorPanel } from "./components.js";
+import { classclawChannelsPanel } from "./classclawChannels.js";
 import { openAgentModelSettings, selectModel } from "./agentModelSettings.js";
-import { appConfig } from "./config.js";
 import { sourceEditor } from "./sourceEditor.js";
 import { diffPreviewModal } from "./settingsEditor.js";
 import { confirmDiscard } from "./adminView.js";
@@ -61,7 +61,7 @@ export function agentPanel(agent, view, { onRefresh = () => {} } = {}) {
       el("div", { class: "admin-config-grid compact" },
         kv("类型", agent.kind.toUpperCase()), kv("Agent ID", agent.agent_id || "NOT CREATED"),
         kv("Workspace", agent.workspace_path || "NOT CONFIGURED"),
-        isClass ? kv("微信绑定", binding?.status === "linked" ? "已绑定" : "尚未绑定完成") : kv("启用状态", agent.enabled ? "已启用" : "已关闭"),
+        isClass ? kv("ClassClaw Channels", binding?.status === "linked" && binding?.channel_account_id ? "渠道已连接" : "尚未连接") : kv("启用状态", agent.enabled ? "已启用" : "已关闭"),
         kv("主模型", `${agent.model_summary?.main_model || "未配置"}${agent.model_summary?.inherits_main ? "（继承全局）" : ""}`),
         isClass ? kv("图片理解", agent.model_summary?.image_model || "跟随主模型 / 全局图片模型") : null,
         isClass ? kv("语音识别", agent.model_summary?.speech_model || "浏览器语音识别") : null),
@@ -75,7 +75,7 @@ export function agentPanel(agent, view, { onRefresh = () => {} } = {}) {
           signal: view.signal,
           onSaved: (result) => refreshAfterRestart(result.restart_requested ? 1600 : 0),
         })) }, "主 / 图片 / 语音模型") : null,
-        isClass ? el("button", { class: "secondary", type: "button", disabled: !appConfig.features.wechat_binding, onclick: () => openQr(cls.id) }, appConfig.features.wechat_binding ? "微信绑定" : "微信绑定已关闭") : null,
+        isClass ? el("button", { class: "secondary", type: "button", onclick: () => openChannels(cls.id, binding) }, "ClassClaw Channels") : null,
         el("button", { class: "text-button", type: "button", onclick: () => openDrawer({ title: `运行详情 · ${agent.label}`, body: el("div", {}, kv("Workspace", agent.workspace_path), kv("Identifier", agent.identifier), isClass ? kv("Binding ID", binding?.id) : null) }) }, "运行详情")));
   }
 
@@ -267,11 +267,10 @@ export function agentPanel(agent, view, { onRefresh = () => {} } = {}) {
     renderFile();
   }
 
-  function openQr(classId) {
-    const panel = qrBindingPanel(classId, { onDone: onRefresh });
+  function openChannels(classId, binding) {
+    const panel = classclawChannelsPanel(classId, { binding, onDone: onRefresh });
     view.own(() => panel.dispose());
-    openDrawer({ title: "微信绑定", onClose: () => panel.dispose(), body: el("div", {}, el("p", { class: "muted" }, "重新校验智能体配置并生成微信登录二维码。"), panel.el) });
-    panel.start(true);
+    openDrawer({ title: "ClassClaw Channels", onClose: () => panel.dispose(), body: panel.el });
   }
   return agentCard(agent);
 }

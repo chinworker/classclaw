@@ -239,7 +239,7 @@ async def class_agent_provision(request: Request, class_id: str, db: Session = D
     _require_web(request)
     require_owned_class(request, class_id)
     binding = await openclaw_provisioning.provision_class_agent(db, class_id)
-    return ok(request, binding, "专属智能体已创建；微信绑定为可选项")
+    return ok(request, binding, "专属智能体已创建；可选连接 ClassClaw Channels")
 
 
 @router.post("/classes/{class_id}/agent-binding/start")

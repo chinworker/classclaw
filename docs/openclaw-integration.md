@@ -43,7 +43,7 @@ openclaw gateway restart
 
 `GET /api/v1/classes/{class_id}/agent-chat/thinking` 经登录和班级归属校验后，只投影 Gateway `agents.list` 中本班 Agent 的当前模型、`thinkingLevels` 和有效默认档位，并禁止缓存。网页据此生成本会话思考选项，二态模型的 `on` 标签显示为“开启”，请求仍发送原 ID。发送前网页刷新、后端复核，防止模型切换后继续提交旧档位；能力读取失败不会回退到写死的档位表。私有会话写端点仍只接收已绑定班级网页 `key` 和 `thinkingLevel`，无新增 Gateway 写入口或全局配置修改。
 
-“账户设置 → 班级 Agent · 绑定与设置”提供班级独立模型设置和微信绑定，对话页仅保留会话级思考设置。主模型写入该班 `agents.list` runtime，网页和微信共用；图片模型只在该班网页图片消息上通过受控 `x-openclaw-model` 覆盖生效，避免修改全局 `agents.defaults.imageModel` 而影响其他班；语音识别模型使用 `provider/model` 调用 `openclaw infer audio transcribe`。浏览器录音只写入临时文件，转写结束后立即删除，文字仍需在输入框复核后发送。未选择服务端 STT 时继续使用 Web Speech API，不上传录音。候选来自 Gateway `models.list` 和 OpenClaw 音频 Provider 目录；不可用的主/图片模型及未配置凭据的 STT Provider 会被后端拒绝。
+“账户设置 → 班级 Agent · 绑定与设置”提供班级独立模型设置，“账户设置 → ClassClaw Channels”管理渠道连接（当前开放微信），对话页仅保留会话级思考设置。主模型写入该班 `agents.list` runtime，网页和渠道共用；图片模型只在该班网页图片消息上通过受控 `x-openclaw-model` 覆盖生效，避免修改全局 `agents.defaults.imageModel` 而影响其他班；语音识别模型使用 `provider/model` 调用 `openclaw infer audio transcribe`。浏览器录音只写入临时文件，转写结束后立即删除，文字仍需在输入框复核后发送。未选择服务端 STT 时继续使用 Web Speech API，不上传录音。候选来自 Gateway `models.list` 和 OpenClaw 音频 Provider 目录；不可用的主/图片模型及未配置凭据的 STT Provider 会被后端拒绝。
 
 JSON 提取默认走自动创建的轻量提取智能体（详见 [专属智能体与微信使用说明](class-agent-onboarding.md) §5.1）：服务启动和首次分析时，后端会通过 admin RPC 创建并校正 `classclaw-extractor` 的独立 runtime。该 runtime 显式保存模型、开启 fast mode，按 `openclaw.extractor_thinking` 设置思考档位（默认 `off`，仅在配置变化时重启 Gateway），并关闭推理、记忆与技能，以 `minimal` profile 加 `deny: [session_status]` 将可调用工具降为零；不会继承 Main 的 coding profile。清洗规范自动写入 `data/openclaw-agents/_extractor/AGENTS.md`。管理员在 Agent Studio 保存的文件会记录为自定义内容，后续自动检查不会覆盖；需要跟随 ClassClaw 新默认规则时，可在管理端恢复系统默认。因此 OpenClaw 侧必须启用 `admin-http-rpc`；未启用时后端自动回退主智能体。
 
@@ -117,7 +117,9 @@ openclaw doctor
 
 Gateway 拒绝信息中的可用档位可能是显示标签：例如本地 Kimi provider 2026.7.1 将 `low` 显示为 `on`，只支持 `off/low`（关闭/开启），不支持 `minimal`。错误解析必须把 `on` 还原为 `low` 并保留“开启”标签，不能丢掉这一可用选项；具体档位以安装版本的 provider profile 为准。
 
-### 微信接入
+### ClassClaw Channels 接入
+
+ClassClaw Channels 是外部渠道的统一入口：每个班级 Agent 通过 OpenClaw Channels 与渠道兼容层接入。当前开放微信；其他渠道及同一 Agent 多渠道绑定后续开放。当前单账号存储的迁移、连接隔离、路由保留与删除要求见 [ClassClaw Channels](classclaw-channels.md)。
 
 ClassClaw 不直接连接微信；微信连接器属于 OpenClaw。只要微信消息被路由到启用了 `classclaw-manager` Skill 的 OpenClaw agent，Skill 会走统一分析工具。建议给该 agent 固定以下系统业务约束：
 
