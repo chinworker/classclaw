@@ -121,6 +121,8 @@ test("shared Agent panel previews only this class's changed model and keeps pend
   assert.equal(view.isDirty(), false);
   button("ClassClaw Channels").click(); await tick();
   assert.ok(document.body.querySelector(".classclaw-channels-panel"));
+  assert.ok(document.body.querySelector(".classclaw-web-channel").textContent.includes("默认启用"));
+  assert.equal(document.body.querySelector(".classclaw-web-channel").querySelector("a"), null);
   assert.ok(document.body.textContent.includes("微信尚未绑定完成"));
 });
 

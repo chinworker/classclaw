@@ -1,6 +1,6 @@
 # 架构
 
-外部渠道统一命名为 **ClassClaw Channels**，按“网页绑定入口 → 后端归属校验与绑定服务 → 渠道兼容层 → OpenClaw Channels → 本班 Agent”接入。当前开放微信，后续扩展多个渠道连接到同一 Agent，共享班级记忆与业务权限。当前实现边界及一对多连接迁移要求见 [ClassClaw Channels](classclaw-channels.md)。
+**ClassClaw Channels** 包括内置网页 Chat 和外部渠道。网页 Chat 默认启用，沿用“Chat API → OpenClaw Responses/SSE → 本班 Agent”；外部渠道按“网页绑定入口 → 后端归属校验与绑定服务 → 渠道兼容层 → OpenClaw Channels → 本班 Agent”接入。当前支持网页 Chat 与微信，共享班级记忆和业务权限，后续扩展多个外部渠道绑定。当前实现边界及一对多连接迁移要求见 [ClassClaw Channels](classclaw-channels.md)。
 
 请求沿固定分层流动：OpenClaw/网页端 → FastAPI 路由 → Pydantic Schema → Service → SQLAlchemy → SQLite。网页结构化操作可直接进入领域 Service；自然语言和微信写入先经过 proposal 复核。路由负责 HTTP、身份和班级归属，跨表校验、事务、快照、排班、调课与分析位于 Service。
 

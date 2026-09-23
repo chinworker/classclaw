@@ -72,7 +72,7 @@ export async function render(mount) {
   const agentHost = el("div", { class: "account-agent-settings" });
   mount.append(el("section", { class: "card", aria: { label: "班级 Agent 绑定与设置" } },
     el("h3", {}, "班级 Agent · 绑定与设置"),
-    el("p", { class: "muted" }, "网页对话无需绑定渠道。主模型、图片理解和语音识别在此设置；每个对话的思考强度仍在该对话内独立选择。"),
+    el("p", { class: "muted" }, "网页 Chat 是默认启用的内置渠道，无需额外绑定。主模型、图片理解和语音识别在此设置；每个对话的思考强度仍在该对话内独立选择。"),
     agentHost));
   const channelsHost = el("div", { class: "account-channels" });
   mount.append(el("section", { class: "card", aria: { label: "ClassClaw Channels" } },

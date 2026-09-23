@@ -1,8 +1,10 @@
 # OpenClaw Weixin compatibility wrapper
 
 This is the WeChat adapter for **ClassClaw Channels**, the shared product entry
-point for connecting class Agents through OpenClaw Channels. Other providers and
-multiple connections per Agent are planned; this wrapper remains WeChat-specific.
+point for built-in web Chat and external providers. Web Chat needs no binding;
+external providers connect through OpenClaw Channels. Additional external
+providers and multiple external accounts per Agent are planned; this wrapper
+remains WeChat-specific.
 See [the channel architecture](../../../docs/classclaw-channels.md).
 
 Version `2.4.6-classclaw.2` delegates message transport, channel registration and

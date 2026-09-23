@@ -2,7 +2,7 @@
 
 ClassClaw 是供 OpenClaw 智能体和网页端共同使用的轻量班级管理系统。确定性 REST 能力不依赖 OpenClaw 在线；自然语言、文件分析、智能体创建和渠道绑定需要 OpenClaw。对话式写入采用“结构化草稿 → 后端预览 → 用户复核 → 一次性执行”，网页结构化操作可以直接调用领域接口。
 
-外部渠道接入统一称为 **ClassClaw Channels**，在“账户设置 → ClassClaw Channels”中管理。目前开放微信，后续通过 OpenClaw Channels 和各渠道兼容层接入其他平台，并开放同一 Agent 的多个渠道绑定。详见 [渠道接入与扩展设计](docs/classclaw-channels.md)。
+**ClassClaw Channels** 统一包含网页 Chat 和外部渠道，在“账户设置 → ClassClaw Channels”中查看与管理。网页 Chat 默认启用、无需绑定，微信是首个外部渠道；两者可同时连接同一 Agent。后续通过 OpenClaw Channels 和各渠道兼容层接入其他平台，并开放多个外部渠道绑定。详见 [渠道接入与扩展设计](docs/classclaw-channels.md)。
 
 ## 技术栈与运行边界
 

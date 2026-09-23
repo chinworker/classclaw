@@ -465,7 +465,7 @@ export async function render(mount, ctx, helpers) {
             el("span", { class: "metric-label" }, { student_count: "学生", subject_count: "科目", period_count: "节次", timetable_item_count: "课程" }[k])))),
       el("h3", { style: { marginTop: "14px" } }, "班级专属助手"),
       local.provisionDone
-        ? el("p", { class: "muted" }, "专属智能体已创建。渠道绑定是可选项，可稍后到“账户设置 → ClassClaw Channels”中连接。")
+        ? el("p", { class: "muted" }, "专属智能体已创建，网页 Chat 已默认启用。外部渠道绑定是可选项，可稍后到“账户设置 → ClassClaw Channels”中连接。")
         : local.provisionError
           ? el("div", {},
               el("p", { class: "field-error" }, `智能体创建失败：${local.provisionError.message}`),

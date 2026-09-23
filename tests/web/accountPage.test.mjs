@@ -47,6 +47,9 @@ test("teacher with a pending account alias can see and generate QR in account se
   const mount = await mountPage();
   assert.ok(mount.textContent.includes("微信尚未绑定完成"));
   assert.ok(mount.textContent.includes("ClassClaw Channels"));
+  const webChannel = mount.querySelector(".classclaw-web-channel");
+  assert.ok(webChannel.textContent.includes("默认启用"));
+  assert.equal(webChannel.querySelector("a").getAttribute("href"), "#/agent");
   assert.ok(mount.querySelector(".account-channels").querySelector(".qr-panel"));
   assert.equal(mount.querySelector(".account-agent-settings").querySelector(".qr-panel"), null);
   assert.ok(mount.querySelector("form"));
