@@ -140,7 +140,7 @@ Gateway 管理 Token 只放在 `.env` 的 `CLASSCLAW_OPENCLAW_GATEWAY_TOKEN` 中
 
 `[web]` 可配置 AI 请求等待时间、管理员默认统计窗口和只读数据库默认分页数。`[web.brand]` 可配置浏览器标题、品牌名称、字符标记、普通/管理员副标题和登录页说明。
 
-后端只通过公开的 `/api/v1/app-config` 返回浏览器确实需要的品牌、功能开关、显示时区、网页默认值和二维码轮询参数；该响应不含 Token、密码、数据库路径、附件路径、工作区或微信 channel ID，并禁用缓存。
+后端只通过公开的 `/api/v1/app-config` 返回浏览器确实需要的品牌、功能开关、显示时区、网页默认值、二维码轮询参数和教室广播/媒体的边界值（字数、停留时长、播报次数、音量上限、租约与宽限、媒体转发是否接入）；该响应不含 Token、密码、数据库路径、附件路径、工作区或微信 channel ID，并禁用缓存。
 
 ### 微信绑定 `[wechat]`
 
@@ -154,6 +154,27 @@ Gateway 管理 Token 只放在 `.env` 的 `CLASSCLAW_OPENCLAW_GATEWAY_TOKEN` 中
 轮询间隔必须小于二维码总等待时间，总等待时间必须大于单次 Gateway 超时；微信单次超时还不能大于 `openclaw.timeout_seconds`。这里仅配置当前已有的“一班一专属 Agent、可选绑定一个微信账号”流程，不涉及群聊或未实现的微信能力。
 
 微信兼容层 `2.4.6-classclaw.2` 将单次等待与总登录有效期分离：默认 15 秒短轮询超时只返回继续等待，不删除默认 300 秒的登录会话。过期二维码最多自动刷新 3 次，手机微信显示的数字验证码在网页中提交（每次登录最多 5 次）；验证码不持久化。后端请求额外保留 15 秒传输/刷新余量。此流程只适用于仓库兼容层的 ClassClaw 私有登录端点，官方 CLI 登录不变。
+
+### 教室终端与实时监控 `[classroom]`
+
+| 字段 | 当前影响范围 |
+| --- | --- |
+| `pairing_code_ttl_seconds` | 网页生成的一次性配对码有效期；兑换一次或超时后立即失效 |
+| `heartbeat_timeout_seconds` | 超过该时间没有心跳即判定终端离线，离线时拒绝实时点名与音量 |
+| `command_ttl_seconds` | 终端命令有效期，超时未回执收敛为 `expired`（未送达）或 `unknown`（已开始执行） |
+| `broadcast_max_chars`、`broadcast_max_segments` | 单句字数与逐人播报句数上限；超出直接报错，不静默截断 |
+| `display_seconds_default`、`display_seconds_max`、`speak_repeat_max` | 屏幕停留时长与播报次数 |
+| `volume_ceiling` | 网页与 Agent 设置教室音量的共同上限 |
+| `media_lease_seconds`、`media_stop_grace_seconds` | 观看租约有效期与最后一名观看者离开后的停流宽限 |
+| `media_provider`、`media_base_url` | 默认 `none`；启用 `mediamtx` 时为同机信令 HTTP 地址 |
+| `media_api_url`、`media_rtsp_url` | 同机 MediaMTX 控制 HTTP / 内部 RTSP 地址 |
+| `media_ffmpeg_path`、`media_ice_servers` | FFmpeg 程序及提供给授权终端/观看者的 RTCIceServer 数组；环境变量 ICE 值使用 JSON |
+
+启动时校验：`display_seconds_default ≤ display_seconds_max`，且 `command_ttl_seconds > display_seconds_max × speak_repeat_max`（否则命令会在展示完成前过期）。`media_provider` 不为 `none` 时三个媒体 URL 必须是无凭据、无路径/查询的环回地址，分别为 HTTP、HTTP、RTSP。
+
+`media_provider = "none"` 是默认关闭状态。已实现 MediaMTX 分轨授权、网页播放、按需采集和单帧概况，启用步骤见 [媒体部署](classroom-media-deployment.md)；组件未就绪会明确返回不可用，不编造画面。
+
+摄像头密码不进 TOML：只保存引用名，实际值从服务器环境变量 `CLASSCLAW_CLASSROOM_CAMERA_<引用名大写>` 读取（含 username/password 的 JSON），不回传浏览器、不写日志。
 
 ## 修改与重启流程
 

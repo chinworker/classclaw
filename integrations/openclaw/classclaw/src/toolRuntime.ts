@@ -50,6 +50,8 @@ const requiredReadFields: Record<string, string[]> = {
   daily_timetable: ["class_id"], morning_briefing: ["class_id"],
   class_analysis: ["class_id"], attention_students: ["class_id"], write_proposal: ["proposal_id"],
   interaction_analysis: ["analysis_id"], reminder_delivery: ["reminder_id"],
+  classroom_status: ["class_id"], classroom_camera: ["class_id"], classroom_broadcast: ["class_id", "broadcast_id"],
+  classroom_observation: ["class_id"],
 };
 
 export function validateReadParams(params: Row) {

@@ -14,6 +14,11 @@ This reference is for deciding which ClassClaw operation matches a user's reques
 | 学生阶段分析 | `student_analysis` | State facts and limits; no causal guesses. |
 | 班级阶段分析 | `class_analysis` | Use short metrics and exceptions. |
 | 需要关注的学生 | `attention_students` | Give rule-based facts, not labels. |
+| 教室电脑在线吗、终端状态 | `classroom_status` | Report last heartbeat, whether display and speech are ready, and current volume. |
+| 摄像头正常吗 | `classroom_camera` | Report connectivity, video/audio capability and the update time; never invent a picture. |
+| 看看教室监控 | `classroom_status` | Give the web entry; WeChat cannot play the stream, so do not promise playback. |
+| 教室现在大致在做什么、描述当前画面 | `classroom_observation` | Explicit request only; one frame, capture time and limitations. No audio, identity or attendance inference; do not poll. |
+| 刚才那次点名播了吗 | `classroom_broadcast` | Use the returned `broadcast_id`; report display and speech separately. |
 
 Reads never need confirmation and never create a write proposal. `student_detail` and `student_analysis` accept the class-internal `student_no` instead of `student_id`; student writes reference students by `student_no` and the backend resolves them to internal IDs.
 
@@ -147,6 +152,37 @@ Preview:
 值日评分预览
 今天｜扫地｜4分
 回复“确认”就登记完成。
+```
+
+### Classroom broadcast and volume
+
+- “请3号和8号同学现在去扫地，显示并播报” → `classroom.broadcast.send`, `mode="three_part"`, `student_nos:["3","8"]`, `time_phrase:"现在"`, `predicate:"去扫地"`.
+- “通知张三和李四下课后来老师办公室” → same operation with `time_phrase:"下课后"`; this is the errand’s time, so it is displayed and spoken now.
+- “下课后再播报这条通知” → scheduling is not supported. Say that only immediate display and speech are available; do not create a delayed task or a reminder.
+- “念这句：请今天负责卫生的同学现在带好工具到教室后门集合。” → `mode="custom"` with the sentence verbatim in `text`, no students.
+- “一个一个念” → `merge_mode="per_student"`; otherwise several students merge into one sentence.
+- “把教室音量调到40%” / “教室静音” → `classroom.volume.set`.
+- Terminal offline, `DEVICE_OFFLINE`, or a missing capability → say the action could not be performed now and that it will not be replayed after reconnection. Do not retry silently.
+- Broadcast is not attendance: never add `attendance.set`, a duty arrangement, or a completed task because of an errand like “去扫地”.
+
+Preview:
+
+```text
+点名广播预览（1句，立即显示并播报）
+请张三、李四同学下课后来老师办公室。
+回复“确认”就发到教室屏幕和扬声器。这不是考勤，不记录到场情况。
+```
+
+After confirmation, report registration and the terminal receipt separately:
+
+```text
+已发到教室终端；屏幕已显示，播报结果为 succeeded。
+```
+
+When the receipt is missing:
+
+```text
+已下发教室终端，但还没收到显示和播报回执；不能确认全班已经听到。
 ```
 
 ## Multiple operations

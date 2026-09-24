@@ -24,9 +24,13 @@ export function sourceEditor(text = "", { onChange = () => {}, errors = [], labe
 export function applyTomlChanges(text, layout, changes) {
   const groups = new Map();
   const insertions = new Map();
+  const encode = (value) => Array.isArray(value) ? `[${value.map(encode).join(", ")}]`
+    : value && typeof value === "object"
+      ? `{ ${Object.entries(value).map(([key, item]) => `${JSON.stringify(key)} = ${encode(item)}`).join(", ")} }`
+      : JSON.stringify(value);
   const assignment = (path, value, scope = "") => {
     const relative = scope ? path.slice(scope.length + 1) : path;
-    return `${relative.split(".").map((part) => /^[A-Za-z0-9_-]+$/.test(part) ? part : JSON.stringify(part)).join(".")} = ${JSON.stringify(value)}\n`;
+    return `${relative.split(".").map((part) => /^[A-Za-z0-9_-]+$/.test(part) ? part : JSON.stringify(part)).join(".")} = ${encode(value)}\n`;
   };
   for (const [path, value] of Object.entries(changes)) {
     const span = layout.spans.find((item) => item.root === path || path.startsWith(`${item.root}.`));

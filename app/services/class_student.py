@@ -21,6 +21,11 @@ from app.models.entities import (
     ClassAgentMemory,
     ClassRoom,
     ClassSubject,
+    ClassroomBroadcast,
+    ClassroomCamera,
+    ClassroomDevice,
+    ClassroomDeviceCommand,
+    ClassroomMediaSession,
     DeletionOperation,
     DutyAssignment,
     DutyEvaluation,
@@ -205,6 +210,11 @@ def hard_delete_class(db: Session, class_id: str, *, operator_id: str | None = N
         "interaction_analyses": interaction_ids,
         "write_proposals": proposal_ids,
         "class_onboarding_sessions": onboarding_ids,
+        "classroom_devices": ids(ClassroomDevice, ClassroomDevice.class_id == class_id),
+        "classroom_broadcasts": ids(ClassroomBroadcast, ClassroomBroadcast.class_id == class_id),
+        "classroom_device_commands": ids(ClassroomDeviceCommand, ClassroomDeviceCommand.class_id == class_id),
+        "classroom_cameras": ids(ClassroomCamera, ClassroomCamera.class_id == class_id),
+        "classroom_media_sessions": ids(ClassroomMediaSession, ClassroomMediaSession.class_id == class_id),
     }
     class_entity_ids = set().union(*entity_ids_by_type.values())
 
@@ -240,6 +250,16 @@ def hard_delete_class(db: Session, class_id: str, *, operator_id: str | None = N
         )
 
     try:
+        # 先断开与撤销，再删记录：撤销终端凭据、停止媒体、终止未执行命令。
+        from app.services import classroom_camera, classroom_devices
+
+        classroom_release = classroom_devices.release_class(db, class_id)
+        classroom_release.update(classroom_camera.release_class(db, class_id))
+        db.execute(delete(ClassroomMediaSession).where(ClassroomMediaSession.class_id == class_id))
+        db.execute(delete(ClassroomCamera).where(ClassroomCamera.class_id == class_id))
+        db.execute(delete(ClassroomDeviceCommand).where(ClassroomDeviceCommand.class_id == class_id))
+        db.execute(delete(ClassroomBroadcast).where(ClassroomBroadcast.class_id == class_id))
+        db.execute(delete(ClassroomDevice).where(ClassroomDevice.class_id == class_id))
         for link in attachment_links:
             db.delete(link)
         if proposal_ids:
@@ -284,7 +304,7 @@ def hard_delete_class(db: Session, class_id: str, *, operator_id: str | None = N
             operation.resources_json = {**operation.resources_json, "attachment_paths": attachment_paths}
             operation.phase = "files"
             operation.result_json = {"class_id": class_id, "class_name": class_name, "deleted": True,
-                                     "owner_user_id": owner_user_id,
+                                     "owner_user_id": owner_user_id, "classroom": classroom_release,
                                      "deleted_counts": {**{k: len(v) for k, v in entity_ids_by_type.items() if v},
                                                         "attachments": len(orphan_attachments)}}
         db.commit()

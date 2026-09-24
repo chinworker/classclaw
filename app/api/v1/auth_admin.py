@@ -14,7 +14,7 @@ from app.core.security import Principal, require_admin, require_authenticated
 from app.database import get_db
 from app.models.entities import ClassAgentBinding, ClassRoom, DeletionOperation, User, UserSession
 from app.schemas.auth import LoginRequest, PasswordChange, UserCreate, UserUpdate
-from app.services import accounts, admin_console, deletions, openclaw_provisioning
+from app.services import accounts, admin_console, classroom_media, deletions, openclaw_provisioning
 from app.utils.time import now
 
 public_router = APIRouter(tags=["账户"])
@@ -61,6 +61,9 @@ def logout(request: Request, principal: Principal = Depends(require_authenticate
         if session and session.revoked_at is None:
             session.revoked_at = now()
             db.commit()
+        # 登出即终止本人已建立的实时监控观看会话。
+        if principal.user_id:
+            classroom_media.revoke_user(db, principal.user_id)
     return ok(request, None, "已退出登录")
 
 

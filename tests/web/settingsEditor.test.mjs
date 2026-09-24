@@ -135,3 +135,9 @@ test("typing during validation cannot save a draft different from the preview", 
   assert.equal(document.body.querySelector(".modal"), null);
   assert.equal(port.value, "8002");
 });
+
+test("ICE server arrays serialize to TOML inline tables", () => {
+  const text = applyTomlChanges("[classroom]\n", { tables: { "": 0, classroom: 12 }, spans: [] },
+    { "classroom.media_ice_servers": [{ urls: ["stun:example.test:3478"] }] });
+  assert.match(text, /media_ice_servers = \[\{ "urls" = \["stun:example.test:3478"\] \}\]/);
+});

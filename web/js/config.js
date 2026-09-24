@@ -23,6 +23,19 @@ export const appConfig = {
     qr_poll_ms: 2000,
     qr_retry_ms: 3500,
   },
+  classroom: {
+    broadcast_max_chars: 160,
+    broadcast_max_segments: 20,
+    display_seconds_default: 15,
+    display_seconds_max: 120,
+    speak_repeat_max: 3,
+    volume_ceiling: 100,
+    media_lease_seconds: 300,
+    media_stop_grace_seconds: 30,
+    media_provider: "none",
+    pairing_code_ttl_seconds: 600,
+    heartbeat_timeout_seconds: 90,
+  },
 };
 
 let loading = null;
@@ -47,6 +60,7 @@ export async function loadAppConfig() {
       Object.assign(appConfig.semester_defaults, value.semester_defaults || {});
       Object.assign(appConfig.web, value.web || {});
       Object.assign(appConfig.wechat, value.wechat || {});
+      Object.assign(appConfig.classroom, value.classroom || {});
     } catch {
       // 后端不可用时登录页仍可显示；后续 API 请求会给出统一的网络错误。
     }

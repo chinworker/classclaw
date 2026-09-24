@@ -24,6 +24,10 @@ def test_example_configuration_is_valid():
     assert loaded.openclaw_timeout_seconds == 120
     assert loaded.server.host == "127.0.0.1"
     assert loaded.server.port == 8000
+    # 媒体转发默认不接入：网页只能看到设备状态，不能声称有画面。
+    assert loaded.classroom.media_provider == "none"
+    assert loaded.classroom.media_base_url == ""
+    assert loaded.classroom.command_ttl_seconds > loaded.classroom.display_seconds_max * loaded.classroom.speak_repeat_max
 
 
 def test_toml_paths_are_resolved_from_configuration_directory(tmp_path):
@@ -169,3 +173,12 @@ def test_deployment_check_rejects_example_secrets_without_exposing_values():
     serialized = str(rows)
     assert "replace-with-a-long-random-token" not in serialized
     assert "replace-with-openclaw-gateway-token" not in serialized
+
+
+def test_ice_environment_json_and_validation(tmp_path):
+    config = _write_config(tmp_path / "classclaw.toml", "")
+    loaded = load_settings(config, environ={"CLASSCLAW_CLASSROOM_MEDIA_ICE_SERVERS": '[{"urls":"stun:example.test:3478"}]'})
+    assert loaded.classroom.media_ice_servers == [{"urls": "stun:example.test:3478"}]
+    for value in ('not-json', '[{"urls":"http://example.test"}]', '{}'):
+        with pytest.raises(ConfigurationError):
+            load_settings(config, environ={"CLASSCLAW_CLASSROOM_MEDIA_ICE_SERVERS": value})

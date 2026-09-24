@@ -126,7 +126,8 @@ export function settingsEditor({ snapshot: initial, view, sectionIds = null, ini
     const displayed = locked ? item.value : values[path];
     const control = item.type === "boolean" ? el("input", { type: "checkbox", class: "setting-switch", role: "switch", checked: displayed })
       : item.enum ? el("select", {}, item.enum.map((value) => el("option", { value, selected: value === displayed }, value)))
-        : el("input", { type: ["integer", "number"].includes(item.type) ? "number" : "text", value: displayed,
+        : el("input", { type: ["integer", "number"].includes(item.type) ? "number" : "text",
+          value: item.type === "array" ? JSON.stringify(displayed) : displayed,
           min: item.minimum ?? item.exclusiveMinimum, max: item.maximum, maxlength: item.maxLength, step: item.type === "integer" ? "1" : "any" });
     control.disabled = locked; control.title = tooltip; control.setAttribute("aria-label", item.label);
     control.dataset.path = path;
@@ -137,7 +138,19 @@ export function settingsEditor({ snapshot: initial, view, sectionIds = null, ini
     };
     control.addEventListener(item.enum || item.type === "boolean" ? "change" : "input", () => {
       if (locked) return;
-      const value = item.type === "boolean" ? control.checked : ["integer", "number"].includes(item.type) ? (control.value === "" ? NaN : Number(control.value)) : control.value;
+      let value = item.type === "boolean" ? control.checked : ["integer", "number"].includes(item.type) ? (control.value === "" ? NaN : Number(control.value)) : control.value;
+      if (item.type === "array") {
+        try {
+          value = JSON.parse(control.value);
+          if (!Array.isArray(value)) throw new Error("需要数组");
+        } catch {
+          issues = issues.filter((issue) => issue.config_path !== path);
+          issues.push({ config_path: path, message: "请输入有效 JSON 数组" });
+          showError();
+          updateDirty();
+          return;
+        }
+      }
       values[path] = value;
       if (value === formValues[path]) delete edits[path]; else edits[path] = value;
       issues = issues.filter((issue) => issue.config_path !== path);

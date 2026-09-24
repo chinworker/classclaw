@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from dotenv import load_dotenv
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG_FILE = BASE_DIR / "config" / "classclaw.toml"
@@ -93,6 +93,47 @@ class WebConfig(_StrictSection):
     database_page_size: int = Field(default=50, ge=10, le=200)
 
 
+class ClassroomConfig(_StrictSection):
+    """教室终端与实时监控。终端不在线时拒绝实时点名和音量操作，不积压离线命令。"""
+
+    pairing_code_ttl_seconds: int = Field(default=600, ge=60, le=3600)
+    heartbeat_timeout_seconds: int = Field(default=90, ge=15, le=900)
+    command_ttl_seconds: int = Field(default=600, ge=30, le=3600)
+    broadcast_max_chars: int = Field(default=160, ge=10, le=400)
+    broadcast_max_segments: int = Field(default=20, ge=1, le=60)
+    display_seconds_default: int = Field(default=15, ge=3, le=600)
+    display_seconds_max: int = Field(default=120, ge=5, le=600)
+    speak_repeat_max: int = Field(default=3, ge=1, le=10)
+    volume_ceiling: int = Field(default=100, ge=1, le=100)
+    media_lease_seconds: int = Field(default=300, ge=30, le=3600)
+    media_stop_grace_seconds: int = Field(default=30, ge=0, le=600)
+    # 媒体转发是明确的部署扩展；未接入时网页只能看到状态，不能声称有画面。
+    media_provider: Literal["none", "mediamtx"] = "none"
+    media_base_url: str = Field(default="", max_length=500)
+    media_api_url: str = Field(default="http://127.0.0.1:9997", max_length=500)
+    media_rtsp_url: str = Field(default="rtsp://127.0.0.1:8554", max_length=500)
+    media_ffmpeg_path: str = Field(default="ffmpeg", max_length=500)
+    media_ice_servers: list[dict] = Field(default_factory=list, max_length=10)
+
+    @field_validator("media_ice_servers")
+    @classmethod
+    def validate_ice_servers(cls, servers: list[dict]) -> list[dict]:
+        for server in servers:
+            if set(server) - {"urls", "username", "credential"}:
+                raise ValueError("ICE 服务只接受 urls、username、credential")
+            urls = server.get("urls")
+            urls = [urls] if isinstance(urls, str) else urls
+            if not isinstance(urls, list) or not urls or len(urls) > 10:
+                raise ValueError("ICE 服务必须提供 urls 字符串或非空数组")
+            if any(not isinstance(url, str) or len(url) > 500 or not url.startswith(("stun:", "stuns:", "turn:", "turns:"))
+                   for url in urls):
+                raise ValueError("ICE urls 必须使用 STUN/TURN 协议")
+            if any(key in server and (not isinstance(server[key], str) or len(server[key]) > 500)
+                   for key in ("username", "credential")):
+                raise ValueError("ICE 用户名和凭据必须是最多 500 字符的文本")
+        return servers
+
+
 class WechatConfig(_StrictSection):
     channel: str = Field(default="openclaw-weixin", min_length=1, max_length=100)
     qr_binding_timeout_seconds: int = Field(default=300, ge=30, le=1800)
@@ -112,6 +153,7 @@ class ConfigDocument(_StrictSection):
     features: FeatureConfig = Field(default_factory=FeatureConfig)
     web: WebConfig = Field(default_factory=WebConfig)
     wechat: WechatConfig = Field(default_factory=WechatConfig)
+    classroom: ClassroomConfig = Field(default_factory=ClassroomConfig)
 
 
 @dataclass(frozen=True, slots=True)
@@ -149,6 +191,7 @@ class Settings:
     features: FeatureConfig
     web: WebConfig
     wechat: WechatConfig
+    classroom: ClassroomConfig
     server: ServerConfig
     config_file: Path | None
     config_hash: str
@@ -177,6 +220,11 @@ _ENV_STRINGS = {
     "CLASSCLAW_OPENCLAW_CLASS_AGENT_THINKING": ("openclaw", "class_agent_thinking"),
     "CLASSCLAW_OPENCLAW_BIN": ("openclaw", "cli"),
     "CLASSCLAW_OPENCLAW_WECHAT_CHANNEL": ("wechat", "channel"),
+    "CLASSCLAW_CLASSROOM_MEDIA_PROVIDER": ("classroom", "media_provider"),
+    "CLASSCLAW_CLASSROOM_MEDIA_BASE_URL": ("classroom", "media_base_url"),
+    "CLASSCLAW_CLASSROOM_MEDIA_API_URL": ("classroom", "media_api_url"),
+    "CLASSCLAW_CLASSROOM_MEDIA_RTSP_URL": ("classroom", "media_rtsp_url"),
+    "CLASSCLAW_CLASSROOM_MEDIA_FFMPEG_PATH": ("classroom", "media_ffmpeg_path"),
     "CLASSCLAW_WEB_NAME": ("web", "brand", "name"),
     "CLASSCLAW_WEB_TITLE": ("web", "brand", "title"),
     "CLASSCLAW_WEB_MARK": ("web", "brand", "mark"),
@@ -200,6 +248,17 @@ _ENV_INTS = {
     "CLASSCLAW_WECHAT_QR_RETRY_MS": ("wechat", "qr_retry_ms"),
     "CLASSCLAW_WECHAT_GATEWAY_START_TIMEOUT_SECONDS": ("wechat", "gateway_start_timeout_seconds"),
     "CLASSCLAW_WECHAT_GATEWAY_WAIT_TIMEOUT_SECONDS": ("wechat", "gateway_wait_timeout_seconds"),
+    "CLASSCLAW_CLASSROOM_PAIRING_CODE_TTL_SECONDS": ("classroom", "pairing_code_ttl_seconds"),
+    "CLASSCLAW_CLASSROOM_HEARTBEAT_TIMEOUT_SECONDS": ("classroom", "heartbeat_timeout_seconds"),
+    "CLASSCLAW_CLASSROOM_COMMAND_TTL_SECONDS": ("classroom", "command_ttl_seconds"),
+    "CLASSCLAW_CLASSROOM_BROADCAST_MAX_CHARS": ("classroom", "broadcast_max_chars"),
+    "CLASSCLAW_CLASSROOM_BROADCAST_MAX_SEGMENTS": ("classroom", "broadcast_max_segments"),
+    "CLASSCLAW_CLASSROOM_DISPLAY_SECONDS_DEFAULT": ("classroom", "display_seconds_default"),
+    "CLASSCLAW_CLASSROOM_DISPLAY_SECONDS_MAX": ("classroom", "display_seconds_max"),
+    "CLASSCLAW_CLASSROOM_SPEAK_REPEAT_MAX": ("classroom", "speak_repeat_max"),
+    "CLASSCLAW_CLASSROOM_VOLUME_CEILING": ("classroom", "volume_ceiling"),
+    "CLASSCLAW_CLASSROOM_MEDIA_LEASE_SECONDS": ("classroom", "media_lease_seconds"),
+    "CLASSCLAW_CLASSROOM_MEDIA_STOP_GRACE_SECONDS": ("classroom", "media_stop_grace_seconds"),
 }
 
 _ENV_FLOATS = {
@@ -217,9 +276,11 @@ _ENV_BOOLEANS = {
     "CLASSCLAW_FEATURE_REMINDERS": ("features", "reminders"),
 }
 
+_ENV_JSON = {"CLASSCLAW_CLASSROOM_MEDIA_ICE_SERVERS": ("classroom", "media_ice_servers")}
+
 CONFIG_ENVIRONMENT_VARIABLES = {
     ".".join(path): name
-    for name, path in {**_ENV_PATHS, **_ENV_STRINGS, **_ENV_INTS, **_ENV_FLOATS, **_ENV_BOOLEANS}.items()
+    for name, path in {**_ENV_PATHS, **_ENV_STRINGS, **_ENV_INTS, **_ENV_FLOATS, **_ENV_BOOLEANS, **_ENV_JSON}.items()
 }
 
 
@@ -258,6 +319,15 @@ def _parse_bool(name: str, value: str) -> bool:
 
 def _apply_environment(data: dict, environ: Mapping[str, str]) -> set[tuple[str, ...]]:
     overridden: set[tuple[str, ...]] = set()
+    for name, path in _ENV_JSON.items():
+        value = environ.get(name)
+        if value is not None and value.strip():
+            try:
+                parsed = json.loads(value)
+            except ValueError as exc:
+                raise ConfigurationError(f"{name} 必须是有效 JSON") from exc
+            _set_nested(data, path, parsed)
+            overridden.add(path)
     for name, path in {**_ENV_STRINGS, **_ENV_PATHS}.items():
         value = environ.get(name)
         if value is not None and value.strip():
@@ -390,6 +460,23 @@ def _validate_document(
         raise ConfigurationError("openclaw.gateway_url 不能包含账号、密码、查询参数或片段")
     if document.web.ai_request_timeout_seconds < document.openclaw.timeout_seconds:
         raise ConfigurationError("web.ai_request_timeout_seconds 不能小于 openclaw.timeout_seconds")
+    classroom = document.classroom
+    if classroom.display_seconds_default > classroom.display_seconds_max:
+        raise ConfigurationError("classroom.display_seconds_default 不能大于 display_seconds_max")
+    if classroom.command_ttl_seconds <= classroom.display_seconds_max * classroom.speak_repeat_max:
+        raise ConfigurationError("classroom.command_ttl_seconds 必须大于最长停留时间乘以最多播报次数，否则命令会在执行完成前过期")
+    if classroom.media_provider != "none":
+        parsed_media = urlparse(classroom.media_base_url)
+        if parsed_media.scheme not in {"http", "https"} or not parsed_media.netloc:
+            raise ConfigurationError("classroom.media_base_url 必须是完整的 http:// 或 https:// URL")
+        if parsed_media.username or parsed_media.password or parsed_media.query or parsed_media.fragment:
+            raise ConfigurationError("classroom.media_base_url 不能包含账号、密码、查询参数或片段")
+        for key, scheme in (("media_base_url", "http"), ("media_api_url", "http"), ("media_rtsp_url", "rtsp")):
+            endpoint = urlparse(getattr(classroom, key))
+            if (endpoint.scheme != scheme or endpoint.hostname not in {"127.0.0.1", "::1", "localhost"}
+                    or endpoint.username or endpoint.password or endpoint.query or endpoint.fragment
+                    or endpoint.path not in {"", "/"}):
+                raise ConfigurationError(f"classroom.{key} 必须是同机环回地址，不带路径或凭据")
     qr_ms = document.wechat.qr_binding_timeout_seconds * 1000
     for name, value in {
         "wechat.qr_initial_poll_ms": document.wechat.qr_initial_poll_ms,
@@ -557,6 +644,7 @@ def load_settings(
         features=document.features,
         web=document.web,
         wechat=document.wechat,
+        classroom=document.classroom,
         server=document.server,
         config_file=config_file,
         config_hash=config_hash,
@@ -572,6 +660,7 @@ def safe_config_summary(value: Settings) -> dict:
         "features": value.features.model_dump(),
         "web": value.web.model_dump(),
         "wechat": value.wechat.model_dump(),
+        "classroom": value.classroom.model_dump(),
         "runtime": {
             "timezone": value.timezone,
             "log_level": value.log_level,

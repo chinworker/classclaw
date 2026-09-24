@@ -546,3 +546,153 @@ class ClassOnboardingSession(Base, IdMixin, TimestampMixin):
     class_id: Mapped[str | None] = mapped_column(ForeignKey("classes.id", ondelete="SET NULL"), index=True)
     owner_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ClassroomDevice(Base, IdMixin, TimestampMixin):
+    """一台已配对的教室 Windows 终端；只执行固定动作，不持有任何全局凭据。"""
+
+    __tablename__ = "classroom_devices"
+    __table_args__ = (
+        UniqueConstraint("class_id", name="uq_classroom_device_class"),
+        CheckConstraint("pairing_status IN ('unpaired', 'paired', 'revoked')", name="ck_classroom_device_pairing"),
+    )
+
+    class_id: Mapped[str] = mapped_column(ForeignKey("classes.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(100), nullable=False, default="教室终端")
+    pairing_status: Mapped[str] = mapped_column(String(20), nullable=False, default="unpaired")
+    pairing_code_hash: Mapped[str | None] = mapped_column(String(64))
+    pairing_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    credential_hash: Mapped[str | None] = mapped_column(String(64))
+    paired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    protocol_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    app_version: Mapped[str | None] = mapped_column(String(50))
+    os_version: Mapped[str | None] = mapped_column(String(100))
+    capabilities_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    inventory_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    display_name: Mapped[str | None] = mapped_column(String(200))
+    audio_output_name: Mapped[str | None] = mapped_column(String(200))
+    volume_level: Mapped[int | None] = mapped_column(Integer)
+    muted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[str | None] = mapped_column(Text)
+    config_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+
+class ClassroomCamera(Base, IdMixin, TimestampMixin):
+    """本班唯一摄像头。绑定只能从网页发起，凭据只保存服务器侧引用。"""
+
+    __tablename__ = "classroom_cameras"
+    __table_args__ = (
+        UniqueConstraint("class_id", name="uq_classroom_camera_class"),
+        CheckConstraint("config_revision >= 1", name="ck_classroom_camera_revision"),
+        CheckConstraint("access_path IN ('windows_capture', 'server_direct', 'windows_relay')", name="ck_classroom_camera_path"),
+        CheckConstraint("source_kind IN ('windows_device', 'network_stream')", name="ck_classroom_camera_source"),
+    )
+
+    class_id: Mapped[str] = mapped_column(ForeignKey("classes.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(100), nullable=False, default="教室摄像头")
+    access_path: Mapped[str] = mapped_column(String(20), nullable=False)
+    source_kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    device_id: Mapped[str | None] = mapped_column(ForeignKey("classroom_devices.id", ondelete="SET NULL"), index=True)
+    device_identifier: Mapped[str | None] = mapped_column(String(200))
+    device_label: Mapped[str | None] = mapped_column(String(200))
+    microphone_identifier: Mapped[str | None] = mapped_column(String(200))
+    protocol: Mapped[str | None] = mapped_column(String(20))
+    location: Mapped[str | None] = mapped_column(String(500))
+    credential_ref: Mapped[str | None] = mapped_column(String(100))
+    video_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    audio_capable: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="registered")
+    config_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    connected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    disconnected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[str | None] = mapped_column(Text)
+    updated_by: Mapped[str | None] = mapped_column(String(200))
+
+
+class ClassroomBroadcast(Base, IdMixin, TimestampMixin):
+    """点名广播记录。冻结文本与顺序；不是考勤，不判断到场情况。"""
+
+    __tablename__ = "classroom_broadcasts"
+    __table_args__ = (
+        Index("ix_classroom_broadcast_class_created", "class_id", "created_at"),
+        CheckConstraint("mode IN ('three_part', 'custom')", name="ck_classroom_broadcast_mode"),
+        CheckConstraint("merge_mode IN ('combined', 'per_student')", name="ck_classroom_broadcast_merge"),
+    )
+
+    class_id: Mapped[str] = mapped_column(ForeignKey("classes.id", ondelete="CASCADE"), index=True)
+    mode: Mapped[str] = mapped_column(String(20), nullable=False)
+    merge_mode: Mapped[str] = mapped_column(String(20), nullable=False, default="combined")
+    salutation: Mapped[str | None] = mapped_column(String(60))
+    time_phrase: Mapped[str | None] = mapped_column(String(60))
+    predicate: Mapped[str | None] = mapped_column(String(200))
+    segments_json: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    display_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
+    repeat_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    gap_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    volume: Mapped[int | None] = mapped_column(Integer)
+    target_screen: Mapped[str | None] = mapped_column(String(200))
+    display_status: Mapped[str] = mapped_column(String(20), nullable=False, default="authorized")
+    speak_status: Mapped[str] = mapped_column(String(20), nullable=False, default="authorized")
+    created_by: Mapped[str | None] = mapped_column(String(200))
+    source_type: Mapped[str] = mapped_column(String(20), nullable=False, default="web")
+    source_message_id: Mapped[str | None] = mapped_column(String(200))
+    proposal_id: Mapped[str | None] = mapped_column(String(36))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ClassroomDeviceCommand(Base, IdMixin, TimestampMixin):
+    """终端执行账本。登记、送达、执行中、成功、失败、过期与结果未知必须可区分。"""
+
+    __tablename__ = "classroom_device_commands"
+    __table_args__ = (
+        UniqueConstraint("idempotency_key", name="uq_classroom_command_idempotency"),
+        Index("ix_classroom_command_pending", "device_id", "status"),
+        CheckConstraint(
+            "status IN ('authorized', 'delivered', 'executing', 'succeeded', 'failed', 'expired', 'unknown')",
+            name="ck_classroom_command_status",
+        ),
+    )
+
+    class_id: Mapped[str] = mapped_column(ForeignKey("classes.id", ondelete="CASCADE"), index=True)
+    device_id: Mapped[str] = mapped_column(ForeignKey("classroom_devices.id", ondelete="CASCADE"), index=True)
+    kind: Mapped[str] = mapped_column(String(40), nullable=False)
+    payload_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    broadcast_id: Mapped[str | None] = mapped_column(ForeignKey("classroom_broadcasts.id", ondelete="SET NULL"), index=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="authorized")
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    result_json: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    error_code: Mapped[str | None] = mapped_column(String(100))
+    error_message: Mapped[str | None] = mapped_column(Text)
+    requested_by: Mapped[str | None] = mapped_column(String(200))
+    source_type: Mapped[str] = mapped_column(String(20), nullable=False, default="web")
+
+
+class ClassroomMediaSession(Base, IdMixin, TimestampMixin):
+    """短期观看租约。音轨授权在媒体层执行，不靠浏览器静音。"""
+
+    __tablename__ = "classroom_media_sessions"
+    __table_args__ = (
+        UniqueConstraint("token_hash", name="uq_classroom_media_token"),
+        Index("ix_classroom_media_active", "camera_id", "status"),
+        CheckConstraint("status IN ('active', 'released', 'revoked', 'expired')", name="ck_classroom_media_status"),
+    )
+
+    class_id: Mapped[str] = mapped_column(ForeignKey("classes.id", ondelete="CASCADE"), index=True)
+    camera_id: Mapped[str] = mapped_column(ForeignKey("classroom_cameras.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    video_allowed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    audio_allowed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
+    surface: Mapped[str] = mapped_column(String(20), nullable=False, default="web")
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoke_reason: Mapped[str | None] = mapped_column(String(60))
+    created_by: Mapped[str | None] = mapped_column(String(200))

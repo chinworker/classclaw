@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -17,7 +18,7 @@ from app.config import settings
 from app.core.errors import AppError
 from app.core.logging import configure_logging, get_logger
 from app.database import init_db, writer_session
-from app.services import accounts, openclaw_bridge, openclaw_provisioning
+from app.services import accounts, classroom_streaming, openclaw_bridge, openclaw_provisioning
 from app.services.http_client import close_http_client
 
 
@@ -34,6 +35,7 @@ async def lifespan(_app: FastAPI):
     with writer_session() as db:
         accounts.ensure_default_admin(db)
     cleanup_task = None
+    media_task = asyncio.create_task(classroom_streaming.run())
     async def prepare_agents():
         try:
             await openclaw_provisioning.sync_class_agent_thinking_defaults()
@@ -48,6 +50,11 @@ async def lifespan(_app: FastAPI):
     try:
         yield
     finally:
+        media_task.cancel()
+        try:
+            await media_task
+        except asyncio.CancelledError:
+            pass
         if cleanup_task:
             cleanup_task.cancel()
             try:
@@ -94,12 +101,14 @@ async def request_context(request: Request, call_next):
 
 @app.exception_handler(AppError)
 async def app_error_handler(request: Request, exc: AppError):
-    return JSONResponse(status_code=exc.status_code, content={"success": False, "error": {"code": exc.code, "message": exc.message, "details": exc.details}, "request_id": request.state.request_id})
+    details = jsonable_encoder(exc.details)
+    return JSONResponse(status_code=exc.status_code, content={"success": False, "error": {"code": exc.code, "message": exc.message, "details": details}, "request_id": request.state.request_id})
 
 
 @app.exception_handler(RequestValidationError)
 async def validation_error_handler(request: Request, exc: RequestValidationError):
-    errors = exc.errors()
+    # ctx 里是校验器抛出的原始异常对象，不能被 JSON 序列化；msg 已包含同样的说明。
+    errors = jsonable_encoder([{key: value for key, value in error.items() if key != "ctx"} for error in exc.errors()])
     if (request.url.path.endswith("/agent-binding/verify")
             or request.url.path.startswith(f"{settings.api_prefix}/admin/settings/")
             or request.url.path.endswith("/admin/openclaw/config/raw")):

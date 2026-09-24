@@ -317,5 +317,7 @@ def test_agent_chat_page_has_chatbot_voice_file_and_cancel_controls(client):
     assert "新对话" in page and "Shift+Enter 换行" in page
     assert "agentModelSettings" not in page and "qrBindingPanel" not in page
     assert 'href: "#/account"' in page
-    assert "模型设置" in account and "agentModelSettings" in account and "qrBindingPanel" in account
+    assert "模型设置" in account and "agentModelSettings" in account and "classclawChannels" in account
+    channels = client.get("/app/js/classclawChannels.js").text
+    assert "qrBindingPanel" in channels
     assert ".agent-chat-panel" in styles and ".agent-chat-composer" in styles

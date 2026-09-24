@@ -31,6 +31,19 @@ describe("tool execution contract and bounded context", () => {
     expect(() => validateReadParams({ resource: "write_proposal", proposal_id: "real-id" })).not.toThrow();
   });
 
+  it.each(["classroom_status", "classroom_camera", "classroom_observation"])("rejects a %s read without its class scope", (resource) => {
+    expect(() => validateReadParams({ resource })).toThrow("TOOL_ARGUMENT_REQUIRED");
+    expect(() => validateReadParams({ resource, class_id: "  " })).toThrow("TOOL_ARGUMENT_REQUIRED");
+    expect(() => validateReadParams({ resource, class_id: "class-a" })).not.toThrow();
+  });
+
+  it("requires the returned broadcast id before reading one receipt", () => {
+    expect(() => validateReadParams({ resource: "classroom_broadcast", class_id: "class-a", broadcast_id: "  " }))
+      .toThrow("TOOL_ARGUMENT_REQUIRED");
+    expect(() => validateReadParams({ resource: "classroom_broadcast", class_id: "class-a", broadcast_id: "b-1" }))
+      .not.toThrow();
+  });
+
   it.each(["student_detail", "student_analysis"])("accepts a class-scoped student number for %s", (resource) => {
     expect(() => validateReadParams({ resource })).toThrow("TOOL_ARGUMENT_REQUIRED");
     expect(() => validateReadParams({ resource, student_no: "  " })).toThrow("TOOL_ARGUMENT_REQUIRED");

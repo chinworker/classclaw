@@ -68,3 +68,27 @@ qr_poll_ms = 2000
 qr_retry_ms = 3500
 gateway_start_timeout_seconds = 30
 gateway_wait_timeout_seconds = 15
+
+# 教室终端与实时监控。终端不在线时后端拒绝实时点名和音量操作，不积压离线命令。
+[classroom]
+pairing_code_ttl_seconds = 600
+heartbeat_timeout_seconds = 90
+# 必须大于 display_seconds_max * speak_repeat_max，否则命令会在执行完成前过期。
+command_ttl_seconds = 600
+broadcast_max_chars = 160
+broadcast_max_segments = 20
+display_seconds_default = 15
+display_seconds_max = 120
+speak_repeat_max = 3
+volume_ceiling = 100
+media_lease_seconds = 300
+media_stop_grace_seconds = 30
+# 媒体转发是明确的部署扩展；none 表示尚未接入，网页只能看到设备与摄像头状态。
+# 接入前必须完成现场验证，并同步 deploy/ 与 docs/deployment.md。
+media_provider = "none"
+media_base_url = ""
+media_api_url = "http://127.0.0.1:9997"
+media_rtsp_url = "rtsp://127.0.0.1:8554"
+media_ffmpeg_path = "ffmpeg"
+# RTCIceServer 数组；服务器公网 8189 可达时通常为空。启用方法见 docs/classroom-media-deployment.md。
+media_ice_servers = []

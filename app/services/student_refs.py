@@ -23,6 +23,8 @@ _CLASS_PAYLOAD_OPS = {
     "exam.create",
     "lesson_override.create",
     "duty.schedule.confirm",
+    "classroom.broadcast.send",
+    "classroom.volume.set",
 }
 
 
@@ -167,6 +169,13 @@ def apply_student_refs(db: Session, operation_type: str, payload: dict[str, Any]
         if not refs:
             raise AppError("VALIDATION_ERROR", "student.update.batch缺少student_nos", 422)
         p["student_ids"] = [row.id for row in resolve_students(db, class_id, list(refs))]
+    elif operation_type == "classroom.broadcast.send":
+        class_id = _payload_class_id(p, bound_class_id)
+        refs = p.pop("student_nos", None) or p.get("student_ids")
+        if isinstance(refs, str):
+            refs = [refs]
+        # 自定义句子按原文播报，不选学生；三段式必须解析出本班学生。
+        p["student_ids"] = [row.id for row in resolve_students(db, class_id, list(refs))] if refs else []
     elif operation_type == "seating.update":
         class_id = _payload_class_id(p, bound_class_id)
         rows = _class_students(db, class_id)

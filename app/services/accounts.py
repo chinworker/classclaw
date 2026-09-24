@@ -161,6 +161,8 @@ def update_teacher(db: Session, user_id: str, data: UserUpdate) -> User:
         user.is_active = changes["is_active"]
         if not user.is_active:
             db.query(UserSession).filter(UserSession.user_id == user.id, UserSession.revoked_at.is_(None)).update({"revoked_at": now()})
+            from app.services.classroom_media import revoke_user
+            revoke_user(db, user.id, "account_disabled", commit=False)
     audit(db, "update", "user", user.id, operator_type="admin")
     try:
         db.commit()
@@ -199,6 +201,8 @@ def reset_teacher_password(db: Session, user_id: str) -> User:
     user.password_hash = hash_password("32767")
     user.must_change_password = True
     db.query(UserSession).filter(UserSession.user_id == user.id, UserSession.revoked_at.is_(None)).update({"revoked_at": now()})
+    from app.services.classroom_media import revoke_user
+    revoke_user(db, user.id, "password_reset", commit=False)
     audit(db, "reset_password", "user", user.id, operator_type="admin")
     db.commit()
     return user

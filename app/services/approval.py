@@ -49,7 +49,8 @@ from app.schemas.domain import (
 )
 from app.schemas.student_batch import StudentBatchUpdate
 from app.schemas.agent_memory import MemoryForget, MemoryUpsert
-from app.services import academic, agent_memory, class_student, deletions, duty, operations, seating, student_batch, student_refs, timetable
+from app.schemas.classroom import BroadcastComposeRequest, VolumeSetRequest
+from app.services import academic, agent_memory, class_student, classroom_broadcast, classroom_devices, deletions, duty, operations, seating, student_batch, student_refs, timetable
 from app.services.common import audit, entity_dict
 from app.services.openclaw_provisioning import agent_name_for_class
 from app.utils.time import now
@@ -73,6 +74,8 @@ SUPPORTED_OPERATIONS = {
     "arrangement.create",
     "duty.schedule.confirm",
     "duty.assignment.score",
+    "classroom.broadcast.send",
+    "classroom.volume.set",
 }
 
 
@@ -222,6 +225,8 @@ def normalize_and_preview(operation_type: str, payload: dict, evidence: list[dic
         "lesson_override.create": (LessonOverrideCreate, "创建临时调课"),
         "arrangement.create": (ArrangementCreate, "创建日常安排"),
         "duty.schedule.confirm": (DutyConfirmRequest, "确认值日排班"),
+        "classroom.broadcast.send": (BroadcastComposeRequest, "教室点名广播"),
+        "classroom.volume.set": (VolumeSetRequest, "调整教室音量"),
     }
     if operation_type in specs:
         model, title = specs[operation_type]
@@ -330,6 +335,9 @@ def create_proposal(db: Session, data: WriteProposalCreate, *, bound_class_id: s
         normalized, preview = student_batch.prepare(db, normalized, preview)
     if data.operation_type in {"memory.upsert", "memory.forget"}:
         normalized, preview = agent_memory.prepare(db, data.operation_type, normalized, preview)
+    if data.operation_type == "classroom.broadcast.send":
+        # 预览时就冻结完整句子与顺序，确认后不得改人、改时间、改事项或再让模型润色。
+        normalized, preview = classroom_broadcast.prepare(db, resolved_payload)
     preview = _humanize_preview(db, data.operation_type, normalized, preview)
     obj = WriteProposal(
         operation_type=data.operation_type,
@@ -468,6 +476,12 @@ def _execute(db: Session, proposal: WriteProposal, *, memory_prevalidated: bool 
         return duty.confirm_schedule(db, DutyConfirmRequest.model_validate(p), commit=False)
     if op == "duty.assignment.score":
         return duty.score_assignment(db, p["assignment_id"], p["score"], p.get("note"), commit=False)
+    if op == "classroom.broadcast.send":
+        return classroom_broadcast.execute(db, p, proposal_id=proposal.id, requested_by=proposal.requested_by,
+                                           source_message_id=proposal.source_message_id)
+    if op == "classroom.volume.set":
+        return classroom_devices.set_volume(db, p["class_id"], VolumeSetRequest.model_validate(p),
+                                            requested_by=proposal.requested_by, source_type="agent", commit=False)
     raise AppError("VALIDATION_ERROR", "操作类型没有执行器", details={"operation_type": op})
 
 
@@ -526,6 +540,27 @@ def _complete_proposal(db: Session, proposal: WriteProposal, *, confirmed_by: st
     audit(db, "confirm_and_execute", "write_proposal", proposal.id, before=before, after={"proposal": entity_dict(proposal), "confirmation_note": confirmation_note}, source_message_id=proposal.source_message_id)
 
 
+def _dispatch_classroom(db: Session, proposals: list[WriteProposal]) -> None:
+    """Push authorized terminal commands only after the proposal transaction committed.
+
+    A completed proposal is registration, not proof of sound: the delivery outcome is
+    recorded on the proposal so the channel can report what really reached the terminal.
+    """
+    outcomes = classroom_devices.dispatch_queued(db)
+    if not outcomes:
+        return
+    by_command = {outcome["command_id"]: outcome for outcome in outcomes}
+    touched = False
+    for proposal in proposals:
+        result = proposal.result_json if isinstance(proposal.result_json, dict) else {}
+        command_id = result.get("command_id") or (result.get("command") or {}).get("command_id")
+        if command_id in by_command:
+            proposal.result_json = {**result, "delivery": by_command[command_id]}
+            touched = True
+    if touched:
+        db.commit()
+
+
 def confirm_proposal(db: Session, proposal_id: str, data: WriteProposalConfirm) -> WriteProposal:
     proposal = get_proposal(db, proposal_id)
     should_execute = _validate_confirmation(
@@ -543,6 +578,7 @@ def confirm_proposal(db: Session, proposal_id: str, data: WriteProposalConfirm) 
     except Exception:
         db.rollback()
         raise
+    _dispatch_classroom(db, [proposal])
     return proposal
 
 
@@ -573,6 +609,7 @@ def confirm_proposals_batch(db: Session, data: WriteProposalBatchConfirm) -> lis
     except Exception:
         db.rollback()
         raise
+    _dispatch_classroom(db, executable)
     return proposals
 
 

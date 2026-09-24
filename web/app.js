@@ -36,6 +36,10 @@ const TEACHER_NAV = [
     { path: "/attachments", label: "班级资料", requiresClass: true },
     { path: "/class-settings", label: "班级设置", requiresClass: true },
   ]},
+  { group: "教室", items: [
+    { path: "/broadcast", label: "点名广播", requiresClass: true },
+    { path: "/classroom", label: "教室设备与监控", requiresClass: true },
+  ]},
   { group: "数据分析", items: [
     { path: "/analytics/students", label: "学生分析", requiresClass: true },
     { path: "/analytics/class", label: "班级分析", requiresClass: true },
@@ -72,6 +76,8 @@ const routes = [
   { path: "/arrangements", title: "日常安排", loader: () => import("./js/pages/arrangements.js"), requiresClass: true },
   { path: "/attachments", title: "附件", loader: () => import("./js/pages/attachments.js"), requiresClass: true },
   { path: "/class-settings", title: "班级设置", loader: () => import("./js/pages/classSettings.js"), requiresClass: true },
+  { path: "/broadcast", title: "点名广播", loader: () => import("./js/pages/broadcast.js?v=20260923-classroom-review"), requiresClass: true },
+  { path: "/classroom", title: "教室设备与实时监控", loader: () => import("./js/pages/classroom.js?v=20260923-classroom-review"), requiresClass: true },
   { path: "/analytics/students", title: "学生分析", loader: () => import("./js/pages/analytics.js?v=20260901-analytics-fix"), requiresClass: true, section: "students" },
   { path: "/analytics/class", title: "班级分析", loader: () => import("./js/pages/analytics.js?v=20260901-analytics-fix"), requiresClass: true, section: "class" },
   { path: "/analytics/attention", title: "重点关注", loader: () => import("./js/pages/analytics.js?v=20260901-analytics-fix"), requiresClass: true, section: "attention" },

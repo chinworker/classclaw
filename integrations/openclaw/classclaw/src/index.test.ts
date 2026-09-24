@@ -181,6 +181,66 @@ describe("classclaw plugin", () => {
       .toBe("2026-08-30T02:00:05.000Z");
   });
 
+  it("reads classroom status and camera only for the bound class", async () => {
+    const calls: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = new URL(String(input));
+      calls.push(url.pathname);
+      const classId = url.pathname.split("/")[4];
+      return new Response(JSON.stringify({ success: true, data: { class_id: classId, camera: { class_id: classId } } }));
+    });
+    const tool = registeredTools().classclaw_read;
+    await expect(tool.execute("1", { resource: "classroom_status", class_id: "class-a", bound_class_id: "class-a" }))
+      .resolves.toMatchObject({ details: { data: { class_id: "class-a" } } });
+    await expect(tool.execute("2", { resource: "classroom_camera", class_id: "class-a", bound_class_id: "class-a" }))
+      .resolves.toMatchObject({ details: { success: true } });
+    await expect(tool.execute("3", { resource: "classroom_broadcast", class_id: "class-a", broadcast_id: "b-1", bound_class_id: "class-a" }))
+      .resolves.toMatchObject({ details: { success: true } });
+    expect(calls).toEqual([
+      "/api/v1/classes/class-a/classroom/status",
+      "/api/v1/classes/class-a/classroom/camera",
+      "/api/v1/classes/class-a/classroom/broadcasts/b-1",
+    ]);
+    await expect(tool.execute("4", { resource: "classroom_status", class_id: "class-b", bound_class_id: "class-a" }))
+      .rejects.toThrow("CLASS_SCOPE_VIOLATION");
+  });
+
+  it("samples classroom overview with a scoped POST and refuses cross-class calls before HTTP", async () => {
+    const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ success: true,
+      data: { class_id: "class-a", audio_used: false } })));
+    const tool = registeredTools().classclaw_read;
+    await expect(tool.execute("1", { resource: "classroom_observation", class_id: "class-b", bound_class_id: "class-a" }))
+      .rejects.toThrow("CLASS_SCOPE_VIOLATION");
+    expect(fetch).not.toHaveBeenCalled();
+    await expect(tool.execute("2", { resource: "classroom_observation", class_id: "class-a", bound_class_id: "class-a" }))
+      .resolves.toMatchObject({ details: { data: { class_id: "class-a", audio_used: false } } });
+    expect(String(fetch.mock.calls[0][0])).toContain("/classes/class-a/classroom/observation");
+    expect(fetch.mock.calls[0][1]?.method).toBe("POST");
+  });
+
+  it("forces the bound class onto classroom reads and broadcast proposals", async () => {
+    const hook = registeredHooks().before_tool_call;
+    const read = await hook({ toolName: "classclaw_read", params: { resource: "classroom_status", class_id: "other" } },
+      { agentId: "agent-a", sessionKey: "classroom", runId: "classroom-run" });
+    expect(read).toMatchObject({ block: true });
+
+    const scoped = await hook({ toolName: "classclaw_read", params: { resource: "classroom_camera" } },
+      { agentId: "agent-a", sessionKey: "classroom", runId: "classroom-run-2" });
+    expect(scoped).toMatchObject({ params: { class_id: "class-a", bound_class_id: "class-a" } });
+
+    const proposal = await hook({
+      toolName: "classclaw_propose_write",
+      params: { operation_type: "classroom.broadcast.send", payload: { mode: "three_part", student_nos: ["3"], predicate: "去扫地" } },
+    }, { agentId: "agent-a", sessionKey: "classroom", runId: "classroom-run-3" });
+    expect(proposal).toMatchObject({ params: { payload: { class_id: "class-a", predicate: "去扫地" } } });
+
+    const crossClass = await hook({
+      toolName: "classclaw_propose_write",
+      params: { operation_type: "classroom.volume.set", payload: { class_id: "class-b", volume: 40 } },
+    }, { agentId: "agent-a", sessionKey: "classroom", runId: "classroom-run-4" });
+    expect(crossClass).toMatchObject({ block: true });
+  });
+
   it("registers preview and chat-confirmed commit tools", () => {
     const tools: string[] = [];
     const hooks: string[] = [];

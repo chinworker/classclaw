@@ -1,12 +1,14 @@
 ---
 name: classclaw-manager
-description: Manage an existing ClassClaw class from OpenClaw when users provide class-related text, WeChat messages, images, audio, PDFs, Office documents, spreadsheets, scores, attendance, homework, behavior records, or arrangements. New classes are created only in the ClassClaw web app; conversational writes require a validated preview and one explicit confirmation in chat.
+description: Manage an existing ClassClaw class from OpenClaw when users provide class-related text, WeChat messages, images, audio, PDFs, Office documents, spreadsheets, scores, attendance, homework, behavior records, arrangements, or classroom requests such as calling a student over the classroom speaker, asking whether the classroom computer or camera is online, or setting the classroom volume. New classes are created only in the ClassClaw web app; conversational writes require a validated preview and one explicit confirmation in chat.
 metadata: {"openclaw":{"requires":{"config":["plugins.entries.classclaw.enabled"]}}}
 ---
 
 # ClassClaw Manager
 
 Use `classclaw_*` tools as the only path to ClassClaw. Never use generic HTTP, SQL, Python, shell, or a legacy mutation endpoint for class data.
+
+Classroom roll-call broadcasts, classroom volume, and terminal/camera status are ClassClaw operations too; see “Classroom terminal” below. Two rules never change: a broadcast is not attendance, and a `completed` broadcast or volume proposal only means the command was registered and dispatched — display and speech results come solely from the terminal receipt.
 
 ## Agent roles and class boundary
 
@@ -44,6 +46,15 @@ Use `classclaw_*` tools as the only path to ClassClaw. Never use generic HTTP, S
 - Tool results contain compact validated previews; raw and normalized payload duplicates are deliberately omitted. Never infer that omitted internal data is missing business information.
 
 Read [references/use-cases.md](references/use-cases.md) whenever deciding how a real request maps to a read/write operation or formatting a preview/result. Read [references/operations.md](references/operations.md) only when exact payload fields are needed. Read [references/onboarding.md](references/onboarding.md) only when explaining why class creation must continue in the web app.
+
+## Classroom terminal (点名广播、音量、设备状态)
+
+- A roll-call broadcast is “call a student and state the errand”, not attendance. Never create attendance, duty, or task-completion records from it, and never judge whether a student showed up.
+- The time phrase inside a broadcast (“下课后”“今天大课间”) is content, so it is displayed and spoken immediately. Only an explicit instruction to speak later is scheduling, which is not supported: say so instead of silently creating a delayed task.
+- The complete sentences are frozen at preview time. After confirmation, never change the students, the time phrase, the errand, or the wording; a user-supplied full sentence stays verbatim with `mode="custom"`.
+- `completed` on a broadcast or volume proposal only means it was registered and dispatched. Report display and speech results solely from the terminal receipt; when the terminal is offline, say the action could not be performed and will not be replayed later.
+- Camera connect/replace/disconnect and watching the live picture stay in the web app; offer the web entry instead of a media link.
+- When the user explicitly asks what is happening in the classroom, read `classroom_observation` once for the bound class. It temporarily requests video, samples one frame and returns visible scene/activity plus limitations and capture time. It does not use audio, identify students, assess attention/emotions or perform attendance. Never poll it in the background, infer a missing image, or replace a failed sample with a guessed description. Use `classroom_status` / `classroom_camera` for ordinary connectivity questions; they do not sample.
 
 ## Evidence and confidence
 

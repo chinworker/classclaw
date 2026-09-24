@@ -193,6 +193,12 @@ const STATUS_LABELS = {
   normal: ["普通", "muted"], attention: ["关注", "warn"], serious: ["严重", "error"],
   high: ["高", "error"], medium: ["中", "warn"], low: ["低", "muted"],
   awaiting_confirmation: ["等待确认", "warn"],
+  // 教室终端命令与广播结果：登记不等于已显示或已播报。
+  authorized: ["已登记", "warn"], delivered: ["已送达", "info"], executing: ["执行中", "info"],
+  succeeded: ["已成功", "ok"], expired: ["已过期", "muted"], unknown: ["结果未知", "warn"],
+  unpaired: ["待配对", "warn"], paired: ["已配对", "ok"], revoked: ["凭据已撤销", "error"],
+  registered: ["已登记", "warn"], connected: ["已连通", "ok"], disconnected: ["已断开", "muted"],
+  released: ["已离开", "muted"],
 };
 
 export function statusBadge(status, label = null) {

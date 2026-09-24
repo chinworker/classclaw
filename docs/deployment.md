@@ -634,3 +634,7 @@ ClassClaw 不只通过 HTTP 调 Gateway，还直接写班级/提取器工作区�
 回归覆盖真实临时 Git 仓库的更新预检、拒绝脏/分叉分支、停服备份先于更新、依赖/迁移/健康检查失败后停服、失败标记阻止重复升级、保留原停止状态、运维锁、部署快照不输出密钥及小服务器 TOML 加载；原有双库备份/恢复和配置回归同时执行。
 
 本地环境为 macOS。systemd、Nginx、Ubuntu 安装、TLS 签发和 2 核 4 GB 实际负载须在目标服务器按本指南验收；尚未登录目标服务器部署。
+
+## 可选教室媒体服务
+
+教室实时音视频另按 [媒体部署](classroom-media-deployment.md) 安装同机 MediaMTX 与 FFmpeg，并使用配套可选 systemd drop-in。媒体 unit 随 ClassClaw 停止/重启，遵守升级失败标记；不开公网信令/控制 API。Windows 程序按 [交接提示词](windows-client-agent-prompt.md) 实现。

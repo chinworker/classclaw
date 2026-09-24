@@ -202,6 +202,7 @@ def request_writer_session() -> Generator[Session, None, None]:
 @contextmanager
 def reader_session() -> Generator[Session, None, None]:
     session = _read_sessionmaker()
+    session.info["read_only"] = True
     try:
         yield session
     finally:

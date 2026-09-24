@@ -26,6 +26,14 @@ AUDITED_ACTIONS = {
     ("provision", "class_agent_binding"),
     ("bind_channel", "class_agent_binding"),
     ("update_agent_models", "class_agent_binding"),
+    ("pair_issue", "classroom_device"),
+    ("pair_cancel", "classroom_device"),
+    ("pair", "classroom_device"),
+    ("revoke", "classroom_device"),
+    ("unbind", "classroom_device"),
+    ("connect", "classroom_camera"),
+    ("replace", "classroom_camera"),
+    ("disconnect", "classroom_camera"),
 }
 
 

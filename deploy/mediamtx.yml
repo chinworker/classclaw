@@ -1,0 +1,28 @@
+# MediaMTX v1.17.0. Dedicated to ClassClaw; no public signaling or RTSP listener.
+logLevel: warn
+api: true
+apiAddress: 127.0.0.1:9997
+authMethod: http
+authHTTPAddress: http://127.0.0.1:8000/api/v1/classroom/media/auth
+authHTTPExclude:
+  - action: api
+rtsp: true
+rtspAddress: 127.0.0.1:8554
+rtspTransports: [tcp]
+rtmp: false
+hls: false
+srt: false
+playback: false
+webrtc: true
+webrtcAddress: 127.0.0.1:8889
+webrtcLocalUDPAddress: :8189
+webrtcLocalTCPAddress: :8189
+# Set to the server's public IP/DNS. ICE media ports must be reachable.
+webrtcAdditionalHosts: [class.example.com]
+webrtcICEServers2: []
+pathDefaults:
+  source: publisher
+  overridePublisher: false
+  record: false
+paths:
+  "~^classclaw/[a-zA-Z0-9-]+/[0-9]+/(video|audio)$": {}

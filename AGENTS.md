@@ -25,19 +25,20 @@ ClassClaw 是供 OpenClaw 智能体和网页端共用的轻量班级管理系统
 - `app/config.py`：基于环境变量的 frozen dataclass `Settings`（`.env` 经 python-dotenv 加载）
 - `app/database.py`：读写双引擎构建（SQLite 自动启用 `foreign_keys=ON`、`busy_timeout=5000`、WAL、`synchronous=NORMAL`；写引擎为单连接并由线程锁串行化）。`get_db` 按 HTTP 方法选择会话（GET/HEAD/OPTIONS 走读连接池，其余走单写者），非请求上下文用 `writer_session()` / `reader_session()`；不要直接新建 Session
 - `app/usage_database.py` / `app/models/usage.py`：独立 AI 用量库 `usage.db`，独立 metadata、读写连接与写锁，不参与业务事务；用量写入必须使用此模块的会话，不能用业务 `get_db`。迁移 `0014` 复制校验历史记录后移除业务库旧表
-- `app/api/v1/`：按领域拆分的路由（`classes_students`、`seating_duty`、`academic`、`timetable`、`operations`、`analytics`、`approval`、`interactions`、`auth_admin`），由 `router.py` 聚合；除登录等公共路由外全部经过 `require_authenticated`
-- `app/services/`：业务逻辑层（`class_student`、`seating`、`duty`、`academic`、`timetable`、`operations`、`approval`、`interactions`、`accounts`、`deletions`、`deletion_runtime`、`deletion_files`、`openclaw_bridge`、`openclaw_provisioning` 等）
+- `app/api/v1/`：按领域拆分的路由（`classes_students`、`seating_duty`、`academic`、`timetable`、`operations`、`analytics`、`approval`、`interactions`、`auth_admin`、`classroom`、`classroom_terminal`），由 `router.py` 聚合；除登录、终端配对等公共路由外全部经过 `require_authenticated`
+- `app/services/`：业务逻辑层（`class_student`、`seating`、`duty`、`academic`、`timetable`、`operations`、`approval`、`interactions`、`accounts`、`deletions`、`deletion_runtime`、`deletion_files`、`openclaw_bridge`、`openclaw_provisioning`、`classroom`、`classroom_channel`、`classroom_devices`、`classroom_broadcast`、`classroom_camera`、`classroom_media` 等）
 - `app/analytics/service.py`：仅基于数据库事实生成结构化指标和证据的分析服务
 - `app/models/entities.py`：全部 SQLAlchemy 实体（单文件）；`app/models/base.py` 提供 `IdMixin`（UUID 字符串主键）、`TimestampMixin`、`SoftDeleteMixin`
 - `app/schemas/`：Pydantic 2 schema（`domain.py`、`auth.py`、`common.py`）
 - `app/core/`：`errors.py`（`AppError`）、`responses.py`（统一 `ok()` 响应）、`security.py`（`Principal`、鉴权与班级归属隔离）
 - `app/utils/time.py`：时区感知的 `now()`
-- `alembic/versions/`：迁移（当前到 `0016_class_agent_memories`）
+- `alembic/versions/`：迁移（当前到 `0018_classroom_microphone`）
 - `scripts/`：`init_db.py`、`seed_demo.py`、`backup.py`、`restore.py`、`cleanup_attachments.py`、`cleanup_deletions.py`
 - `scripts/manage.py` / `deploy/`：Ubuntu 同机部署的 `classclaw` 运维命令、systemd/Nginx 和 2 核 4 GB 配置。维护命令由 root 协调，项目命令降为服务用户执行；升级只允许 Git 快进，停两项服务并完整备份后迁移，失败保留标记禁止自动启动，不能自动 reset/downgrade。生产依赖在 `requirements-runtime.txt`，开发 `requirements.txt` 引用它。详见 `docs/deployment.md`。
 - `scripts/reset_admin_password.py`：仅限本地终端将现有唯一管理员密码重置为 `.env` 的 `CLASSCLAW_DEFAULT_ADMIN_PASSWORD`；不输出密码，事务性撤销旧会话并审计，不允许新增 HTTP/Agent 重置入口
 - `web/`：网页前端（`index.html` 班级创建引导 + 业务页面；`test.html` 后端综合验收台）
 - `web/js/agentChatStore.js`：按用户/班级隔离的内存对话列表与在途请求；新建/切换对话、站内页面卸载不能取消已发送聊天请求，原文不写入浏览器持久存储。页面 `dispose()` 只释放视图和输入设备资源；退出登录须清空对话并取消请求
+- `web/js/pages/broadcast.js`（点名广播）与 `web/js/pages/classroom.js`（教室设备与实时监控）：广播句子以服务端 `broadcasts/preview` 为权威，不在前端另写模板；设备页的 5 秒轮询只更新概况读数，不重建正在填写的表单；离页 `dispose()` 必须释放本人观看租约
 - 教师网页“班级 Agent”只负责对话；创建、模型设置和 `ClassClaw Channels` 在 `web/js/pages/account.js` 的账户设置中。渠道统一入口为 `web/js/classclawChannels.js`，包含内置网页 Chat 和微信；微信 account alias 不代表已绑定，等待结果未返回新二维码时必须保留当前图片；二维码只存视图内存，离页清理扫码轮询不能取消聊天请求
 - **ClassClaw Channels** 是网页 Chat 与外部渠道的产品总称。网页 Chat 默认启用、无需绑定，沿用 Chat API 与 Responses/SSE 的用户/班级/会话隔离；微信等外部渠道通过 OpenClaw Channels 与兼容层接入同一 Agent。当前支持网页 Chat 与单个微信账号同时使用，不能宣称已支持多个外部账号绑定；新增外部渠道前须迁移为独立连接表，并同步扩展路由、登录状态、提醒目标和分阶段删除。微信重绑必须保留本 Agent 的其他渠道路由。详见 `docs/classclaw-channels.md`。
 - 班级思考强度统一来自 `openclaw.class_agent_thinking` / `CLASSCLAW_OPENCLAW_CLASS_AGENT_THINKING`，网页会话可独立覆盖，禁止用修改 Agent 全局配置实现会话覆盖。网页默认 SSE，断流不得视为成功；Gateway 私有会话设置端点只允许已绑定班级网页 key 和 `thinkingLevel`，不得扩为任意 RPC
@@ -78,7 +79,8 @@ node --test tests/web/*.test.mjs  # 对话状态、页面交互与登录切换�
 ```
 
 - 测试使用独立内存 SQLite（`StaticPool`），通过 `app.dependency_overrides[get_db]` 注入；OpenClaw 连接状态在 `tests/conftest.py` 中被 monkeypatch 掉，测试不依赖 OpenClaw 在线。
-- 当前 39 个测试文件、403 个用例全部通过。覆盖：学号唯一与同名歧义、班内学号确定性解析（全角/“13号”/前导零/歧义候选/跨班）、座位快照、值日预览确认、作业幂等、考勤口径、成绩整批回滚、调课覆盖、分析、早报、统一响应、账户/管理员、onboarding 原子提交、删除分阶段重试与共享资源保护、班级 Agent 记忆（重复合并、更正冲突、临时规则到期恢复）。
+- 当前后端回归 483 个用例、网页回归 134 个、插件回归 67 个（数量随新增测试变化）。覆盖：学号唯一与同名歧义、班内学号确定性解析（全角/“13号”/前导零/歧义候选/跨班）、座位快照、值日预览确认、作业幂等、考勤口径、成绩整批回滚、调课覆盖、分析、早报、统一响应、账户/管理员、onboarding 原子提交、删除分阶段重试与共享资源保护、班级 Agent 记忆（重复合并、更正冲突、临时规则到期恢复）、教室终端与点名广播（配对一次性与限流、命令状态机与到期清扫、冻结文本、每班唯一摄像头、观看租约与音轨授权、WebSocket 通道、提案投递回执）。
+- 账户页 QR 回归通过 `classclawChannels.js` 组合校验；不要恢复为要求账户页直接包含二维码 DOM 的旧断言。
 - 新增业务功能应同步增加测试；测试客户端默认带 `X-ClassClaw-Surface: web` 头和 Bearer Token（若配置了 `CLASSCLAW_API_TOKEN`）。
 
 代码风格：Ruff（`pyproject.toml` 配置，line-length 140，target py312）；代码普遍使用 `from __future__ import annotations`、现代类型标注（`str | None` 等）。
@@ -93,6 +95,8 @@ node --test tests/web/*.test.mjs  # 对话状态、页面交互与登录切换�
 - **学生排序**：无明确业务排序时按学号自然升序，不能按字符串将 10 排在 2 前面；SQL 使用 `student_order_by()`，Python 使用 `student_no_key()`，网页使用 `compareStudents()`。分页前排序，学生下拉框禁止按使用频率重排；成绩排名、座位位置、日期分组和值日公平性优先级保留。
 - **不保存消息原文**：`interaction_analyses` 只保存结构化结果、置信度、澄清问题与 proposal 关联。
 - **班级 Agent 记忆**：长期作息、偏好和约定经 `memory.upsert`/`memory.forget` 提案确认后保存在 `class_agent_memories`（`app/services/agent_memory.py`，每班上限 100 条），只存简短事实，不存原文、凭据或学生敏感档案。作息必须带起止时间与适用星期；临时调整另存带 `valid_from`/`valid_to` 的同名条目，有效期内覆盖长期规则、到期自动恢复，不能用 `memory_id` 改写长期规则的有效期。名称/别名重叠且范围冲突报 `MEMORY_CONFLICT`，内容未变报 `MEMORY_UNCHANGED`，预览后状态变化报 `MEMORY_STALE`。插件 `before_prompt_build` 钩子每轮注入本班已确认记忆快照，读取失败时必须说明而不是沿用旧值。
+- **教室终端与点名广播**：一班一台终端、一路摄像头，由数据库唯一约束和 Service 校验共同保证。终端只持有本设备凭据（配对码与凭据都只存哈希、明文只返回一次），只能收到 `app/schemas/classroom.py` 白名单内的固定动作，禁止下发模型生成的 shell、路径或任意命令。控制连接在线才投递，SQLite 是执行账本，**不做离线命令积压**：终端离线时实时点名与音量返回 409 `DEVICE_OFFLINE`，恢复后不补播。命令状态必须区分 `authorized`/`delivered`/`executing`/`succeeded`/`failed`/`expired`/`unknown`，广播的显示与播报结果分别记录；登记与投递分离（`db.info["classroom_dispatch"]`，提交后才推送），**提案 completed 不等于已发出声音**，只有终端回执才可报告完成。`expire_overdue()` 是命令状态的唯一权威（TTL 到期或终端已断连），已开始执行却无回执记为 `unknown`，绝不自动重播。广播是「叫人办事」不是考勤，句子在预览时冻结（默认模板 `请{称谓}{时间}{谓词}。`，按学号自然升序），自定义原文不追加「请」「同学」；「下课后」是通知内容不是定时播报，首期不支持定时广播。摄像头绑定只能从网页发起，更换须带 `expected_revision`，顺序固定为撤销旧观看会话→停旧→改配置→启新；流地址不允许内嵌凭据且拒绝环回/云元数据地址，密码只经 `CLASSCLAW_CLASSROOM_CAMERA_<引用名>` 读取，不回传浏览器、不写日志。观看租约短期有效、绑定用户与班级，**音轨授权在媒体层执行**，不靠浏览器静音；离页、登出、撤权、更换或断开都要终止会话。媒体转发未接入时（`classroom.media_provider="none"`）必须明确返回不可用，不伪造播放地址。详见 `docs/classroom-monitoring.md`。
+- **实际媒体链路**：`classroom_streaming` 管理分轨 WHIP/WHEP 信令与租约回收，MediaMTX HTTP/RTSP/控制 API 只监听环回，只有 ICE 媒体端口公开。本机摄像头声音必须绑定清单中的 `microphone_identifier`；Windows 以带有效期的 `media_state` 为采集授权，不能仅凭 camera.start 全天采集。服务器直读仅 RTSP，经 `classroom_sources` 固定 FFmpeg 参数，状态以实际 ready 流为准。现场概况 `classroom_observation` 仅明确请求时采单帧，临时租约必须在失败/取消时释放，无音频、身份识别或考勤；图片不进业务附件，Gateway 临时会话沿用清理策略。自动测试须替换媒体后台任务，禁止测试连接真实业务库；真实合成媒体验证用 `scripts/test_classroom_media.py`。
 - **软删除**：学生、班级、学生事件使用 `SoftDeleteMixin`，查询需过滤 `deleted_at`。
 - **时间**：一律使用 `app.utils.time.now()`（时区感知），不要直接用 `datetime.now()`。
 - **幂等与事务**：批量写入（成绩、作业状态等）要求整批事务校验、失败回滚；未交事件等同步操作要求幂等。
@@ -140,6 +144,10 @@ python scripts/cleanup_deletions.py     # 定向清理删除残留；默认只�
 - `docs/accounts-admin.md`：账户与管理员
 - `docs/class-agent-onboarding.md`：班级专属智能体与微信绑定
 - `docs/classclaw-channels.md`：统一渠道入口、OpenClaw 兼容层与多渠道扩展边界
+- `docs/classroom-media-deployment.md`：同机 MediaMTX/FFmpeg、分轨鉴权、真实合成媒体自测及部署生命周期
+- `docs/windows-client-agent-prompt.md`：下一位智能体仅实现 Windows 客户端的完整交接协议
+- `docs/classroom-monitoring.md`：教室终端、点名广播、摄像头登记与观看租约的服务端实现
+- `docs/classroom-monitoring-plan.md`：班级监控与 Windows 教室终端的设计与现场验证清单
 - `docs/analytics.md`：分析口径
 - `docs/configuration.md`：TOML 与环境变量配置分层
 - `docs/deployment.md`：Ubuntu 同机部署与运维

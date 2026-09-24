@@ -21,12 +21,14 @@ const operationTypes = [
   "attendance.set", "homework.create", "homework.status.batch", "student_event.create",
   "student_event.batch", "exam.create", "score.batch", "lesson_override.create", "arrangement.create",
   "duty.schedule.confirm", "duty.assignment.score",
+  "classroom.broadcast.send", "classroom.volume.set",
 ] as const;
 
 const readResources = [
   "agent_memory",
   "classes", "class_summary", "student_search", "student_detail", "daily_timetable", "morning_briefing",
   "student_analysis", "class_analysis", "attention_students", "write_proposal", "interaction_analysis", "reminder_delivery",
+  "classroom_status", "classroom_camera", "classroom_broadcast", "classroom_observation",
 ] as const;
 
 type ToolContext = { sessionKey?: string; agentId?: string };
@@ -254,6 +256,7 @@ const plugin: OpenClawPluginDefinition = definePluginEntry({
         student_id: Type.Optional(Type.String()), student_no: Type.Optional(Type.String()), proposal_id: Type.Optional(Type.String()), session_id: Type.Optional(Type.String()),
         analysis_id: Type.Optional(Type.String()),
         reminder_id: Type.Optional(Type.String()),
+        broadcast_id: Type.Optional(Type.String()),
         bound_class_id: Type.Optional(Type.String()),
         q: Type.Optional(Type.String()), exact_name: Type.Optional(Type.Boolean()), date: Type.Optional(Type.String()),
         page: Type.Optional(Type.Integer({ minimum: 1 })), page_size: Type.Optional(Type.Integer({ minimum: 1, maximum: 100 })),
@@ -286,6 +289,17 @@ const plugin: OpenClawPluginDefinition = definePluginEntry({
           case "write_proposal": path = `/api/v1/write-proposals/${encodeURIComponent(String(values.proposal_id ?? ""))}`; break;
           case "interaction_analysis": path = `/api/v1/interaction-analyses/${encodeURIComponent(String(values.analysis_id ?? ""))}`; break;
           case "reminder_delivery": path = `/api/v1/reminders/${encodeURIComponent(String(values.reminder_id ?? ""))}`; break;
+          case "classroom_status": path = `/api/v1/classes/${encodeURIComponent(String(values.class_id ?? ""))}/classroom/status`; break;
+          case "classroom_camera": path = `/api/v1/classes/${encodeURIComponent(String(values.class_id ?? ""))}/classroom/camera`; break;
+          case "classroom_observation": {
+            if (values.bound_class_id && values.bound_class_id !== values.class_id) {
+              throw new Error("CLASS_SCOPE_VIOLATION: classroom observation must use the bound class");
+            }
+            const observed = await client.post(`/api/v1/classes/${encodeURIComponent(String(values.class_id ?? ""))}/classroom/observation`, {});
+            if ((observed as JsonObject).class_id !== values.class_id) throw new Error("CLASS_SCOPE_VIOLATION: classroom observation belongs to another class");
+            return result(observed);
+          }
+          case "classroom_broadcast": path = `/api/v1/classes/${encodeURIComponent(String(values.class_id ?? ""))}/classroom/broadcasts/${encodeURIComponent(String(values.broadcast_id ?? ""))}`; break;
           default: throw new Error(`Unsupported ClassClaw read resource: ${String(values.resource)}`);
         }
         const data = await client.get(path);
@@ -304,6 +318,14 @@ const plugin: OpenClawPluginDefinition = definePluginEntry({
         if (scopedClassId && values.resource === "reminder_delivery") {
           const arrangement = (data as JsonObject).arrangement as JsonObject | undefined;
           if (arrangement?.class_id !== scopedClassId) throw new Error("CLASS_SCOPE_VIOLATION: reminder does not belong to this agent's class");
+        }
+        if (scopedClassId && ["classroom_status", "classroom_broadcast"].includes(values.resource)
+          && (data as JsonObject).class_id !== scopedClassId) {
+          throw new Error("CLASS_SCOPE_VIOLATION: classroom record does not belong to this agent's class");
+        }
+        if (scopedClassId && values.resource === "classroom_camera") {
+          const camera = (data as JsonObject).camera as JsonObject | null | undefined;
+          if (camera && camera.class_id !== scopedClassId) throw new Error("CLASS_SCOPE_VIOLATION: camera does not belong to this agent's class");
         }
         return result(data);
       },

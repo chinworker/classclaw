@@ -13,6 +13,10 @@ OpenClaw 对话式写入使用以下预览/确认入口；网页中的结构化�
 | classclaw_commit_write | POST `/write-proposals/{id}/confirm` | 用户在聊天中确认一条预览后直接执行 |
 | classclaw_commit_writes | POST `/write-proposals/confirm-batch` | 用户确认同组多条预览后原子执行；一条失败则整批回滚 |
 | classclaw_read reminder_delivery | GET `/reminders/{id}` | Agent 定时任务到点后复核提醒是否仍有效且到期 |
+| classclaw_read classroom_status | GET `/classes/{id}/classroom/status` | 教室终端是否在线、显示与播报能力、当前音量、摄像头与观看概况 |
+| classclaw_read classroom_camera | GET `/classes/{id}/classroom/camera` | 本班摄像头连通状态、视频与音轨能力及更新时间；连接与更换只能在网页 |
+| classclaw_read classroom_broadcast | GET `/classes/{id}/classroom/broadcasts/{broadcast_id}` | 单次点名的冻结文本与显示/播报回执，需使用返回的 `broadcast_id` |
+| classclaw_read classroom_observation | POST `/classes/{id}/classroom/observation` | 明确请求时采单帧并生成可见环境/活动概况；无声音、不识别个人，普通状态查询不调用 |
 | classclaw_mark_reminder_sent | POST `/reminders/{id}/sent` | Agent 主动发出提醒时更新发送状态；无需用户确认 |
 | classclaw_cancel_write | POST `/write-proposals/{id}/cancel` | 取消待复核写入 |
 | 网页 onboarding | POST/PATCH `/class-onboarding/sessions...` | 仅接受 `X-ClassClaw-Surface: web`；插件不暴露这些 mutation |
@@ -101,6 +105,18 @@ OpenClaw 对话式写入使用以下预览/确认入口；网页中的结构化�
 | class_attention_students | GET `/analytics/classes/{id}/attention-students` | 日期 | 规则、证据 | 否 |
 | class_cross_module_analysis | GET `/analytics/classes/{id}/cross-module` | 日期 | 同时出现结果 | 否 |
 | class_data_quality | GET `/analytics/classes/{id}/data-quality` | 日期 | 覆盖与缺失 | 否 |
+| classroom_status | GET `/classes/{id}/classroom/status` | class_id | 终端在线状态、能力、音量、摄像头与观看概况 | 否 |
+| classroom_pairing | POST/DELETE `/classes/{id}/classroom/pairing` | 终端名称 | 一次性配对码（只返回一次） | 否（仅网页） |
+| classroom_device_revoke | POST `/classes/{id}/classroom/device/revoke` | — | 撤销凭据并终止连接与观看会话 | 否（仅网页） |
+| classroom_device_output | POST `/classes/{id}/classroom/device/output` | display_name?,audio_output_name? | 已下发的输出设备设置 | 否（仅网页） |
+| classroom_broadcast_preview | POST `/classes/{id}/classroom/broadcasts/preview` | mode,student_ids/学号,称呼,时间,事项或完整句子 | 冻结句子，不写入 | 否 |
+| classroom_broadcast_send | POST `/classes/{id}/classroom/broadcasts` | 同预览 | 广播记录与命令登记状态 | 可经聊天预览 |
+| classroom_broadcast_control | POST `/classes/{id}/classroom/broadcasts/{id}/stop`、`/clear` | broadcast_id | 停止播报 / 清除屏幕 | 否（仅网页） |
+| classroom_volume | POST `/classes/{id}/classroom/volume` | volume?,mute? | 命令登记状态与终端上次回报值 | 可经聊天预览 |
+| classroom_camera | GET/POST/DELETE `/classes/{id}/classroom/camera` | access_path,source_kind,设备标识或流地址,expected_revision | 每班唯一摄像头 | 否（仅网页） |
+| classroom_media_session | GET/POST `/classes/{id}/classroom/media-sessions`、POST/DELETE `/{session_id}` | audio | 短期观看租约与音轨授权 | 否（仅网页） |
+| terminal_pair | POST `/classroom/device/pair` | 一次性配对码 | 本设备专用凭据（终端调用，不需用户会话） | 否 |
+| terminal_channel | WS `/classroom/device-channel` | hello/heartbeat/command_result | welcome/command/error | 否 |
 
 典型调用：OpenClaw 的微信渠道收到消息后，把原文和稳定消息 id 传给 `classclaw_analyze_interaction`。后端再次通过 OpenClaw Responses 做受约束的清洗；同名或关键信息不明确时只返回问题，不创建 proposal。可确定时，后端校验每个结构化 operation 并返回 proposal；用户核对 preview 后才调用 confirm。外部 Agent 不再自行串接旧目标写接口。
 
@@ -117,3 +133,5 @@ OpenClaw 对话式写入使用以下预览/确认入口；网页中的结构化�
 ```
 
 常见错误码：`VALIDATION_ERROR`、`NOT_FOUND`、`CLASS_ACCESS_DENIED`、`STUDENT_NOT_FOUND`、`STUDENT_AMBIGUOUS`、`STUDENT_NO_CONFLICT`、`CLASS_MISMATCH`、`SEAT_LAYOUT_INVALID`、`SEAT_STUDENT_DUPLICATE`、`DUTY_RULE_INVALID`、`DUTY_SCHEDULE_CONFLICT`、`DUTY_SCORE_INVALID`、`TIMETABLE_CONFLICT`、`SCORE_EXCEEDS_FULL_SCORE`、`PENDING_CONFIRMATION_REQUIRED`、`DATABASE_BUSY`、`INTERNAL_ERROR`。
+
+教室终端相关错误码：`DEVICE_OFFLINE`（终端不在线，实时点名与音量被拒绝且不补播）、`DEVICE_NOT_PAIRED`、`DEVICE_ALREADY_PAIRED`、`DEVICE_UNAUTHORIZED`、`DEVICE_PAIRING_INVALID`、`DEVICE_PAIRING_EXPIRED`、`DEVICE_PAIRING_THROTTLED`、`DEVICE_PROTOCOL_UNSUPPORTED`、`DEVICE_OUTPUT_UNAVAILABLE`、`VOLUME_ABOVE_CEILING`、`VOLUME_UNSUPPORTED`、`BROADCAST_TOO_LONG`、`BROADCAST_TOO_MANY_SEGMENTS`、`BROADCAST_IDEMPOTENCY_CONFLICT`、`COMMAND_EXPIRED`、`COMMAND_RESULT_UNKNOWN`、`DEVICE_DISCONNECTED`、`CAMERA_ALREADY_CONNECTED`、`CAMERA_REVISION_CONFLICT`、`CAMERA_CREDENTIAL_IN_URL`、`CAMERA_CREDENTIAL_MISSING`、`CAMERA_LOCATION_FORBIDDEN`、`CAMERA_DISCONNECTED`、`MEDIA_SESSION_INVALID`、`MEDIA_SESSION_EXPIRED`、`MEDIA_NOT_CONFIGURED`、`MEDIA_UNAVAILABLE`、`MEDIA_TRACK_DENIED`、`MEDIA_PUBLISH_DENIED`。完整清单与语义见 `docs/classroom-monitoring.md`。

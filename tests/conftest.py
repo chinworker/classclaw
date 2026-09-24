@@ -42,6 +42,18 @@ def usage_store(tmp_path, monkeypatch):
         store.dispose()
 
 
+@pytest.fixture(autouse=True)
+def classroom_runtime_state():
+    """终端注册表与配对限流是进程内状态，不能在用例之间泄漏。"""
+    from app.services import classroom_channel, classroom_devices
+
+    classroom_channel._connections.clear()
+    classroom_devices._pair_attempts.clear()
+    yield
+    classroom_channel._connections.clear()
+    classroom_devices._pair_attempts.clear()
+
+
 @pytest.fixture()
 def deletion_gateway(client, monkeypatch):
     """Fake Gateway admin RPC and private WeChat transport for deletion flows.
@@ -134,6 +146,7 @@ def client(db: Session, monkeypatch):
 
     monkeypatch.setattr("app.main.init_db", lambda: None)
     monkeypatch.setattr("app.main.writer_session", startup_session)
+    monkeypatch.setattr("app.services.classroom_streaming.run", no_runtime_sync)
     monkeypatch.setattr("app.services.openclaw_provisioning.sync_class_agent_thinking_defaults", no_runtime_sync)
     monkeypatch.setattr("app.services.wechat_login.call", no_real_wechat)
     monkeypatch.setattr(openclaw_bridge, "connection_status", connected)

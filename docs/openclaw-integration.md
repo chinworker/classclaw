@@ -216,7 +216,9 @@ POST  /api/v1/classes/{class_id}/agent-binding/wait
 
 ## 支持范围与原则
 
-当前 proposal 白名单覆盖班级/学生、座位、考勤、作业、学生事件、考试/成绩、调课、安排、值日确认和班级 Agent 记忆（`memory.upsert`/`memory.forget`）。后续新写操作必须同时增加 Pydantic 校验、预览摘要、固定执行器、测试和 Skill 文档，不能增加“任意接口调用”工具。
+当前 proposal 白名单覆盖班级/学生、座位、考勤、作业、学生事件、考试/成绩、调课、安排、值日确认、班级 Agent 记忆（`memory.upsert`/`memory.forget`）以及教室终端（`classroom.broadcast.send`/`classroom.volume.set`）。后续新写操作必须同时增加 Pydantic 校验、预览摘要、固定执行器、测试和 Skill 文档，不能增加“任意接口调用”工具。
+
+教室终端类操作有额外的物理副作用约束：预览阶段就冻结完整句子与顺序，确认后由 `approval._dispatch_classroom()` 在事务提交之后才推送命令，并把投递结果写进 `result_json.delivery`。因此 `completed` 只代表已登记下发，显示与播报结果只能依据终端回执；终端离线时确认整批回滚并返回 409 `DEVICE_OFFLINE`，不补播。点名广播不写考勤、值日或任务完成记录。详见 `docs/classroom-monitoring.md`。
 
 ### 班级 Agent 记忆
 

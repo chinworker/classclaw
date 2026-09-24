@@ -21,8 +21,12 @@ For user prose, WeChat messages, pasted lists, OCR, or attachments, do not const
 | `arrangement.create` | `{class_id?,title,summary?,start_at?,due_at?,priority?,reminder_times?}`; at most 3 reminders, default once at target minus 3 hours |
 | `duty.schedule.confirm` | Confirmed structured duty preview payload |
 | `duty.assignment.score` | `{assignment_id,score:0..5,note?}`; assignment must come from current read context |
+| `classroom.broadcast.send` | `{class_id, mode:"three_part"\|"custom", student_nos?:[班内学号,...], salutation?:称呼, time_phrase?:时间, predicate?:事项, text?:自定义完整原文, merge_mode?:"combined"\|"per_student", display_seconds?, repeat_count?, gap_seconds?, volume?}`；`three_part` 必须给 `student_nos` 和 `predicate`，`custom` 必须给 `text` 且不选人 |
+| `classroom.volume.set` | `{class_id, volume?:0..100, mute?, restore_after_broadcast?}`；至少给 `volume` 或 `mute` 其中一项，上限由服务端配置决定 |
 
-Students are always referenced by class-internal `student_no` (seating layouts included); the backend resolves them to internal UUIDs within the bound class. `homework_id`, `exam_id`, `assignment_id`, `proposal_id` and `attachment_id` remain opaque handles returned by tools.
+Students are always referenced by class-internal `student_no` (seating layouts included); the backend resolves them to internal UUIDs within the bound class. `homework_id`, `exam_id`, `assignment_id`, `proposal_id`, `attachment_id` and `broadcast_id` remain opaque handles returned by tools.
+
+`classroom.broadcast.send` and `classroom.volume.set` drive physical devices, so their result has two layers. The backend freezes the exact sentences (default template `请{称谓}{时间}{谓词}。`, one sentence per student when `merge_mode="per_student"`) and registers a terminal command; the commit result reports registration and dispatch only. Display and speech outcomes come from the terminal receipt, and `expired` or `unknown` means the result is genuinely unknown — never claim the class heard it, and never re-send to “make sure”.
 
 Dates are `YYYY-MM-DD`; datetimes are ISO 8601 with timezone. Use a stable idempotency key derived from the external message id plus the intended operation, for example `wechat-message-id:attendance:student-no:date:period`.
 
