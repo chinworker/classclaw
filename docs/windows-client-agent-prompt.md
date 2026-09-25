@@ -1,6 +1,6 @@
 # Windows 教室终端开发交接 Prompt
 
-以下正文可以完整交给负责 Windows 客户端的智能体。当前任务只编写了这份交接要求，没有实现 Windows 程序。
+以下正文保留 Windows 客户端的协议与验收要求。客户端现已在 [`classroom-mate/`](../classroom-mate/README.md) 实现，产品名为 **Classroom Mate**；后续智能体应维护该实现，不要另建重复客户端。已完成跨平台 Windows x64 构建、协议回归与合成媒体联调，真实 Windows 硬件仍待现场验收。
 
 ---
 
@@ -29,13 +29,13 @@ ClassClaw 部署在服务器上；每个班级有一台配置较低的 Windows �
 6. `tests/test_classroom_channel.py`、`test_classroom_devices.py`、`test_classroom_regressions.py` 及 `tests/helpers.py`。
 7. `web/js/pages/broadcast.js`、`web/js/pages/classroom.js`，理解用户可选择的参数。
 
-目前已有：配对、专属凭据、WebSocket、心跳、命令账本、点名广播、音量控制请求、设备清单、摄像头登记、观看租约、Agent 提案、MediaMTX WHIP/WHEP 协商、分轨鉴权、网页 WebRTC 播放器、按需启停与单帧 AI 现场概况。`media_provider=none` 是明确关闭媒体功能；启用 `mediamtx` 并按 `docs/classroom-media-deployment.md` 部署后可接入。还需阅读 `app/services/classroom_streaming.py`、`app/api/v1/classroom_streaming.py`、`web/js/classroomPlayer.js` 和 `scripts/test_classroom_media.py`。尚未完成的是 Windows 程序及真实教室硬件验收。
+目前已有：配对、专属凭据、WebSocket、心跳、命令账本、点名广播、音量控制请求、设备清单、摄像头登记、观看租约、Agent 提案、MediaMTX WHIP/WHEP 协商、分轨鉴权、网页 WebRTC 播放器、按需启停与单帧 AI 现场概况。`media_provider=none` 是明确关闭媒体功能；启用 `mediamtx` 并按 `docs/classroom-media-deployment.md` 部署后可接入。还需阅读 `app/services/classroom_streaming.py`、`app/api/v1/classroom_streaming.py`、`web/js/classroomPlayer.js` 和 `scripts/test_classroom_media.py`。Windows 实现和构建入口见 `classroom-mate/README.md`；真实教室硬件尚待验收。
 
 ## 3. 技术方向与模块
 
 优先选择 C# + WinForms，使用普通用户托盘程序。根据实际目标 Windows 版本核实并选用仍受支持的 .NET LTS、语音和采集依赖，记录支持范围；不要在不知道教室版本时宣称兼容 Windows 7 或任意旧系统。不要引入 Electron、WebView 全套前端、服务器本地模型、Docker 或消息队列。
 
-建议目录 `clients/windows/ClassClaw.Classroom/`，沿用仓库既有约定时可调整。将 UI 与可测试逻辑分离：
+用户指定目录为 `classroom-mate/`。现有实现采用 .NET 10 / WinForms，按需媒体子进程采用 aiortc / PyAV DirectShow。将 UI 与可测试逻辑分离：
 
 - 托盘生命周期、设置、登录启动与单实例。
 - 配对客户端、设备凭据存储、WebSocket 连接管理。
@@ -134,7 +134,7 @@ ClassClaw 部署在服务器上；每个班级有一台配置较低的 Windows �
 - 推荐固定语义：按 segment 顺序处理，每段连续播报 repeat_count 次，重复间隔 gap_seconds；画面至少停留 display_seconds，并等待该段语音结束再切下一段。整个任务受 expires_at 限制，配置明显无法在有效期内完成时先拒绝并说明原因，不能部分播报后声称全部成功。将最终语义同步到协议文档和测试。
 - TTS 使用本机可用中文语音；不存在时明确报错，显示仍可完成。中文姓名发音可作为后续显式配置，不自动改显示文本。TTS API 返回成功也不代表教室中每个人都听见。
 - Core Audio 对选定扬声器控制系统主音量/静音，与麦克风采集严格分离。检测热插拔、禁用、远程桌面变化和设备丢失；不得偷偷切到另一个输出设备。
-- 广播 payload.volume 推荐解释为本次临时音量；完成、取消或失败后条件恢复。如果教师执行期间手动改音量，不覆盖教师的改动。`volume.set.restore_after_broadcast` 的当前服务端只转发参数，客户端实现前明确其一次性恢复语义并补测试；普通 volume.set 则持续生效。不要为了发声擅自取消静音，除非命令明确要求。
+- 广播 payload.volume 为本次临时音量；完成、取消或失败后条件恢复。如果教师执行期间手动改音量，不覆盖教师的改动。`volume.set.restore_after_broadcast=true` 为一次性设置，在下一次正式广播结束后恢复，暂停/退出也恢复；已有广播运行时拒绝这类设置，设备试播不消费此状态。普通 volume.set 则持续生效。不要为了发声擅自取消静音，除非命令明确要求。
 - `welcome.output`、`welcome.media` 提供输出读数和当前摄像头/媒体期望状态；音量上限位于 `media.volume_ceiling`。重连上报客户端实际状态，输出配置变化成功后落盘；不要臆造配置拉取端点。
 
 ## 6. 摄像头与媒体：按现有接口边界实施

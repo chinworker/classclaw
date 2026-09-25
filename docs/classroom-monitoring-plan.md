@@ -1,6 +1,6 @@
 # 班级监控、点名广播与 Windows 教室终端计划
 
-状态：原始设计与现场验收计划。**服务端、网页、Agent/Channels、MediaMTX 分轨接入和按需单帧 AI 概况均已实现**，当前协议以 [服务端实现](classroom-monitoring.md) 和 [媒体部署](classroom-media-deployment.md) 为准。Windows 终端尚待实现；历史候选方案中的 RTSPS 上行已确定为经 ClassClaw 认证的 WHIP/WebRTC，短音频概况不在当前交付范围。
+状态：原始设计与现场验收计划。**服务端、网页、Agent/Channels、MediaMTX 分轨接入和按需单帧 AI 概况均已实现**，当前协议以 [服务端实现](classroom-monitoring.md) 和 [媒体部署](classroom-media-deployment.md) 为准。Windows 终端现已实现于 [classroom-mate](../classroom-mate/README.md)，真实硬件仍待验收；历史候选方案中的 RTSPS 上行已确定为经 ClassClaw 认证的 WHIP/WebRTC，短音频概况不在当前交付范围。当前客户端采用低分辨率软件编码，历史规划中的硬件编码、免转码、姓名读音配置尚未实现。
 
 ## 1. 已确认的需求
 

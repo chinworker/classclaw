@@ -9,7 +9,7 @@
 | 服务端控制面（配对、心跳、命令账本、广播、音量、摄像头登记、观看租约） | 已实现并有回归测试 |
 | 网页端「点名广播」「教室设备与实时监控」 | 已实现并有 node --test 回归 |
 | Agent / ClassClaw Channels 的点名与音量提案、状态查询 | 已实现（复用 WriteProposal，无新增工具） |
-| Windows 终端 ClassClaw Classroom | 未实现；以当前 Schema 与 §3 为协议基线，开发交接见 `docs/windows-client-agent-prompt.md` |
+| Windows 终端 Classroom Mate | 已实现于 `classroom-mate/`：托盘、自启、广播、音量、分轨媒体发布和 Windows x64 打包；协议与合成媒体验证通过，真实 Windows 硬件待验收 |
 | 媒体转发（MediaMTX）与浏览器播放 | 已实现分轨 WHIP/WHEP、真实媒体鉴权与回收；默认关闭，部署见 `docs/classroom-media-deployment.md` |
 | 按需 AI 教室概况 | 已实现单帧画面概况，网页与 Channel 均可显式请求；不做声音概况 |
 
@@ -267,8 +267,8 @@ cd integrations/openclaw/classclaw && npm test && npm run plugin:validate
 
 测试中终端控制通道用 `tests/helpers.py` 的 `online_terminal()`（内存连接，命令停在 `authorized`，由测试显式驱动送达与回执）或 `tests/test_classroom_channel.py` 的真实 WebSocket（`channel_db` fixture 把通道的短会话替换为测试库上的独立 Session）。
 
-## 13. 剩余客户端工作与范围
+## 13. Windows 客户端与剩余验收
 
-1. Windows 终端程序本体：托盘、自启、显示屏选择、TTS、Core Audio 音量、Media Foundation/DirectShow 设备检测与采集推流。协议与命令白名单已固定，可直接按 §3 实现。
+1. Windows 程序已实现于 [`classroom-mate/`](../classroom-mate/README.md)：.NET 10 WinForms 托盘、用户登录自启、网页配对、显示/TTS、Core Audio 音量、DirectShow 检测及 aiortc/PyAV 按需采集发布。包含自包含发布脚本、安装/卸载脚本、持久化去重与协议测试。广播的临时音量在结束后条件恢复；`restore_after_broadcast=true` 在下一次正式广播完成后恢复，已有广播时拒绝该设置，暂停/退出也恢复。
 2. 真实 Windows 摄像头/麦克风、显示屏、扬声器、教室网络与 Linux 部署的现场验收。服务端真实媒体链路已通过合成画面/静音联调，不能替代硬件验收。
 3. 全天录像回放、声音内容概况、身份识别/考勤不属于当前交付范围；本次只支持实时音视频查看与按需单帧概况。

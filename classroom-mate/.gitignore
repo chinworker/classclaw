@@ -1,0 +1,5 @@
+**/bin/
+**/obj/
+.dist-cache/
+dist/
+**/__pycache__/

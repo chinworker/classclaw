@@ -45,6 +45,7 @@ ClassClaw 是供 OpenClaw 智能体和网页端共用的轻量班级管理系统
 - 网页思考选项必须来自 Gateway `agents.list` 返回的本班模型 `thinkingLevels`，区分档位 ID 与显示标签（如 `low` / `on`）；发送前刷新并由后端复核，不得写死模型能力表。配置默认不兼容时使用 Gateway 有效默认并在网页提示，显式不支持的选择不得静默替换
 - 网页常用思考档位只列模型支持的 `off/low/medium/high`，二态模型保留“关闭／开启”标签。思考文本与正文分开，通过插件 Gateway 鉴权的只读 `web-chat-reasoning` 订阅获取；后端同时匹配班级网页会话 key 与本次 Responses run ID，不向浏览器转发工具事件、内部 key 或凭据。折叠状态和计时只存内存，离页清理界面定时器不能取消聊天；无思考文本时明确提示，不伪造内容
 - `integrations/openclaw/`：OpenClaw 原生插件与兼容层
+- `classroom-mate/`：Windows 教室终端（.NET 10 WinForms 托盘；Core 协议/账本、Windows 原生 UI/音量/DPAPI、按需 aiortc/PyAV 媒体子进程）。`scripts/package.py` 生成 Windows x64 自包含发布包，依赖与二进制仅在被忽略的 `.dist-cache/`、`dist/` 中。运行 `dotnet run --project classroom-mate/tests/ClassroomMate.Tests` 验证协议，媒体验证见其 README。登录自启到托盘，正常暂停/退出；摄像头只由有效 `media_state` 授权，Job Object 保证托盘退出不遗留采集子进程。真实 Windows 硬件尚待验收。
 - `tests/`：pytest 测试（内存 SQLite）
 - `docs/`：详细设计文档（架构、数据库、分析、账户、onboarding、OpenClaw 集成等），改动涉及对应领域时应同步更新
 
@@ -145,7 +146,7 @@ python scripts/cleanup_deletions.py     # 定向清理删除残留；默认只�
 - `docs/class-agent-onboarding.md`：班级专属智能体与微信绑定
 - `docs/classclaw-channels.md`：统一渠道入口、OpenClaw 兼容层与多渠道扩展边界
 - `docs/classroom-media-deployment.md`：同机 MediaMTX/FFmpeg、分轨鉴权、真实合成媒体自测及部署生命周期
-- `docs/windows-client-agent-prompt.md`：下一位智能体仅实现 Windows 客户端的完整交接协议
+- `docs/windows-client-agent-prompt.md`：Windows 客户端协议与维护交接要求，现有实现见 `classroom-mate/README.md`
 - `docs/classroom-monitoring.md`：教室终端、点名广播、摄像头登记与观看租约的服务端实现
 - `docs/classroom-monitoring-plan.md`：班级监控与 Windows 教室终端的设计与现场验证清单
 - `docs/analytics.md`：分析口径
