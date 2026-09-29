@@ -130,13 +130,16 @@ sealed class Tray : ApplicationContext
                 ["os_version"] = Environment.OSVersion.VersionString, ["device_name"] = Environment.MachineName,
                 ["capabilities"] = report["capabilities"]!.DeepClone(), ["inventory"] = report["inventory"]!.DeepClone()
             }, CancellationToken.None);
-            var next = new Pairing(server.ToString(), result.Text("device_id"), result.Text("class_id"), result.Text("credential"), development);
-            if (next.DeviceId.Length is < 1 or > 36 || next.Credential.Length < 8) throw new TerminalException("PROTOCOL_ERROR", "配对响应不完整");
+            var next = Pairing.FromResponse(server, result, development);
             try { storage.SavePairing(next); }
             catch { throw new TerminalException("PAIR_SAVE_FAILED", "设备已兑换但未能加密保存。请在网页撤销设备、修复本机目录权限后重新配对。"); }
             pairing = next; clock.Sync(result.Text("server_time"));
-            if (!Storage.StartupEnabled) Storage.StartupEnabled = true;
-            Start(); SetStatus("配对成功 · 正在连接");
+            bool startupFailed = false;
+            try { if (!Storage.StartupEnabled) Storage.StartupEnabled = true; }
+            catch (Exception exception) when (exception is UnauthorizedAccessException or System.Security.SecurityException or IOException)
+            { startupFailed = true; }
+            Start();
+            SetStatus(startupFailed ? "配对成功 · 正在连接；无法启用登录自启，请检查本用户注册表权限" : "配对成功 · 正在连接");
         }
         finally { changing = false; }
     }
@@ -167,7 +170,7 @@ sealed class SettingsWindow : Form
         button.Click += async (_, _) =>
         {
             button.Enabled = false;
-            try { await pair(address.Text, code.Text, development.Checked); code.Clear(); startup.Checked = Storage.StartupEnabled; SetStatus("配对成功。请在网页选择屏幕、音箱和摄像头。"); }
+            try { await pair(address.Text, code.Text, development.Checked); code.Clear(); startup.Checked = Storage.StartupEnabled; }
             catch (TerminalException e) { SetStatus(e.Message); }
             catch { SetStatus("连接失败，请检查服务器地址、证书、网络和配对码。"); }
             finally { button.Enabled = true; }

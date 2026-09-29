@@ -1,3 +1,4 @@
+using System.Security;
 using System.Security.Cryptography;
 using System.Text.Json;
 using ClassroomMate.Core;
@@ -29,7 +30,19 @@ public sealed class Storage
     public void SavePreferences(Preferences value) => AtomicFile.Write(Path.Combine(Root, "settings.json"), JsonSerializer.SerializeToUtf8Bytes(value, Wire.Json));
     public static bool StartupEnabled
     {
-        get { using var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run"); return key?.GetValue("ClassroomMate") is not null; }
+        get
+        {
+            try
+            {
+                using var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run");
+                return key?.GetValue("ClassroomMate") is not null;
+            }
+            catch (Exception exception) when (exception is UnauthorizedAccessException or SecurityException or IOException)
+            {
+                // Group Policy may block the Run key; that must not prevent the tray app from starting or pairing.
+                return false;
+            }
+        }
         set
         {
             using var key = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run");

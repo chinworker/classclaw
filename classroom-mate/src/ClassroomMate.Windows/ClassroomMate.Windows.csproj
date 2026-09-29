@@ -9,6 +9,5 @@
     <ProjectReference Include="../ClassroomMate.Core/ClassroomMate.Core.csproj" />
     <PackageReference Include="NAudio" Version="2.2.1" />
     <PackageReference Include="System.Speech" Version="10.0.0" />
-    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.0" />
   </ItemGroup>
 </Project>

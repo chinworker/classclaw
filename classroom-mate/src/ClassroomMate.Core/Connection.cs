@@ -6,7 +6,23 @@ using System.Text.Json.Nodes;
 
 namespace ClassroomMate.Core;
 
-public sealed record Pairing(string Server, string DeviceId, string ClassId, string Credential, bool Development = false);
+public sealed record Pairing(string Server, string DeviceId, string ClassId, string Credential, bool Development = false)
+{
+    public static Pairing FromResponse(Uri server, JsonObject result, bool development = false)
+    {
+        const string error = "配对响应不完整或协议不兼容";
+        try
+        {
+            var pairing = new Pairing(server.ToString(), result.Text("device_id"), result.Text("class_id"), result.Text("credential"), development);
+            if (result.Number("protocol_version") != 1 || pairing.DeviceId.Length is < 1 or > 36 || pairing.ClassId.Length is < 1 or > 36
+                || pairing.Credential.Length is < 8 or > 200 || !DateTimeOffset.TryParse(result.Text("server_time"), out _))
+                throw new TerminalException("PROTOCOL_ERROR", error);
+            return pairing;
+        }
+        catch (Exception exception) when (exception is InvalidOperationException or FormatException)
+        { throw new TerminalException("PROTOCOL_ERROR", error); }
+    }
+}
 public sealed class DeviceApi : IDisposable
 {
     readonly HttpClient http = new(new HttpClientHandler { AllowAutoRedirect = false, UseProxy = false }) { Timeout = TimeSpan.FromSeconds(30) };

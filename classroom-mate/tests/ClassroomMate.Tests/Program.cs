@@ -18,6 +18,20 @@ try
         try { Wire.Endpoint(Wire.Server("https://example.com"), "//evil.test/token"); throw new Exception("未拒绝跳转"); } catch (TerminalException) { }
         return Task.CompletedTask;
     });
+    await Test("配对响应必须完整且协议兼容", () =>
+    {
+        var server = Wire.Server("https://example.com");
+        JsonObject response = new() { ["device_id"] = "device", ["class_id"] = "class", ["credential"] = "credential",
+            ["protocol_version"] = 1, ["server_time"] = DateTimeOffset.UtcNow.ToString("O") };
+        Check(Pairing.FromResponse(server, response).DeviceId == "device");
+        var badProtocol = response.Copy(); badProtocol["protocol_version"] = 2;
+        var missingClass = response.Copy(); missingClass["class_id"] = "";
+        var shortCredential = response.Copy(); shortCredential["credential"] = "short";
+        var badTime = response.Copy(); badTime["server_time"] = "not-a-time";
+        foreach (var invalid in new[] { badProtocol, missingClass, shortCredential, badTime })
+        { try { Pairing.FromResponse(server, invalid); throw new Exception("未拒绝非法配对响应"); } catch (TerminalException) { } }
+        return Task.CompletedTask;
+    });
     await Test("未知动作和命令参数被拒绝", () =>
     {
         foreach (var message in new[] { Message("a", "shell", new()), Message("a", "volume.set", new() { ["volume"] = 200 }), Message("a", "broadcast.stop", new()), Message("a", "device.test_speak", new() { ["text"] = "hello", ["path"] = "cmd.exe" }) })

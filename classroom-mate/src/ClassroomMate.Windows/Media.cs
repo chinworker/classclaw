@@ -119,17 +119,25 @@ public sealed class Media : IAsyncDisposable
                 try { await worker.Process.StandardInput.WriteLineAsync(JsonSerializer.Serialize(new { valid_seconds = Math.Max(0, (expiry - clock.UtcNow).TotalSeconds) })); }
                 catch (IOException) { worker.State = "failed"; worker.Code = "MEDIA_PROCESS_EXITED"; }
         }
-        if (camera is not null)
+        if (state is not null && camera is null)
         {
-            string captureState = !enabled ? "idle" : workers.TryGetValue("video", out var video) ?
-                video.Process.HasExited ? "failed" : video.State == "connected" ? "connected" : video.State == "failed" ? "failed" : "idle" : "idle";
+            lock (gate) cameraState = null;
+            const string text = "未登记本机摄像头 · 未采集音视频";
+            if (text != lastCaptureStatus) { lastCaptureStatus = text; status(text); }
+        }
+        else if (camera is not null && state is not null)
+        {
+            string primaryTrack = state.Flag("video") ? "video" : state.Flag("audio") ? "audio" : "";
+            string captureState = !enabled || primaryTrack.Length == 0 ? "idle" : workers.TryGetValue(primaryTrack, out var primary) ?
+                primary.Process.HasExited ? "failed" : primary.State == "connected" ? "connected" : primary.State == "failed" ? "failed" : "idle" : "idle";
             var failed = workers.Values.FirstOrDefault(w => w.State == "failed" || w.Process.HasExited);
             if (failed is not null || failures.Count > 0) captureState = "failed";
             lock (gate) cameraState = new JsonObject { ["camera_id"] = camera.Text("camera_id"), ["config_revision"] = camera.Number("config_revision"),
                 ["identifier"] = camera.Text("identifier"), ["state"] = captureState, ["audio_capable"] = camera.Flag("audio_capable"),
                 ["error"] = failed?.Code ?? (failures.Count > 0 ? "CAPTURE_DEVICE_UNAVAILABLE" : "") };
-            string text = captureState == "connected" ? (workers.TryGetValue("audio", out var audio) && audio.State == "connected"
-                ? "正在采集视频和现场声音" : "正在采集视频 · 未采集现场声音") : captureState == "failed" ? "媒体采集失败 · 请检查设备" : "媒体采集已停止或正在连接";
+            string text = captureState == "connected" ? state.Flag("video") ? (workers.TryGetValue("audio", out var audio) && audio.State == "connected"
+                ? "正在采集视频和现场声音" : "正在采集视频 · 未采集现场声音") : "正在采集现场声音"
+                : captureState == "failed" ? "媒体采集失败 · 请检查设备" : "媒体采集已停止或正在连接";
             if (text != lastCaptureStatus) { lastCaptureStatus = text; status(text); }
         }
     }
