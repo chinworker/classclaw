@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import replace
 
 import pytest
@@ -39,6 +40,7 @@ def test_thinking_options_expose_only_bound_model_capabilities(client, db, sampl
         "agent_id": "class-agent", "model": "kimi/kimi-for-coding",
         "levels": [{"id": "off", "label": "关闭"}, {"id": "low", "label": "开启"}],
         "default_level": "off", "configured_default_level": "off", "default_adjusted": False,
+        "class_default_level": None, "system_default_level": "off",
     }
     assert "foreign-agent" not in response.text and "private-path" not in response.text
     assert thinking_gateway[1] == [("agents.list", None)]
@@ -141,3 +143,139 @@ def test_capabilities_timeout_cancels_lookup_instead_of_delaying_model_request(m
         asyncio.run(agent_thinking.resolve_thinking_level("class-agent", "low"))
     assert caught.value.code == "CHAT_THINKING_OPTIONS_UNAVAILABLE"
     assert cancelled == [True]
+
+
+@pytest.fixture
+def class_thinking_runtime(db, sample, monkeypatch, tmp_path):
+    binding = ClassAgentBinding(class_id=sample[0].id, openclaw_agent_id="class-agent", agent_name="测试助手", workspace_path=str(tmp_path))
+    db.add(binding)
+    db.commit()
+    agent = {"id": "class-agent", "model": "provider/model", "thinkingDefault": "off"}
+    other = {"id": "other-agent", "thinkingDefault": "high"}
+    config = {"agents": {"list": [agent, other]}, "bindings": [{"agentId": "class-agent", "match": {"accountId": "wechat-a"}}]}
+    calls = []
+
+    async def rpc(method, params=None):
+        calls.append((method, params))
+        if method == "config.get":
+            return {"hash": "current-hash", "config": config}
+        if method == "agents.list":
+            return {"agents": [{**config["agents"]["list"][0], "thinkingLevels": [
+                {"id": "off", "label": "off"}, {"id": "low", "label": "on"},
+            ]}]}
+        if method == "config.patch":
+            assert params["baseHash"] == "current-hash"
+            patch = json.loads(params["raw"])
+            assert set(patch) <= {"agents", "plugins"}
+            config["agents"]["list"] = patch["agents"]["list"]
+            return {}
+        pytest.fail(method)
+
+    monkeypatch.setattr(openclaw_provisioning, "admin_rpc", rpc)
+    return binding, config, calls
+
+
+def test_class_default_save_reset_and_other_agents_are_preserved(client, db, sample, class_thinking_runtime):
+    binding, config, calls = class_thinking_runtime
+    path = f"/api/v1/classes/{sample[0].id}/agent-chat/thinking"
+    saved = client.patch(path, json={"thinking_default": "low"})
+    assert saved.status_code == 200, saved.text
+    assert binding.thinking_default == "low"
+    assert saved.json()["data"]["restart_requested"] is True
+    assert config["agents"]["list"] == [
+        {"id": "class-agent", "model": "provider/model", "thinkingDefault": "low"},
+        {"id": "other-agent", "thinkingDefault": "high"},
+    ]
+    assert config["bindings"] == [{"agentId": "class-agent", "match": {"accountId": "wechat-a"}}]
+    profile = client.get(path).json()["data"]
+    assert profile["default_level"] == profile["class_default_level"] == "low"
+    assert profile["system_default_level"] == "off"
+    assert profile["levels"][1] == {"id": "low", "label": "开启"}
+    patches = sum(method == "config.patch" for method, _ in calls)
+    assert client.patch(path, json={"thinking_default": "low"}).json()["data"]["restart_requested"] is False
+    assert sum(method == "config.patch" for method, _ in calls) == patches
+    assert client.patch(path, json={"thinking_default": None}).status_code == 200
+    assert binding.thinking_default is None
+    assert config["agents"]["list"][0]["thinkingDefault"] == "off"
+
+
+def test_class_thinking_revalidates_capabilities_and_rejects_cross_class_write(client, db, sample, class_thinking_runtime):
+    binding, _, calls = class_thinking_runtime
+    path = f"/api/v1/classes/{sample[0].id}/agent-chat/thinking"
+    rejected = client.patch(path, json={"thinking_default": "high"})
+    assert rejected.status_code == 422
+    assert rejected.json()["error"]["code"] == "CHAT_THINKING_UNSUPPORTED"
+    assert binding.thinking_default is None
+    assert not any(method == "config.patch" for method, _ in calls)
+    assert client.patch(path, json={"thinking_default": "invalid"}).status_code == 422
+    headers = teacher_for_class(client, sample[1], db, "other-thinking-owner")
+    assert client.patch(path, json={"thinking_default": "low"}, headers=headers).status_code == 403
+    assert client.patch(path, json={"thinking_default": "low"}, headers={"Authorization": ""}).status_code == 401
+
+
+def test_failed_gateway_save_keeps_the_persisted_class_default(client, sample, class_thinking_runtime, monkeypatch):
+    binding, _, _ = class_thinking_runtime
+    original = openclaw_provisioning.admin_rpc
+
+    async def fail_patch(method, params=None):
+        if method == "config.patch":
+            raise AppError("CONFIG_CONFLICT", "配置已变更", 409)
+        return await original(method, params)
+
+    monkeypatch.setattr(openclaw_provisioning, "admin_rpc", fail_patch)
+    result = client.patch(f"/api/v1/classes/{sample[0].id}/agent-chat/thinking", json={"thinking_default": "low"})
+    assert result.status_code == 409
+    assert binding.thinking_default is None
+
+
+def test_class_default_and_session_override_have_separate_priorities(thinking_gateway):
+    assert asyncio.run(agent_thinking.resolve_thinking_level("class-agent", None, configured_default="low")) == "low"
+    assert asyncio.run(agent_thinking.resolve_thinking_level("class-agent", "off", configured_default="low")) == "off"
+
+
+def test_startup_sync_keeps_each_class_default(db, sample, monkeypatch, class_thinking_runtime):
+    from contextlib import contextmanager
+
+    binding, config, _ = class_thinking_runtime
+    binding.thinking_default = "low"
+    db.add(ClassAgentBinding(class_id=sample[1].id, openclaw_agent_id="other-agent", agent_name="其他助手", workspace_path="/tmp/other"))
+    db.commit()
+
+    @contextmanager
+    def reader():
+        yield db
+
+    monkeypatch.setattr(openclaw_provisioning, "reader_session", reader)
+    asyncio.run(openclaw_provisioning.sync_class_agent_thinking_defaults())
+    assert [row["thinkingDefault"] for row in config["agents"]["list"]] == ["low", "off"]
+
+
+def test_web_chat_uses_class_default_and_explicit_override_without_changing_agent(db, sample, thinking_gateway, monkeypatch):
+    binding = ClassAgentBinding(class_id=sample[0].id, openclaw_agent_id="class-agent", agent_name="助手",
+                                workspace_path="/tmp/test", thinking_default="low")
+    db.add(binding)
+    db.commit()
+    session_levels = []
+
+    async def connected():
+        return {"gateway_live": True, "plugin_ready": True}
+
+    async def patch_session(_key, level):
+        session_levels.append(level)
+
+    async def model(*args, **kwargs):
+        return {"output_text": "测试回复"}
+
+    monkeypatch.setattr(openclaw_bridge, "connection_status", connected)
+    monkeypatch.setattr(openclaw_bridge, "_request_responses", model)
+    monkeypatch.setattr(openclaw_bridge, "record_openclaw_usage", lambda *args, **kwargs: None)
+    monkeypatch.setattr(openclaw_provisioning, "set_web_session_thinking", patch_session)
+    for requested in (None, "off"):
+        result = asyncio.run(openclaw_bridge.chat_with_class_agent(
+            db=db, agent_id="class-agent", class_id=sample[0].id, conversation_id="conversation", message_id="message",
+            sender_id="teacher", requested_by="teacher", text="测试", attachments=[], thinking_level=requested,
+        ))
+        assert result["reply"] == "测试回复"
+    assert session_levels == ["low", "off"]
+    assert binding.thinking_default == "low"
+    assert all(method == "agents.list" for method, _ in thinking_gateway[1])

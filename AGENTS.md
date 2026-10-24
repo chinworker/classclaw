@@ -32,7 +32,7 @@ ClassClaw 是供 OpenClaw 智能体和网页端共用的轻量班级管理系统
 - `app/schemas/`：Pydantic 2 schema（`domain.py`、`auth.py`、`common.py`）
 - `app/core/`：`errors.py`（`AppError`）、`responses.py`（统一 `ok()` 响应）、`security.py`（`Principal`、鉴权与班级归属隔离）
 - `app/utils/time.py`：时区感知的 `now()`
-- `alembic/versions/`：迁移（当前到 `0018_classroom_microphone`）
+- `alembic/versions/`：迁移（当前到 `0019_class_agent_thinking`）
 - `scripts/`：`init_db.py`、`seed_demo.py`、`backup.py`、`restore.py`、`cleanup_attachments.py`、`cleanup_deletions.py`
 - `scripts/manage.py` / `deploy/`：Ubuntu 同机部署的 `classclaw` 运维命令、systemd/Nginx 和 2 核 4 GB 配置。维护命令由 root 协调，项目命令降为服务用户执行；升级只允许 Git 快进，停两项服务并完整备份后迁移，失败保留标记禁止自动启动，不能自动 reset/downgrade。生产依赖在 `requirements-runtime.txt`，开发 `requirements.txt` 引用它。详见 `docs/deployment.md`。
 - `scripts/reset_admin_password.py`：仅限本地终端将现有唯一管理员密码重置为 `.env` 的 `CLASSCLAW_DEFAULT_ADMIN_PASSWORD`；不输出密码，事务性撤销旧会话并审计，不允许新增 HTTP/Agent 重置入口
@@ -41,7 +41,7 @@ ClassClaw 是供 OpenClaw 智能体和网页端共用的轻量班级管理系统
 - `web/js/pages/broadcast.js`（点名广播）与 `web/js/pages/classroom.js`（教室设备与实时监控）：广播句子以服务端 `broadcasts/preview` 为权威，不在前端另写模板；设备页的 5 秒轮询只更新概况读数，不重建正在填写的表单；离页 `dispose()` 必须释放本人观看租约
 - 教师网页“班级 Agent”只负责对话；创建、模型设置和 `ClassClaw Channels` 在 `web/js/pages/account.js` 的账户设置中。渠道统一入口为 `web/js/classclawChannels.js`，包含内置网页 Chat 和微信；微信 account alias 不代表已绑定，等待结果未返回新二维码时必须保留当前图片；二维码只存视图内存，离页清理扫码轮询不能取消聊天请求
 - **ClassClaw Channels** 是网页 Chat 与外部渠道的产品总称。网页 Chat 默认启用、无需绑定，沿用 Chat API 与 Responses/SSE 的用户/班级/会话隔离；微信等外部渠道通过 OpenClaw Channels 与兼容层接入同一 Agent。当前支持网页 Chat 与单个微信账号同时使用，不能宣称已支持多个外部账号绑定；新增外部渠道前须迁移为独立连接表，并同步扩展路由、登录状态、提醒目标和分阶段删除。微信重绑必须保留本 Agent 的其他渠道路由。详见 `docs/classclaw-channels.md`。
-- 班级思考强度统一来自 `openclaw.class_agent_thinking` / `CLASSCLAW_OPENCLAW_CLASS_AGENT_THINKING`，网页会话可独立覆盖，禁止用修改 Agent 全局配置实现会话覆盖。网页默认 SSE，断流不得视为成功；Gateway 私有会话设置端点只允许已绑定班级网页 key 和 `thinkingLevel`，不得扩为任意 RPC
+- 思考强度优先级为网页会话覆盖 → 班级设置的 `class_agent_bindings.thinking_default` → `openclaw.class_agent_thinking` / `CLASSCLAW_OPENCLAW_CLASS_AGENT_THINKING`。班级默认用于网页、微信等渠道，启动和运行时同步须保留各班设置；选项从 Gateway 能力获取，保存时复核。禁止用修改 Agent 全局配置实现单会话覆盖。网页默认 SSE，断流不得视为成功；Gateway 私有会话设置端点只允许已绑定班级网页 key 和 `thinkingLevel`，不得扩为任意 RPC
 - 网页思考选项必须来自 Gateway `agents.list` 返回的本班模型 `thinkingLevels`，区分档位 ID 与显示标签（如 `low` / `on`）；发送前刷新并由后端复核，不得写死模型能力表。配置默认不兼容时使用 Gateway 有效默认并在网页提示，显式不支持的选择不得静默替换
 - 网页常用思考档位只列模型支持的 `off/low/medium/high`，二态模型保留“关闭／开启”标签。思考文本与正文分开，通过插件 Gateway 鉴权的只读 `web-chat-reasoning` 订阅获取；后端同时匹配班级网页会话 key 与本次 Responses run ID，不向浏览器转发工具事件、内部 key 或凭据。折叠状态和计时只存内存，离页清理界面定时器不能取消聊天；无思考文本时明确提示，不伪造内容
 - `integrations/openclaw/`：OpenClaw 原生插件与兼容层

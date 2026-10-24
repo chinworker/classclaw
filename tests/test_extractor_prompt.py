@@ -5,6 +5,7 @@ import json
 from dataclasses import replace
 
 from app.config import settings
+from app.schemas.domain import StudentEventCreate
 from app.services import openclaw_bridge as bridge
 from app.services import openclaw_provisioning
 
@@ -85,6 +86,22 @@ def test_extractor_agents_md_contains_full_rules():
     assert "安全与质量要求" in md
     assert "student.create" in md
     assert "operations" in md
+
+
+def test_event_enum_contract_reaches_both_extraction_paths():
+    hint = bridge._INTERACTION_PAYLOAD_HINTS["student_event.create"]
+    fields = StudentEventCreate.model_json_schema()["properties"]
+    for name in ("event_type", "sentiment", "severity", "source_type"):
+        assert "|".join(fields[name]["enum"]) in hint
+    for prompt in (bridge._extractor_agents_md(), bridge._full_interaction_prompt("web", "校内玩牌", {})):
+        assert hint in prompt
+        assert "event_type=behavior" in prompt
+        assert "不追问事件性质或处理情况" in prompt
+        assert "同音或近音" in prompt
+        assert "多个合理候选" in prompt
+        assert "不单独提醒错字" in prompt
+    # All rules must fit in the extractor's actual bootstrap budget.
+    assert len(bridge._extractor_agents_md()) <= bridge.extractor_runtime_defaults()["bootstrapMaxChars"]
 
 
 def test_extractor_workspace_keeps_admin_customization(monkeypatch, tmp_path):

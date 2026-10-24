@@ -2,6 +2,12 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field, field_validator
 
+from app.config import ThinkingLevel
+
+
+class ClassAgentThinkingUpdate(BaseModel):
+    thinking_default: ThinkingLevel | None
+
 
 class ClassAgentModelUpdate(BaseModel):
     main_model: str | None = Field(default=None, max_length=200)

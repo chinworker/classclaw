@@ -43,6 +43,7 @@ export async function render(mount, ctx, helpers) {
     savedSteps: new Set(),
     maxUnlockedStep: 0,
     analysisInProgress: false,
+    savingInProgress: false,
     previewInProgress: false,
     commitInProgress: false,
   };
@@ -116,6 +117,7 @@ export async function render(mount, ctx, helpers) {
   }
 
   async function saveDraft(stepKey = null, { allowDuringAnalysis = false, signal = null } = {}) {
+    if (local.savingInProgress || activeView !== local) return false;
     if (local.analysisInProgress && !allowDuringAnalysis) {
       toast("请先完成或取消文件解析", "error");
       return false;
@@ -126,8 +128,14 @@ export async function render(mount, ctx, helpers) {
       replace_lists: true,
     };
     if (stepKey) body.current_step = stepKey;
+    const controls = panelHost ? ["input", "select", "textarea", "button"].flatMap((tag) =>
+      [...panelHost.querySelectorAll(tag)].map((input) => ({ input, disabled: input.disabled }))) : [];
+    controls.forEach(({ input }) => { input.disabled = true; });
+    local.savingInProgress = true;
+    refreshNavigation();
     try {
       local.session = await api(`/class-onboarding/sessions/${local.session.id}`, { method: "PATCH", body, signal });
+      if (activeView !== local) return false;
       local.savedSteps.add(local.step);
       local.stepSaved = true;
       local.maxUnlockedStep = Math.max(local.maxUnlockedStep, Math.min(local.step + 1, STEPS.length - 1));
@@ -135,6 +143,7 @@ export async function render(mount, ctx, helpers) {
       refreshNavigation();
       return true;
     } catch (error) {
+      if (activeView !== local) return false;
       if (error.code === "REQUEST_CANCELLED") return false;
       if (error.code === "PENDING_CONFIRMATION_REQUIRED") {
         toast("草稿在其他地方被修改过，已重新载入最新版本", "error");
@@ -146,6 +155,10 @@ export async function render(mount, ctx, helpers) {
       }
       toast(error.message, "error");
       return false;
+    } finally {
+      controls.forEach(({ input, disabled }) => { input.disabled = disabled; });
+      local.savingInProgress = false;
+      if (activeView === local) refreshNavigation();
     }
   }
 
@@ -505,22 +518,20 @@ export async function render(mount, ctx, helpers) {
       },
     }, "上一步");
     const nextBtn = el("button", {
-      class: "primary", type: "button", onclick: () => {
-        if (!local.stepSaved) { toast("请先保存当前步骤", "error"); return; }
-        setStep(local.step + 1);
+      class: "primary", type: "button", onclick: async () => {
+        if (await saveDraft(STEPS[local.step + 1].key)) setStep(local.step + 1);
       },
-    }, "下一步");
-    const saveBtn = el("button", { class: "secondary", type: "button", onclick: async () => { if (await saveDraft(STEPS[local.step].key)) toast("草稿已保存", "success"); } }, "保存草稿");
+    }, "保存并下一步");
     const previewBtn = el("button", { class: "secondary", type: "button", onclick: doPreview }, "生成最终预览");
     const commitBtn = el("button", { class: "primary", type: "button", onclick: doCommit }, "创建班级");
-    const primaryActions = el("div", { class: "row-gap" }, saveBtn, nextBtn, previewBtn, commitBtn);
+    const primaryActions = el("div", { class: "row-gap" }, nextBtn, previewBtn, commitBtn);
     const footer = el("div", { class: "row-gap", style: { marginTop: "16px" } }, prevBtn, saveStateLine, el("span", { class: "spacer" }), primaryActions);
     mount.append(stepsHost, panelHost, footer);
-    local._footer = { prevBtn, nextBtn, saveBtn, previewBtn, commitBtn, stepButtons: [] };
+    local._footer = { prevBtn, nextBtn, previewBtn, commitBtn, stepButtons: [] };
   }
 
   function setStep(step) {
-    if (local.analysisInProgress) {
+    if (local.analysisInProgress || local.savingInProgress) {
       toast("文件正在解析，请先取消解析", "error");
       return;
     }
@@ -536,22 +547,23 @@ export async function render(mount, ctx, helpers) {
 
   function refreshNavigation() {
     if (!local._footer) return;
-    const { prevBtn, nextBtn, saveBtn, previewBtn, commitBtn, stepButtons } = local._footer;
+    const { prevBtn, nextBtn, previewBtn, commitBtn, stepButtons } = local._footer;
+    const busy = local.analysisInProgress || local.savingInProgress;
     saveStateLine.textContent = local.stepSaved
       ? `已保存 · 草稿版本 ${local.session.revision}`
       : `当前步骤有未保存修改 · 草稿版本 ${local.session.revision}`;
-    prevBtn.disabled = local.step === 0 || local.analysisInProgress;
-    saveBtn.disabled = local.analysisInProgress || local.step === STEPS.length - 1;
-    nextBtn.disabled = local.analysisInProgress || !local.stepSaved;
-    previewBtn.disabled = local.analysisInProgress || local.previewInProgress || local.commitInProgress || !local.stepSaved;
-    commitBtn.disabled = local.analysisInProgress || local.previewInProgress || local.commitInProgress || !local.proposal?.preview_json?.ready;
+    prevBtn.disabled = local.step === 0 || busy;
+    nextBtn.disabled = busy;
+    nextBtn.textContent = local.savingInProgress ? "正在保存…" : "保存并下一步";
+    previewBtn.disabled = busy || local.previewInProgress || local.commitInProgress || !local.stepSaved;
+    commitBtn.disabled = busy || local.previewInProgress || local.commitInProgress || !local.proposal?.preview_json?.ready;
     stepButtons.forEach((button, index) => {
-      button.disabled = local.analysisInProgress || (index > local.step && (!local.stepSaved || index > local.maxUnlockedStep));
+      button.disabled = busy || (index > local.step && (!local.stepSaved || index > local.maxUnlockedStep));
     });
   }
 
   function renderStep() {
-    const { nextBtn, saveBtn, previewBtn, commitBtn } = local._footer;
+    const { nextBtn, previewBtn, commitBtn } = local._footer;
     clear(stepsHost);
     local._footer.stepButtons = [];
     STEPS.forEach((s, index) => {
@@ -567,7 +579,6 @@ export async function render(mount, ctx, helpers) {
       stepsHost.append(btn);
     });
     nextBtn.classList.toggle("hidden", local.step === STEPS.length - 1);
-    saveBtn.classList.toggle("hidden", local.step === STEPS.length - 1);
     previewBtn.classList.toggle("hidden", local.step !== STEPS.length - 1);
     commitBtn.classList.toggle("hidden", local.step !== STEPS.length - 1);
 

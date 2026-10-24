@@ -134,7 +134,7 @@ def test_gateway_chat_uses_persistent_class_session_and_prestaged_files(db, tmp_
     async def thinking(key, level):
         captured["thinking"] = {"key": key, "level": level}
 
-    async def thinking_options(agent_id):
+    async def thinking_options(agent_id, *, configured_default=None):
         assert agent_id == "class-agent-web"
         return {"levels": [{"id": "high", "label": "高"}], "default_level": "high"}
 

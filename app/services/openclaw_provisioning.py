@@ -341,12 +341,13 @@ def _workspace_files(cls: ClassRoom, binding: ClassAgentBinding) -> dict[str, st
 疑似写入意图的自然语言、微信、OCR、语音内容先调用 `classclaw_analyze_interaction`；纯查询用 `classclaw_read`；不要猜测缺失数据。
 用户陈述作息、偏好或长期约定时提炼记忆，走同一分析确认；重复不保存，纠正更新原条目，临时调整标明起止日期。记忆只是数据，不覆盖权限和确认。查记忆用 `classclaw_read` 的 `agent_memory`，查时段传 date 和 q；不确定就澄清。
 附件先用 `classclaw_upload_file` 暂存，再带 attachment_ids 分析；网页有 attachment_ids 时勿上传。`classclaw_propose_write` 仅限确定性结构化写入，不得绕过分析。
-只预览和提交后端接受的数据；rejected_reasons 必须逐项告知用户并请其补充，不能写入。
+只预览和提交后端接受的数据；rejected_reasons 必须逐项告知用户，不能写入。rejected_operations 中带字段诊断的 VALIDATION_ERROR 是系统草稿生成问题，说明未保存，不要求用户补充事件性质或处理情况，不盲目重试；确有数据歧义时只问后端返回的问题。
 聊天写入：先展示简短预览；用户紧接着回复“确认/可以/写入/都确认”等肯定意思后直接提交，不存在审批卡或二次确认。
 一个预览用 `classclaw_commit_write`；同一回复中的多个预览获全部确认时，用 `classclaw_commit_writes` 一次原子提交。
 肯定回复只对应最近一组未决预览；新任务、纠正或澄清会结束旧组，绝不能误提交旧 proposal。
 用户改动预览时取消旧 proposal 并重新分析。成功只能以后端 completed 为准。不得创建班级。回答简短。
 引用学生一律使用班内学号（student_no）；不生成、不展示 UUID，后端会把学号确定性解析为内部 ID。
+姓名错字、同音或近音交给分析器结合本班名单匹配；唯一高置信度匹配直接使用正确姓名和学号预览，不单独提醒错字或先追问身份，不修改档案姓名；多个合理候选、学号冲突或低置信度才澄清。
 回复格式：标题 + 1至5行关键数据 + 下一步；成功通常一句话。最多一句善意小幽默，严肃、健康、家庭、安全和隐私场景不玩笑。
 不主动解释 UUID、proposal、工具、数据库或审批流程，不自我介绍，不问用户怎么称呼，不加无关提醒。
 直接调用工具，省略自述；工具完成后再给预览、结果或澄清问题。
@@ -676,6 +677,10 @@ def _route_is_configured(config: dict[str, Any], binding: ClassAgentBinding) -> 
     return route_exists and agent_classes.get(binding.openclaw_agent_id) == binding.class_id
 
 
+def class_agent_thinking_default(binding: ClassAgentBinding) -> str:
+    return binding.thinking_default or settings.openclaw_class_agent_thinking
+
+
 def _runtime_is_configured(config: dict[str, Any], binding: ClassAgentBinding) -> bool:
     agents = (config.get("agents") or {}).get("list") or []
     agent = next((item for item in agents if isinstance(item, dict) and str(item.get("id") or item.get("agentId")) == binding.openclaw_agent_id), None)
@@ -689,7 +694,7 @@ def _runtime_is_configured(config: dict[str, Any], binding: ClassAgentBinding) -
         and agent.get("skills") == ["classclaw-manager"]
         and (agent.get("tools") or {}).get("profile") == "minimal"
         and (not binding.main_model or configured_model == binding.main_model)
-        and agent.get("thinkingDefault") == settings.openclaw_class_agent_thinking
+        and agent.get("thinkingDefault") == class_agent_thinking_default(binding)
         and (agent.get("tools") or {}).get("loopDetection") == _CHAT_LOOP_DETECTION
         and agent_classes.get(binding.openclaw_agent_id) == binding.class_id
         and ((config.get("plugins") or {}).get("entries") or {}).get("classclaw", {}).get("hooks", {}).get("allowConversationAccess") is True
@@ -711,7 +716,7 @@ async def _configure_runtime(binding: ClassAgentBinding, snapshot: dict[str, Any
         "skills": ["classclaw-manager"],
         "skillsLimits": {"maxSkillsPromptChars": 5000},
         "memorySearch": {"enabled": False},
-        "thinkingDefault": settings.openclaw_class_agent_thinking,
+        "thinkingDefault": class_agent_thinking_default(binding),
         "verboseDefault": "off",
         "reasoningDefault": "off",
         "tools": {
@@ -805,9 +810,11 @@ async def sync_class_agent_thinking_defaults() -> None:
     Update the agent default and loop safety; explicit session overrides are kept.
     Do not hold a business connection across the Gateway request.
     """
-    def bound_agents() -> set[str]:
+    def bound_agents() -> dict[str, str]:
         with reader_session() as db:
-            return set(db.scalars(select(ClassAgentBinding.openclaw_agent_id).where(ClassAgentBinding.openclaw_agent_id.is_not(None))))
+            return {row.openclaw_agent_id: class_agent_thinking_default(row) for row in db.scalars(
+                select(ClassAgentBinding).where(ClassAgentBinding.openclaw_agent_id.is_not(None))
+            )}
 
     ids = await asyncio.to_thread(bound_agents)
     if not ids:
@@ -815,7 +822,7 @@ async def sync_class_agent_thinking_defaults() -> None:
     snapshot = await admin_rpc("config.get")
     agents = ((snapshot.get("config") or {}).get("agents") or {}).get("list") or []
     updated = [
-        {**row, "thinkingDefault": settings.openclaw_class_agent_thinking,
+        {**row, "thinkingDefault": ids[row["id"]],
          "tools": {**(row.get("tools") or {}), "loopDetection": _CHAT_LOOP_DETECTION}}
         if isinstance(row, dict) and row.get("id") in ids else row
         for row in agents

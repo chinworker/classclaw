@@ -7,11 +7,101 @@ import pytest
 from sqlalchemy import func, select
 
 from app.core.errors import AppError
-from app.models.entities import InteractionAnalysis, Student, WriteProposal
+from app.models.entities import InteractionAnalysis, Student, StudentEvent, WriteProposal
 from app.schemas.domain import InteractionAnalyzeCreate
 from app.services import interactions, openclaw_bridge, openclaw_provisioning
 from app.utils.time import now
 from tests.helpers import teacher_for_class
+
+
+def _card_event(cls, student_no, **changes):
+    return {
+        "operation_type": "student_event.create", "summary": "登记校内玩牌事件", "confidence": 0.95,
+        "reasons": ["名单匹配唯一，日期和行为明确"],
+        "payload": {"class_id": cls.id, "student_no": student_no, "event_type": "behavior",
+                    "subtype": "校内玩牌", "event_date": "2026-10-22", "content": "带扑克牌到校并在校内玩牌",
+                    "sentiment": "negative", "severity": "attention", **changes},
+    }
+
+
+@pytest.mark.parametrize("severity", ["low", "medium"])
+def test_invalid_generated_event_fields_report_system_error_without_requesting_more_facts(client, db, sample, monkeypatch, severity):
+    cls, _, students = sample
+
+    async def extract(**_kwargs):
+        return {"status": "ready", "summary": "登记学生事件", "confidence": 0.95, "reasons": ["事实完整"],
+                "operations": [_card_event(cls, students[0].student_no, event_type="discipline", severity=severity,
+                                           content="private-rejected-input")]}
+
+    monkeypatch.setattr(openclaw_bridge, "analyze_interaction", extract)
+    response = client.post("/api/v1/interaction-analyses", json={"channel": "web", "class_id": cls.id, "text": "周四带牌到校玩"})
+    assert response.status_code == 201, response.text
+    result = response.json()["data"]
+    assert result["proposals"] == []
+    analysis = result["analysis"]
+    assert analysis["questions_json"] == []
+    structured = analysis["structured_json"]
+    rejection = structured["rejected_operations"][0]
+    assert rejection["code"] == "VALIDATION_ERROR"
+    assert {field["field"] for field in rejection["fields"]} == {"event_type", "severity"}
+    assert "behavior" in rejection["fields"][0]["message"]
+    assert "系统生成问题" in structured["rejected_reasons"][0]
+    assert "private-rejected-input" not in str(structured)
+    assert db.scalar(select(func.count(WriteProposal.id))) == 0
+    assert db.scalar(select(func.count(StudentEvent.id))) == 0
+
+
+def test_resolved_name_event_previews_roster_name_and_only_writes_after_confirmation(client, db, sample, monkeypatch):
+    cls, _, students = sample
+    students[0].student_no, students[0].name = "32", "李欣辰"
+    db.commit()
+
+    async def extract(**kwargs):
+        assert kwargs["raw_text"] == "这周四李欣成带扑克牌来学校玩"
+        assert {"student_no": "32", "name": "李欣辰", "gender": None, "status": "active"} in kwargs["context"]["students"]
+        return {"status": "ready", "summary": "登记学生事件", "confidence": 0.95, "reasons": ["唯一近音匹配"],
+                "operations": [_card_event(cls, "32")]}
+
+    monkeypatch.setattr(openclaw_bridge, "analyze_interaction", extract)
+    response = client.post("/api/v1/interaction-analyses", json={"channel": "web", "class_id": cls.id,
+                           "text": "这周四李欣成带扑克牌来学校玩"})
+    assert response.status_code == 201, response.text
+    result = response.json()["data"]
+    assert result["analysis"]["status"] == "awaiting_review"
+    assert result["analysis"]["questions_json"] == []
+    proposal = result["proposals"][0]
+    summary = proposal["preview_json"]["summary"]
+    assert summary["name"] == "李欣辰" and summary["student_no"] == "32"
+    assert summary["event_date"] == "2026-10-22"
+    assert summary["event_type"] == "behavior" and summary["severity"] == "attention"
+    assert "student_id" not in summary
+    assert db.scalar(select(func.count(StudentEvent.id))) == 0
+    confirmed = client.post(f"/api/v1/write-proposals/{proposal['id']}/confirm",
+                            json={"revision": proposal["revision"], "confirmed_by": "班主任"})
+    assert confirmed.status_code == 200, confirmed.text
+    assert confirmed.json()["data"]["status"] == "completed"
+    event = db.scalar(select(StudentEvent))
+    assert event.student_id == students[0].id and event.content == summary["content"]
+    assert students[0].name == "李欣辰"
+
+
+def test_invalid_event_does_not_hide_an_independent_valid_preview(client, db, sample, monkeypatch):
+    cls, _, students = sample
+
+    async def extract(**_kwargs):
+        return {"status": "ready", "confidence": 0.95, "reasons": ["两个事实明确"], "operations": [
+            _card_event(cls, students[0].student_no),
+            _card_event(cls, students[1].student_no, severity="medium"),
+        ]}
+
+    monkeypatch.setattr(openclaw_bridge, "analyze_interaction", extract)
+    response = client.post("/api/v1/interaction-analyses", json={"channel": "web", "class_id": cls.id, "text": "两名学生校内玩牌"})
+    assert response.status_code == 201, response.text
+    result = response.json()["data"]
+    assert result["analysis"]["status"] == "awaiting_review"
+    assert len(result["proposals"]) == 1
+    assert result["analysis"]["structured_json"]["rejected_operations"][0]["fields"][0]["field"] == "severity"
+    assert db.scalar(select(func.count(StudentEvent.id))) == 0
 
 
 def batch_payload(cls, students, gender="男"):

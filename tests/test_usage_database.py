@@ -164,6 +164,7 @@ def test_alembic_upgrade_downgrade_and_upgrade(tmp_path):
         _seed(engine, 2)
         command.upgrade(config, "head")
         assert "ai_usage_records" not in inspect(engine).get_table_names()
+        assert "thinking_default" in {column["name"] for column in inspect(engine).get_columns("class_agent_bindings")}
         command.downgrade(config, "0013")
         with engine.connect() as connection:
             assert connection.scalar(select(func.count()).select_from(AiUsageRecord)) == 2

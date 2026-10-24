@@ -147,7 +147,7 @@ export async function render(mount, ctx = {}) {
       field("用户名 *", usernameInput, "至少 2 个字符，不能包含空格"),
       usernameError,
       field("显示名", displayInput),
-      field("初始密码", passwordInput, "默认 32767；用户首次登录后必须修改"),
+      field("初始密码", passwordInput, "使用此处填写的密码登录；用户首次登录后必须修改"),
     );
     openModal({
       title: "添加班主任账号",
@@ -170,7 +170,7 @@ export async function render(mount, ctx = {}) {
                 body: { username, display_name: displayInput.value.trim() || null, password: passwordInput.value },
               });
               close();
-              toast(`班主任账号 ${username} 已创建，初始密码 32767（仅本次提示，请线下转交）`, "success");
+              toast(`班主任账号 ${username} 已创建，请线下转交所填写的初始密码；首次登录后必须修改`, "success");
               load();
             } catch (error) { if (!view.active) return;
               if (error.code === "USERNAME_CONFLICT") usernameError.append(fieldError("用户名已存在，请更换"));

@@ -102,6 +102,7 @@ class ClassAgentBinding(Base, IdMixin, TimestampMixin):
     main_model: Mapped[str | None] = mapped_column(String(200), nullable=True)
     image_model: Mapped[str | None] = mapped_column(String(200), nullable=True)
     speech_model: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    thinking_default: Mapped[str | None] = mapped_column(String(20), nullable=True)
     status: Mapped[str] = mapped_column(String(30), default="pending_agent")
     qr_generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     linked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

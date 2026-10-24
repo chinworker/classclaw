@@ -565,7 +565,10 @@ async def openclaw_agent_settings(db: Session, identifier: str) -> dict[str, Any
         "agent": descriptor,
         "binding": descriptor.get("binding"),
         "runtime": safe_runtime,
-        "thinking_configuration": {"managed": descriptor["kind"] == "class", "default": settings.openclaw_class_agent_thinking},
+        "thinking_configuration": {"managed": descriptor["kind"] == "class", "default": (
+            openclaw_provisioning.class_agent_thinking_default(descriptor["binding"])
+            if descriptor["kind"] == "class" else settings.openclaw_class_agent_thinking
+        )},
         "models": _safe_models(models_payload),
         "workspace": _workspace_snapshot(db, descriptor),
         "config_hash": snapshot.get("hash"),
@@ -621,7 +624,7 @@ async def update_openclaw_agent(db: Session, identifier: str, data: OpenClawAgen
     descriptor = _resolve_agent(db, identifier, initial_snapshot.get("config") or {})
     if descriptor["kind"] == "class" and "thinking_default" in changes:
         raise AppError(
-            "CLASS_AGENT_THINKING_MANAGED", "班级默认思考强度请修改 openclaw.class_agent_thinking 配置；单个对话请使用本会话思考强度", 409,
+            "CLASS_AGENT_THINKING_MANAGED", "请在班级默认思考强度面板设置；单个对话可独立选择思考强度", 409,
         )
     agent_id = descriptor["agent_id"]
     if data.display_name is not None:

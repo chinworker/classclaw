@@ -48,6 +48,8 @@ If a preview returns `ready=false`, do not call the commit tool.
 
 After showing one preview, an explicit affirmative reply authorizes `classclaw_commit_write` directly. After showing several previews together, an affirmative covering all of them authorizes one atomic `classclaw_commit_writes` call. There is no separate OpenClaw approval card.
 
+Student event enums are fixed: `event_type=homework|attendance|behavior|communication|honor|other`, `sentiment=positive|neutral|negative`, `severity=normal|attention|serious`. Rule-breaking such as playing cards at school uses `behavior`, never `discipline`; never use `low|medium|high` for severity. Infer the category and severity from the stated facts; do not require a handling outcome or invent one.
+
 When a user says an unsubmitted homework item should not be linked to or create a homework record, represent it as `student_event.create` with `event_type="homework"`, `subtype="homework_missing"`, and content such as “语文作业未交”.
 
 For student events, infer subtype/sentiment/severity from content. The following are always negative unless the user is explicitly negating that they happened: homework missing, forgotten materials, late arrival, absence, sleeping in class, noise, disruption, fighting, rule violations, and unfinished tasks. Neutral is reserved for factual communication or information without praise or a problem.

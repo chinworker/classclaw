@@ -17,7 +17,7 @@ from app.core.logging import get_logger
 from app.core.responses import ok
 from app.core.security import principal_from_request, require_owned_class
 from app.database import get_db
-from app.schemas.agent_chat import ClassAgentModelUpdate
+from app.schemas.agent_chat import ClassAgentModelUpdate, ClassAgentThinkingUpdate
 from app.services import admin_console, agent_chat, agent_models, agent_thinking, ai_tasks
 
 router = APIRouter(tags=["班级 Agent 网页对话"])
@@ -29,6 +29,16 @@ async def class_agent_thinking(request: Request, class_id: str, db: Annotated[Se
     response = ok(request, await agent_thinking.class_thinking_options(db, class_id))
     response.headers["Cache-Control"] = "no-store"
     return response
+
+
+@router.patch("/classes/{class_id}/agent-chat/thinking")
+async def class_agent_thinking_update(
+    request: Request, class_id: str, body: ClassAgentThinkingUpdate, db: Annotated[Session, Depends(get_db)],
+):
+    require_owned_class(request, class_id)
+    principal = principal_from_request(request)
+    result = await agent_thinking.update_class_thinking(db, class_id, body.thinking_default, operator_id=principal.user_id)
+    return ok(request, result, "班级默认思考强度已更新")
 
 
 @router.get("/classes/{class_id}/agent-chat/models")

@@ -106,7 +106,7 @@ Ubuntu 2 核 4 GB 同机部署可复制 [专用模板](../deploy/classclaw.2c4g.
 | `extractor_agent_id` | 一次性结构化提取 Agent ID |
 | `extractor_enabled` | 是否使用独立提取 Agent；关闭后回退 Main Agent |
 | `extractor_thinking` | JSON 提取（onboarding 导入、课表/座位文件、事件分类、interaction 清洗）的默认思考强度；默认 `off`。提高档位可改善模糊课表的抽取质量，但会增加耗时；实际模型须支持所选档位。环境覆盖：`CLASSCLAW_OPENCLAW_EXTRACTOR_THINKING` |
-| `class_agent_thinking` | 班级 Agent 在所有场景下的统一默认思考强度；默认 `off`，可选 `off/minimal/low/medium/high/xhigh/adaptive/max`，实际模型须支持所选档位。环境覆盖：`CLASSCLAW_OPENCLAW_CLASS_AGENT_THINKING` |
+| `class_agent_thinking` | 未单独设置班级默认时使用的系统默认思考强度；默认 `off`，可选 `off/minimal/low/medium/high/xhigh/adaptive/max`，实际模型须支持所选档位。环境覆盖：`CLASSCLAW_OPENCLAW_CLASS_AGENT_THINKING` |
 | `timeout_seconds` | 后端请求 Gateway 的超时，上限 120 秒 |
 | `session_cleanup_hours` | 一次性会话清理间隔；`0` 关闭 |
 | `cli` | 后端执行会话清理时使用的 OpenClaw CLI 命令 |
@@ -115,11 +115,11 @@ Gateway 管理 Token 只放在 `.env` 的 `CLASSCLAW_OPENCLAW_GATEWAY_TOKEN` 中
 
 班级默认思考强度不按查询、写入、图片等任务自动改变；网页、微信、提醒等班级 Agent 入口均继承该默认。独立提取 Agent 仍使用其自己的配置。ClassClaw 启动时批量同步已绑定班级的 Agent 默认值，创建新班级时也应用；只有值发生变化才请求 Gateway 配置重启，已有 OpenClaw 会话的显式覆盖不被清除。请在无进行中对话时重启部署。
 
-管理端班级运行参数面板中的思考强度显示为只读配置值，避免在此保存后又被默认配置同步覆盖；Main/提取 Agent 原有思考设置入口不变。班级模型、回复风格和其他参数仍可按原流程配置。
+班主任在“班级设置 → 班级 Agent · 默认思考强度”修改本班默认，管理员在班级 Agent 的运行参数面板使用同一设置组件。班级默认保存在 `class_agent_bindings.thinking_default`，空值表示跟随系统默认，迁移为 `0019`。选项只来自 Gateway `agents.list` 的本班模型能力，保留二态“关闭／开启”标签，保存时重新复核；不支持的显式选择拒绝保存。保存同步本班 Agent 的 `thinkingDefault`，保留其他班级、微信路由和会话覆盖；启动或运行时同步不会再覆盖班级默认。修改 Agent 默认会短暂重启 Gateway。Main/提取 Agent 原有思考设置入口不变。
 
 网页对话栏提供“本会话思考强度”：选项来自 Gateway `agents.list` 为本班 Agent 当前模型及 runtime 解析的 `thinkingLevels`，不按模型名称猜测。常用档位只显示模型实际支持的“关闭、低、中、高”，按此顺序排列；不再列出极低、极高、最高、自适应等额外档位。保留选项 ID 与显示标签的区别，例如二态模型的 `low` 显示为“开启”，只呈现“关闭／开启”，不会虚构中、高能力。页面加载、重新获得焦点及发送前刷新选项；切换模型后，仍受支持的会话选择保留，失效选择恢复为“跟随默认”并显示提示。如果发送前才发现失效，保留草稿，待用户核对新选项后再次发送。
 
-“跟随默认”优先使用 `class_agent_thinking`；配置值不受当前模型支持时，使用 Gateway 返回的有效 `thinkingDefault`，并在网页明确显示采用的档位。不修改配置文件或 Agent 全局设置；Gateway 未提供可用默认值时必须选择其支持的档位。后端在设置会话前再次校验当前模型，显式请求不支持的档位仍返回错误，不悄悄替换。Gateway 缺少能力元数据或连接失败时不猜测选项，发送前须重新读取成功。
+网页“跟随默认”优先使用班级设置，再使用 `class_agent_thinking`；配置值不受当前模型支持时，使用 Gateway 返回的有效 `thinkingDefault`，并在网页明确显示采用的档位。单会话选择不修改配置文件或 Agent 默认设置；Gateway 未提供可用默认值时必须选择其支持的档位。后端在设置会话前再次校验当前模型，显式请求不支持的档位仍返回错误，不悄悄替换。Gateway 缺少能力元数据或连接失败时不猜测选项，发送前须重新读取成功。
 
 设置只影响当前账号、班级和对话 UUID 的后续消息，不改变其他会话、其他渠道或 Agent 默认配置；正在回复时不能修改，新对话不会继承上一对话的覆盖值。模型变更不会取消或改写已发送的请求，进行中的旧选择在回复结束后才重新校验。网页会话设置随对话保留在标签页内存，刷新/关闭后的恢复边界不变。
 

@@ -16,3 +16,4 @@ data/attachments/**
 data/openclaw-agents/
 data/logs/
 backups/
+*.pem

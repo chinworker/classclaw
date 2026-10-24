@@ -102,6 +102,10 @@ openclaw doctor
 2. 调用 `classclaw_analyze_interaction`，传入未经删改的原文、`channel`、稳定消息 id、已知 `class_id` 和附件 ids。
 3. 后端创建 `interaction_analysis`，并通过 Gateway Responses API 让 OpenClaw 在只读上下文中完成意图识别、学生按班内学号匹配和字段清洗。上下文名单只含学号、姓名、性别和状态，不携带学生 UUID；分析输出的学生引用（`student_no`/`student_nos`，座位 layout 同）由后端在绑定班级内确定性解析为内部 UUID，跨班或不存在的引用直接拒绝。
 4. 所有分析顶层及每项数据都必须返回 `confidence` 和非空 `reasons`，统一门槛为 0.75。低于门槛，或同名、日期、科目、分数、考勤时段、批量范围等不明确时，返回 `needs_clarification`、具体 `rejected_reasons` 和问题；低置信度数据不会生成 proposal。
+
+姓名错字、语音转写中的同音或近音由分析器结合本班名单匹配：只有唯一高置信度候选且不与明确学号冲突时，直接使用名单中的姓名和学号生成预览，不单独提醒改字、不另问身份，也不修改学生档案姓名。多个合理候选、同名或低置信度仍需澄清；后端学号解析保持确定性，不跨班模糊匹配。
+
+学生事件的提取提示从 `StudentEventCreate` 生成枚举约束，完整提示和独立提取 Agent 共用。违纪事件类型为 `behavior`，程度仅允许 `normal/attention/serious`；不能使用 `discipline` 或 `low/medium/high`。学生、日期和具体行为明确即可提取，不要求用户提供事件分类或处理结果。生成草稿违反 Schema 时，`structured_json.rejected_operations` 返回 operation_type、错误码及字段路径/类型/安全诊断，不保存被拒绝的 payload 或输入值；`rejected_reasons` 明确为系统生成问题，不自动要求用户补充分类或处理情况，不绕过校验写入、不盲目重试。
 5. 如果可确定，后端用 Pydantic schema 校验每个 operation，生成一个或多个 `pending_review` proposal；此时仍未改变业务表。
 6. OpenClaw 展示对象、日期、关键字段、数量和实质性警告。用户修改信息时要重新分析或重建 proposal，不能确认旧版本。
 7. 用户在聊天中明确回复“确认”“可以”“写入”“都确认”等肯定意思后，单条调用 `classclaw_commit_write`，同组多条调用 `classclaw_commit_writes`。聊天复核是唯一审批，不再弹出系统审批卡。
@@ -174,7 +178,7 @@ ClassClaw 不直接连接微信；微信连接器属于 OpenClaw。只要微信�
 
 对话列表每项提供“删除”，确认后移除本标签页内存中的消息、草稿与待发送附件，并取消该对话的在途请求；迟到的能力检查、流式片段和最终回复不能恢复已删除内容。删除当前对话后切到相邻对话，删除最后一项后自动新建空白对话；其他对话不受影响。离开页面或退出登录会关闭尚未确认的删除弹窗。此操作不撤销已保存的业务数据、不删除已上传附件，也不删除 Gateway 保存的会话历史。
 
-网页聊天 POST 支持 multipart 字段 `stream=true`（网页默认使用）及可选 `thinking_level`。省略思考强度时使用 `openclaw.class_agent_thinking`；显式设置仅属于本会话，详见 [配置说明](configuration.md)。后端生成 `agent:{agent_id}:openresponses-user:classclaw-web-chat:{class_id}:{sender_id}:{conversation_id}`，通过 `x-openclaw-session-key` 精确关联会话；客户端不能自行指定 Gateway key。
+网页聊天 POST 支持 multipart 字段 `stream=true`（网页默认使用）及可选 `thinking_level`。省略思考强度时优先使用班级设置的默认，再使用 `openclaw.class_agent_thinking`；显式设置仅属于本会话，详见 [配置说明](configuration.md)。`GET/PATCH /classes/{class_id}/agent-chat/thinking` 负责读取能力和保存班级默认（`thinking_default=null` 恢复系统默认），均校验班级归属；保存不会修改已有会话覆盖。后端生成 `agent:{agent_id}:openresponses-user:classclaw-web-chat:{class_id}:{sender_id}:{conversation_id}`，通过 `x-openclaw-session-key` 精确关联会话；客户端不能自行指定 Gateway key。
 
 当前 Gateway 的 Responses `reasoning` 字段未传给执行器，管理员 HTTP RPC 也不放行 `sessions.patch`。因此 ClassClaw 插件提供固定、Gateway 鉴权的私有 `POST /api/v1/classclaw/web-session-thinking`：仅接受 `key` 和 `thinkingLevel`，校验 key 是已绑定班级的网页会话后固定分派 `sessions.patch`；不开放会话删除、任意 RPC 或任意 Agent 配置。浏览器只调用 ClassClaw，绝不获取 Gateway Token。更新版本后须重新构建插件，并在无进行中对话时重启 Gateway 和 ClassClaw；缺少新插件端点会返回 `CHAT_PLUGIN_UPDATE_REQUIRED`。
 

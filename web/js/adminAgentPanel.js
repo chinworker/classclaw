@@ -5,6 +5,7 @@ import { openAgentModelSettings, selectModel } from "./agentModelSettings.js";
 import { sourceEditor } from "./sourceEditor.js";
 import { diffPreviewModal } from "./settingsEditor.js";
 import { confirmDiscard } from "./adminView.js";
+import { classThinkingSettings } from "./classThinkingSettings.js";
 
 export function agentPanel(agent, view, { onRefresh = () => {} } = {}) {
   const api = view.api;
@@ -136,12 +137,8 @@ export function agentPanel(agent, view, { onRefresh = () => {} } = {}) {
     if (current.utility_model && !models.some((item) => item.id === current.utility_model)) {
       utility.append(el("option", { value: current.utility_model, selected: true }, `${current.utility_model}（当前模型不可用）`));
     }
-    const thinking = optionSelect(["off", "minimal", "low", "medium", "high", "xhigh", "adaptive", "max"], current.thinking_default);
-    if (settings.thinking_configuration?.managed) {
-      thinking.value = settings.thinking_configuration.default;
-      thinking.disabled = true;
-      thinking.title = "由 openclaw.class_agent_thinking 配置管理；会话覆盖请在对话页设置。";
-    }
+    const managedThinking = settings.thinking_configuration?.managed;
+    const thinking = managedThinking ? null : optionSelect(["off", "minimal", "low", "medium", "high", "xhigh", "adaptive", "max"], current.thinking_default);
     const reasoning = optionSelect(["off", "on", "stream"], current.reasoning_default);
     const verbose = optionSelect(["off", "on", "full"], current.verbose_default);
     const fast = optionSelect(["auto", "true", "false"], current.fast_mode_default === true ? "true" : current.fast_mode_default === false ? "false" : current.fast_mode_default);
@@ -167,7 +164,7 @@ export function agentPanel(agent, view, { onRefresh = () => {} } = {}) {
         model: model.value || null,
         model_fallbacks: fallbacks.value.split(",").map((item) => item.trim()).filter(Boolean),
         utility_model: utility.value || null,
-        thinking_default: thinking.value || null, reasoning_default: reasoning.value || null,
+        ...(thinking ? { thinking_default: thinking.value || null } : {}), reasoning_default: reasoning.value || null,
         verbose_default: verbose.value || null,
         fast_mode_default: fast.value === "" ? null : fast.value === "auto" ? "auto" : fast.value === "true",
         context_injection: injection.value || null,
@@ -197,13 +194,17 @@ export function agentPanel(agent, view, { onRefresh = () => {} } = {}) {
       el("p", { class: "muted" }, "留空表示继承默认值；修改运行参数会请求重启整个 Gateway，各班级 AI 服务会短暂受影响。提示词文件在后续对话轮次生效。"),
       el("div", { class: "admin-config-grid compact" }, kv("Skills", (current.skills || []).join(", ") || "inherit"), kv("Tool profile", current.tools?.profile || "inherit")),
       group("身份与模型", field("显示名", name), field("模型服务商筛选", provider), field("主模型", model), field("回退模型（逗号分隔）", fallbacks), field("辅助模型", utility)),
-      group("思考与回复", field("思考强度", thinking), field("推理过程显示", reasoning), field("回复详细程度", verbose), field("快速模式", fast)),
-      settings.thinking_configuration?.managed ? el("p", { class: "muted" },
-        `班级默认思考强度由 openclaw.class_agent_thinking 配置管理（${settings.thinking_configuration.default}）。单独调整某个会话请前往班级对话页。`) : null,
+      group("思考与回复", thinking ? field("思考强度", thinking) : null, field("推理过程显示", reasoning), field("回复详细程度", verbose), field("快速模式", fast)),
       el("details", { class: "agent-runtime-advanced" }, el("summary", {}, "高级：上下文、记忆与模型参数"),
         group("上下文与记忆", field("上下文注入策略", injection), field("单文件提示词字符上限", bootstrap), field("提示词总字符上限", bootstrapTotal), field("Skill 提示词字符上限", skillBudget), field("记忆搜索", memory)),
         group("模型参数", field("Temperature", temperature), field("Top P", topP), field("最大输出 Token", maxTokens), field("缓存保留策略", cacheRetention))),
       el("div", { class: "row-gap", style: { justifyContent: "flex-end" } }, save));
+    if (managedThinking) {
+      const panel = classThinkingSettings(settings.agent.class.id, { isActive: () => view.active && pane.isConnected, signal: view.signal });
+      pane.append(el("section", { class: "agent-runtime-section" }, el("h3", {}, "班级默认思考强度"), panel.el));
+      view.trackDirty(() => pane.isConnected && panel.isDirty());
+      void Promise.resolve().then(() => panel.load());
+    }
   }
 
   function buildFilesPane(pane, workspace, identifier, kind) {

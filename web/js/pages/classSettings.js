@@ -3,22 +3,31 @@
 import { el, clear, toast } from "../util.js";
 import { api } from "../api.js";
 import { appConfig } from "../config.js";
-import { refreshClassInfo, refreshIdentity } from "../state.js";
+import { state, refreshClassInfo, refreshIdentity } from "../state.js";
 import { navigate } from "../router.js";
 import { pageHeader, field, errorPanel, skeleton, confirmDanger, statusBadge } from "../components.js";
 import { deleteClass } from "../featureGaps.js";
+import { classThinkingSettings } from "../classThinkingSettings.js";
+
+let activeView = null;
+export function dispose() { activeView?.thinking?.dispose(); activeView = null; }
 
 export async function render(mount, ctx, helpers) {
+  dispose();
+  const view = {};
+  activeView = view;
   clear(mount);
   mount.append(skeleton(4));
   let cls;
   try {
     cls = await refreshClassInfo();
   } catch (error) {
+    if (activeView !== view) return;
     clear(mount);
     mount.append(errorPanel(error, { onRetry: () => render(mount, ctx, helpers) }));
     return;
   }
+  if (activeView !== view || !mount.isConnected) return;
   clear(mount);
   mount.append(pageHeader("班级设置", `当前班级：${cls.name}（班主任账号唯一班级）`));
 
@@ -58,6 +67,10 @@ export async function render(mount, ctx, helpers) {
     el("p", {}, el("b", {}, "状态："), statusBadge(cls.status), el("span", { class: "muted", style: { marginLeft: "8px" } }, `学期：${cls.semester_name || "未设置"}`)),
     el("p", { class: "muted" }, "未设置学期时优先使用当前学期；寒暑假期间使用未来最近的一学期。日期由服务端按农历自动换算。"),
     grid, saveBtn));
+
+  view.thinking = classThinkingSettings(cls.id, { isActive: () => activeView === view && mount.isConnected && state.classId === cls.id });
+  mount.append(el("section", { class: "card" }, el("h3", {}, "班级 Agent · 默认思考强度"), view.thinking.el));
+  void view.thinking.load();
 
   /* ---------- 危险区 ---------- */
   const deactivateBtn = el("button", { class: "secondary", type: "button", disabled: cls.status === "inactive" }, "停用班级");

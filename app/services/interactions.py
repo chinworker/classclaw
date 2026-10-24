@@ -99,6 +99,19 @@ def _result(db: Session, analysis: InteractionAnalysis) -> dict[str, Any]:
     return {"analysis": analysis, "proposals": proposals}
 
 
+def _draft_validation_fields(exc: AppError) -> list[dict[str, str]]:
+    """Keep field diagnostics, never Pydantic input values or the rejected payload."""
+    return [
+        {
+            "field": ".".join(str(part) for part in error.get("loc", []))[:200],
+            "type": str(error.get("type") or "validation_error")[:100],
+            "message": str(error.get("msg"))[:500] if error.get("type") == "literal_error" else "字段缺失或值不符合规范",
+        }
+        for error in exc.details.get("errors", [])
+        if isinstance(error, dict)
+    ]
+
+
 async def analyze(db: Session, data: InteractionAnalyzeCreate) -> dict[str, Any]:
     if not (data.text and data.text.strip()) and not data.attachment_ids:
         raise AppError("VALIDATION_ERROR", "自然语言或附件至少提供一项", 422)
@@ -168,10 +181,13 @@ async def analyze(db: Session, data: InteractionAnalyzeCreate) -> dict[str, Any]
             warnings.append("单次最多生成 10 个写入预览，其余操作未处理")
             operations = operations[:10]
         accepted_operations: list[dict[str, Any]] = []
+        rejected_operations: list[dict[str, Any]] = []
+        needs_user_data = bool(rejected_reasons)
         unchanged_memories = 0
         for index, operation in enumerate(operations):
             if not isinstance(operation, dict) or not isinstance(operation.get("payload"), dict):
                 rejected_reasons.append(f"第 {index + 1} 项数据格式无效")
+                needs_user_data = True
                 continue
             operation_decision = evaluate_ai_output(operation, default_summary=f"第 {index + 1} 项数据")
             operation["accepted"] = operation_decision["accepted"]
@@ -181,6 +197,7 @@ async def analyze(db: Session, data: InteractionAnalyzeCreate) -> dict[str, Any]
             if not operation_decision["accepted"]:
                 label = str(operation.get("summary") or f"第 {index + 1} 项数据")[:200]
                 rejected_reasons.extend(f"{label}：{reason}" for reason in operation_decision["reasons"])
+                needs_user_data = True
                 continue
             operation_type = str(operation.get("operation_type") or "")
             try:
@@ -200,13 +217,24 @@ async def analyze(db: Session, data: InteractionAnalyzeCreate) -> dict[str, Any]
                 if exc.code == "MEMORY_UNCHANGED":
                     unchanged_memories += 1
                     continue
-                rejected_reasons.append(f"{operation_decision['summary']}：{exc.message}")
+                fields = _draft_validation_fields(exc) if exc.code == "VALIDATION_ERROR" else []
+                rejected_operations.append({"operation_type": operation_type, "code": exc.code, "fields": fields})
+                if fields:
+                    field_names = "、".join(dict.fromkeys(field["field"] for field in fields))
+                    rejected_reasons.append(
+                        f"{operation_decision['summary']}：AI 生成的草稿字段不符合规范（{field_names}），未生成预览；"
+                        "这是系统生成问题，无需为此补充或更改已明确的事实"
+                    )
+                else:
+                    rejected_reasons.append(f"{operation_decision['summary']}：{exc.message}")
+                    needs_user_data = True
 
         rejected_reasons = list(dict.fromkeys(rejected_reasons))
-        if rejected_reasons and not questions:
+        if rejected_reasons and needs_user_data and not questions:
             questions.append("请根据以上问题补充或更正数据后重新发送")
         structured["operations"] = accepted_operations
         structured["rejected_reasons"] = rejected_reasons
+        structured["rejected_operations"] = rejected_operations
         if unchanged_memories and not proposal_ids and not rejected_reasons:
             structured["status"] = "no_action"
             structured["summary"] = "这些内容已经记住，无需重复保存"
