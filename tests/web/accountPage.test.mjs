@@ -30,6 +30,7 @@ beforeEach((t) => {
     if (path.endsWith("/start")) return response({ connected: false, qr_data_url: qr });
     if (path.endsWith("/agent-chat/models")) return response(modelSettings);
     if (path.endsWith("/agent-chat/thinking")) return response({ levels: [{ id: "off", label: "关闭" }], default_level: "off" });
+    if (path.includes("/agent-chat/conversations")) return response({ items: [], has_more: false });
     if (path.endsWith("/cancel")) return response({ cancelled: true });
     throw new Error(`Unexpected request: ${path}`);
   };

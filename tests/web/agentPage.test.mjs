@@ -26,6 +26,7 @@ beforeEach(() => {
     });
     if (path.includes("/openclaw/status")) return response({ ready: true, gateway_live: true, plugin_ready: true });
     if (path.endsWith("/agent-chat/thinking")) return response(thinkingProfile);
+    if (path.includes("/agent-chat/conversations")) return response(options.method === "DELETE" ? { removed: true } : { items: [], has_more: false });
     if (path.endsWith("/agent-binding")) return response({ agent_name: "测试 Agent", openclaw_agent_id: "agent-a", status: "linked", channel_account_id: "test-channel" });
     if (path.endsWith("/cancel")) return response({ cancelled: true });
     throw new Error(`Unexpected request: ${path}`);
@@ -486,6 +487,39 @@ test("missing Agent directs provisioning to account settings", async () => {
   assert.ok(mount.textContent.includes("请到账户设置中创建"));
   assert.equal(mount.querySelector("textarea"), null);
   assert.equal(mount.querySelectorAll("button").some((button) => button.textContent === "创建班级 Agent"), false);
+});
+
+test("opening the Agent restores server history and continues with the original conversation id", async () => {
+  const fallback = fetch;
+  globalThis.fetch = async (path, options = {}) => {
+    if (path.includes("/agent-chat/conversations")) {
+      if (path.includes("/messages?")) return response({ messages: [
+        { id: "u", role: "user", text: "上次登录的问题" }, { id: "a", role: "assistant", text: "上次登录的回答" },
+      ], has_more: false });
+      return response({ items: [{ id: "old-conversation", title: "历史对话", created_at: "2026-10-24T02:00:00Z" }], has_more: false });
+    }
+    return fallback(path, options);
+  };
+  const mount = await mountPage(); await tick(); await tick();
+  assert.ok(mount.querySelector(".agent-chat-messages").textContent.includes("上次登录的回答"));
+  await send(mount, "继续上次的话题");
+  assert.equal(calls[0].options.body.get("conversation_id"), "old-conversation");
+  calls[0].resolve("继续回答"); await tick();
+});
+
+test("Gateway outages still allow viewing history while sending is disabled", async () => {
+  const fallback = fetch;
+  globalThis.fetch = async (path, options = {}) => {
+    if (path.includes("/openclaw/status")) return response({ ready: false, gateway_live: false, plugin_ready: false });
+    if (path.includes("/agent-chat/conversations")) return path.includes("/messages?")
+      ? response({ messages: [{ id: "a", role: "assistant", text: "之前已经保存的回答" }], has_more: false })
+      : response({ items: [{ id: "old", title: "旧对话" }], has_more: false });
+    return fallback(path, options);
+  };
+  const mount = await mountPage(); await tick(); await tick();
+  assert.ok(mount.querySelector(".agent-chat-messages").textContent.includes("之前已经保存的回答"));
+  assert.equal(mount.querySelector("textarea").disabled, true);
+  assert.ok(mount.textContent.includes("重新连接"));
 });
 
 function deleteButton(mount, title) {

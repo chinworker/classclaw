@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.core.errors import AppError
 from app.models.entities import Attachment
-from app.services import openclaw_bridge, openclaw_provisioning, operations
+from app.services import agent_chat_history, openclaw_bridge, openclaw_provisioning, operations
 from app.services.agent_reasoning import ThinkingHandler
 from app.services.agent_stream import DeltaHandler
 
@@ -75,6 +75,7 @@ async def send_message(
 ) -> dict[str, Any]:
     """Send one authenticated web turn to the class-scoped OpenClaw agent."""
     normalized_conversation_id = _conversation_id(conversation_id)
+    agent_chat_history.require_visible(db, class_id, sender_id, normalized_conversation_id)
     normalized_text = _message_text(text)
     if not normalized_text and not uploads:
         raise AppError("VALIDATION_ERROR", "请输入消息或选择文件", 422)

@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.core.errors import AppError, not_found
 from app.models.entities import (
+    AgentChatHiddenConversation,
     AnalysisCache,
     Arrangement,
     Attachment,
@@ -186,6 +187,7 @@ def hard_delete_class(db: Session, class_id: str, *, operator_id: str | None = N
         "classes": {class_id},
         "class_agent_bindings": ids(ClassAgentBinding, ClassAgentBinding.class_id == class_id),
         "class_agent_memories": ids(ClassAgentMemory, ClassAgentMemory.class_id == class_id),
+        "agent_chat_hidden_conversations": ids(AgentChatHiddenConversation, AgentChatHiddenConversation.class_id == class_id),
         "class_subjects": ids(ClassSubject, ClassSubject.class_id == class_id),
         "students": student_ids,
         "seating_snapshots": ids(SeatingSnapshot, SeatingSnapshot.class_id == class_id),
@@ -278,6 +280,7 @@ def hard_delete_class(db: Session, class_id: str, *, operator_id: str | None = N
         if event_ids:
             db.execute(delete(StudentEvent).where(StudentEvent.id.in_(event_ids)))
         db.execute(delete(AttendanceRecord).where(AttendanceRecord.class_id == class_id))
+        db.execute(delete(AgentChatHiddenConversation).where(AgentChatHiddenConversation.class_id == class_id))
         if schedule_ids:
             db.execute(delete(DutySchedule).where(DutySchedule.id.in_(schedule_ids)))
         db.execute(delete(DutyRule).where(DutyRule.class_id == class_id))

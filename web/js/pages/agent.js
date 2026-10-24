@@ -179,6 +179,15 @@ function chatPanel(binding, scope, conversation) {
   function renderMessages() {
     clear(messages);
     renderedTail = null;
+    if (conversation.historyError) messages.append(errorPanel(conversation.historyError, {
+      onRetry: () => agentChatStore.loadMessages(scope, conversation, { more: conversation.historyLoaded }),
+    }));
+    if (!conversation.historyLoaded) {
+      if (!conversation.historyError) messages.append(skeleton(3));
+      return;
+    }
+    if (conversation.historyHasMore) messages.append(el("button", { type: "button", class: "secondary", disabled: conversation.historyLoading || Boolean(conversation.activeController),
+      onclick: loadOlderMessages }, conversation.historyLoading ? "正在加载…" : "加载更早的消息"));
     if (!conversation.messages.length) {
       messages.append(welcomeNode((prompt) => { textarea.value = prompt; conversation.draft = prompt; resizeInput(); textarea.focus(); }));
     } else {
@@ -190,6 +199,13 @@ function chatPanel(binding, scope, conversation) {
       el("div", { class: "agent-chat-avatar" }, "AI"),
       el("div", { class: "agent-chat-bubble" }, el("span", {}, "正在处理"), el("i"), el("i"), el("i"))));
     scrollBottom();
+  }
+
+  async function loadOlderMessages() {
+    const previousHeight = messages.scrollHeight;
+    const previousTop = messages.scrollTop;
+    await agentChatStore.loadMessages(scope, conversation, { more: true });
+    requestAnimationFrame(() => { if (!disposed) messages.scrollTop = previousTop + messages.scrollHeight - previousHeight; });
   }
 
   function syncThinkingTimer() {
@@ -236,7 +252,7 @@ function chatPanel(binding, scope, conversation) {
   }
 
   function setBusy(value) {
-    busy = value;
+    busy = value || conversation.historyLoading || !conversation.historyLoaded || binding.chatAvailable === false;
     textarea.disabled = value;
     fileInput.disabled = value || !fileAnalysisEnabled;
     attachButton.disabled = value || !fileAnalysisEnabled;
@@ -244,6 +260,16 @@ function chatPanel(binding, scope, conversation) {
     sendButton.classList.toggle("hidden", value);
     stopButton.classList.toggle("hidden", !value);
     statusLine.textContent = value ? "班级 Agent 正在处理，可随时停止" : "Enter 发送 · Shift+Enter 换行";
+    if (!conversation.historyLoaded || conversation.historyLoading) {
+      textarea.disabled = fileInput.disabled = attachButton.disabled = voiceButton.disabled = sendButton.disabled = true;
+      stopButton.classList.add("hidden"); sendButton.classList.remove("hidden");
+      statusLine.textContent = conversation.historyError ? "请先重新加载历史消息" : "正在加载历史消息…";
+    } else sendButton.disabled = false;
+    if (binding.chatAvailable === false) {
+      textarea.disabled = fileInput.disabled = attachButton.disabled = voiceButton.disabled = sendButton.disabled = true;
+      stopButton.classList.add("hidden"); sendButton.classList.remove("hidden");
+      statusLine.textContent = "智能服务暂不可用，仍可查看历史对话";
+    }
   }
 
   function stopVoice(discard = false) {
@@ -407,9 +433,11 @@ function chatPanel(binding, scope, conversation) {
       el("span", { class: "muted" }, `最多 ${MAX_FILES} 个文件 · AI 可能出错，写入前请核对预览`)));
   const panel = el("section", { class: "agent-chat-panel", aria: { label: "与本班专属 Agent 对话" } },
     el("div", { class: "agent-chat-bar" },
-      el("div", {}, el("b", {}, "本班专属 Agent"), el("span", { class: "agent-online" }, "在线")),
+      el("div", {}, el("b", {}, "本班专属 Agent"), el("span", { class: "agent-online" }, binding.chatAvailable === false ? "暂不可用" : "在线")),
       el("div", { class: "agent-thinking-settings" },
         el("label", { class: "agent-thinking-control" }, "本会话思考强度 ", thinkingSelect), thinkingNote)),
+    binding.chatAvailable === false ? el("div", { class: "field-error" }, "智能服务暂不可用，历史记录仍可查看。",
+      el("button", { class: "secondary", type: "button", onclick: binding.onReconnect }, "重新连接")) : null,
     messages,
     composer);
   function refresh() {
@@ -503,12 +531,14 @@ export async function render(mount, ctx, helpers) {
       const confirmed = await confirmDanger({
         title: "删除对话", confirmLabel: "删除对话", signal: view.confirmController.signal,
         lines: [
-          `删除“${conversation.title}”及其在本页的消息、草稿和待发送附件？删除后无法恢复。`,
+          `从你的对话列表删除“${conversation.title}”，并清除本页的消息、草稿和待发送附件？再次登录也不会恢复到列表。`,
           "如果此对话正在回答，将立即停止回答并删除。其他对话不受影响。",
           "已保存的班级数据和已上传的附件不会被删除。",
         ],
       });
-      if (confirmed && live()) agentChatStore.deleteConversation(scope, conversation.id);
+      if (confirmed && live()) await agentChatStore.removeConversation(scope, conversation);
+    } catch (error) {
+      if (live()) toast(error.message, "error");
     } finally { view.deletePending = false; }
   }
 
@@ -531,6 +561,9 @@ export async function render(mount, ctx, helpers) {
     if (!live()) return;
     if (scope.disposed) { dispose(); clear(mount); return; }
     const current = agentChatStore.selectedConversation(scope);
+    if (current.remote && !current.historyLoaded && !current.historyLoading && !current.historyError) {
+      void agentChatStore.loadMessages(scope, current);
+    }
     if (binding) {
       if (view.panel?.conversationId !== current.id) {
         view.panel?.dispose();
@@ -541,12 +574,13 @@ export async function render(mount, ctx, helpers) {
       current.unread = false;
       view.panel.refresh();
     }
-    const signature = JSON.stringify([scope.selectedId, ...scope.conversations.map(({ id, title, status, unread }) => [id, title, status, unread])]);
+    const signature = JSON.stringify([scope.selectedId, scope.historyLoading, scope.historyError?.message, scope.historyHasMore,
+      ...scope.conversations.map(({ id, title, status, unread }) => [id, title, status, unread])]);
     if (signature === renderedListSignature) return;
     renderedListSignature = signature;
     clear(list);
     list.append(el("h3", {}, `对话列表 · ${scope.conversations.length}`));
-    const labels = { idle: "未发送", running: "处理中", completed: "已回复", stopped: "已停止", failed: "请求失败" };
+    const labels = { idle: "未发送", history: "历史对话", running: "处理中", completed: "已回复", stopped: "已停止", failed: "请求失败" };
     list.append(el("div", { class: "agent-conversation-items" }, scope.conversations.map((conversation) =>
       el("div", { class: "agent-conversation-row" }, el("button", {
         class: `agent-conversation-item${conversation.id === scope.selectedId ? " active" : ""}`,
@@ -561,11 +595,16 @@ export async function render(mount, ctx, helpers) {
         class: "agent-conversation-delete", type: "button", title: "删除对话",
         aria: { label: `删除对话：${conversation.title}` }, onclick: () => { void deleteConversation(conversation); },
       }, "删除")))));
-    list.append(el("p", { class: "muted agent-conversation-hint" }, "新建、切换对话或前往站内其他页面不会停止回答。记录仅保留在本标签页内存，刷新或关闭后不保留。"));
+    if (scope.historyLoading) list.append(el("p", { class: "muted" }, "正在加载历史对话…"));
+    if (scope.historyError) list.append(errorPanel(scope.historyError, { onRetry: () => agentChatStore.loadHistory(scope, { force: true }) }));
+    if (scope.historyHasMore) list.append(el("button", { class: "secondary", type: "button", disabled: scope.historyLoading,
+      onclick: () => agentChatStore.loadHistory(scope, { more: true }) }, "加载更多对话"));
+    list.append(el("p", { class: "muted agent-conversation-hint" }, "已发送的对话保存在服务器，刷新或重新登录后可查看。未发送的草稿、附件选择和思考内容仅保留在当前标签页内存。"));
   }
   if (scope) {
     view.unsubscribe = agentChatStore.subscribe(scope, refreshConversations);
     refreshConversations();
+    void agentChatStore.loadHistory(scope);
   }
 
   let status;
@@ -575,9 +614,12 @@ export async function render(mount, ctx, helpers) {
     helpers.refreshOpenclawDot();
   } catch (error) {
     if (!live()) return;
-    clear(host);
-    host.append(errorPanel(error, { onRetry: () => render(mount, ctx, helpers) }));
-    return;
+    if (scope) status = { gateway_live: false, plugin_ready: false, error: error.message };
+    else {
+      clear(host);
+      host.append(errorPanel(error, { onRetry: () => render(mount, ctx, helpers) }));
+      return;
+    }
   }
 
   clear(host);
@@ -594,11 +636,6 @@ export async function render(mount, ctx, helpers) {
     host.append(el("div", { class: "card" }, emptyState("尚未创建班级", "创建班级后会自动生成专属 Agent。")));
     return;
   }
-  if (!status.gateway_live || !status.plugin_ready) {
-    host.append(openclawBlocked(status, () => render(mount, ctx, helpers)));
-    return;
-  }
-
   try {
     const loadedBinding = await api(`/classes/${scope.classId}/agent-binding`);
     if (!live()) return;
@@ -606,11 +643,12 @@ export async function render(mount, ctx, helpers) {
       host.append(provisionPanel());
       return;
     }
-    binding = loadedBinding;
+    binding = { ...loadedBinding, chatAvailable: Boolean(status.gateway_live && status.plugin_ready),
+      onReconnect: () => render(mount, ctx, helpers) };
     refreshConversations();
     view.onFocus = () => { void reloadThinking().catch((error) => { if (live()) view.panel?.thinkingError(error); }); };
     window.addEventListener("focus", view.onFocus);
-    try { await reloadThinking(); }
+    try { if (binding.chatAvailable) await reloadThinking(); }
     catch (error) { if (live()) view.panel?.thinkingError(error); }
   } catch (error) {
     if (!live()) return;

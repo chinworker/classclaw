@@ -6,7 +6,7 @@ import time
 from contextlib import suppress
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
@@ -18,9 +18,44 @@ from app.core.responses import ok
 from app.core.security import principal_from_request, require_owned_class
 from app.database import get_db
 from app.schemas.agent_chat import ClassAgentModelUpdate, ClassAgentThinkingUpdate
-from app.services import admin_console, agent_chat, agent_models, agent_thinking, ai_tasks
+from app.services import admin_console, agent_chat, agent_chat_history, agent_models, agent_thinking, ai_tasks
 
 router = APIRouter(tags=["班级 Agent 网页对话"])
+
+
+def _history_owner(request: Request) -> str:
+    principal = principal_from_request(request)
+    if not principal.user_id:
+        raise AppError("PERSONAL_LOGIN_REQUIRED", "请使用个人账号查看对话记录", 403)
+    return principal.user_id
+
+
+@router.get("/classes/{class_id}/agent-chat/conversations")
+async def class_chat_conversations(request: Request, class_id: str, db: Annotated[Session, Depends(get_db)],
+                                   offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100)):
+    require_owned_class(request, class_id)
+    result = await agent_chat_history.list_conversations(db, class_id, _history_owner(request), offset=offset, limit=limit)
+    response = ok(request, result)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@router.get("/classes/{class_id}/agent-chat/conversations/{conversation_id}/messages")
+async def class_chat_history(request: Request, class_id: str, conversation_id: str, db: Annotated[Session, Depends(get_db)],
+                             offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=200)):
+    require_owned_class(request, class_id)
+    result = await agent_chat_history.conversation_messages(
+        db, class_id, _history_owner(request), conversation_id, offset=offset, limit=limit,
+    )
+    response = ok(request, result)
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@router.delete("/classes/{class_id}/agent-chat/conversations/{conversation_id}")
+def class_chat_remove(request: Request, class_id: str, conversation_id: str, db: Annotated[Session, Depends(get_db)]):
+    require_owned_class(request, class_id)
+    return ok(request, agent_chat_history.remove_conversation(db, class_id, _history_owner(request), conversation_id))
 
 
 @router.get("/classes/{class_id}/agent-chat/thinking")

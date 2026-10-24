@@ -32,12 +32,12 @@ ClassClaw 是供 OpenClaw 智能体和网页端共用的轻量班级管理系统
 - `app/schemas/`：Pydantic 2 schema（`domain.py`、`auth.py`、`common.py`）
 - `app/core/`：`errors.py`（`AppError`）、`responses.py`（统一 `ok()` 响应）、`security.py`（`Principal`、鉴权与班级归属隔离）
 - `app/utils/time.py`：时区感知的 `now()`
-- `alembic/versions/`：迁移（当前到 `0020_daily_attendance`）
+- `alembic/versions/`：迁移（当前到 `0021_chat_history`）
 - `scripts/`：`init_db.py`、`seed_demo.py`、`backup.py`、`restore.py`、`cleanup_attachments.py`、`cleanup_deletions.py`
 - `scripts/manage.py` / `deploy/`：Ubuntu 同机部署的 `classclaw` 运维命令、systemd/Nginx 和 2 核 4 GB 配置。维护命令由 root 协调，项目命令降为服务用户执行；升级只允许 Git 快进，停两项服务并完整备份后迁移，失败保留标记禁止自动启动，不能自动 reset/downgrade。生产依赖在 `requirements-runtime.txt`，开发 `requirements.txt` 引用它。详见 `docs/deployment.md`。
 - `scripts/reset_admin_password.py`：仅限本地终端将现有唯一管理员密码重置为 `.env` 的 `CLASSCLAW_DEFAULT_ADMIN_PASSWORD`；不输出密码，事务性撤销旧会话并审计，不允许新增 HTTP/Agent 重置入口
 - `web/`：网页前端（`index.html` 班级创建引导 + 业务页面；`test.html` 后端综合验收台）
-- `web/js/agentChatStore.js`：按用户/班级隔离的内存对话列表与在途请求；新建/切换对话、站内页面卸载不能取消已发送聊天请求，原文不写入浏览器持久存储。页面 `dispose()` 只释放视图和输入设备资源；退出登录须清空对话并取消请求
+- `web/js/agentChatStore.js`：按用户/班级隔离的内存对话视图与在途请求；重新登录通过 `agent_chat_history` 从 Gateway 的本账号/班级网页会话恢复历史，原文不写入浏览器持久存储或 ClassClaw 业务库。历史只投影用户文本和最终助手正文，不返回工具、思考、系统提示、内部 key 或文件路径；限制读取大小和分页。删除列表通过 `agent_chat_hidden_conversations` 持久化，不能在重新登录后恢复，也不能复用已删除 ID；不改写 Gateway 运行账本。新建/切换对话、站内页面卸载不能取消已发送聊天请求；页面 `dispose()` 只释放视图和输入设备资源；退出登录须清空内存并取消请求，不能删除服务器历史
 - `web/js/pages/broadcast.js`（点名广播）与 `web/js/pages/classroom.js`（教室设备与实时监控）：广播句子以服务端 `broadcasts/preview` 为权威，不在前端另写模板；设备页的 5 秒轮询只更新概况读数，不重建正在填写的表单；离页 `dispose()` 必须释放本人观看租约
 - 教师网页“班级 Agent”只负责对话；创建、模型设置和 `ClassClaw Channels` 在 `web/js/pages/account.js` 的账户设置中。渠道统一入口为 `web/js/classclawChannels.js`，包含内置网页 Chat 和微信；微信 account alias 不代表已绑定，等待结果未返回新二维码时必须保留当前图片；二维码只存视图内存，离页清理扫码轮询不能取消聊天请求
 - **ClassClaw Channels** 是网页 Chat 与外部渠道的产品总称。网页 Chat 默认启用、无需绑定，沿用 Chat API 与 Responses/SSE 的用户/班级/会话隔离；微信等外部渠道通过 OpenClaw Channels 与兼容层接入同一 Agent。当前支持网页 Chat 与单个微信账号同时使用，不能宣称已支持多个外部账号绑定；新增外部渠道前须迁移为独立连接表，并同步扩展路由、登录状态、提醒目标和分阶段删除。微信重绑必须保留本 Agent 的其他渠道路由。详见 `docs/classclaw-channels.md`。

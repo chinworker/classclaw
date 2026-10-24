@@ -109,6 +109,17 @@ class ClassAgentBinding(Base, IdMixin, TimestampMixin):
     last_error: Mapped[str | None] = mapped_column(Text)
 
 
+class AgentChatHiddenConversation(Base, IdMixin, TimestampMixin):
+    """Owner-scoped tombstones; chat content remains in the Gateway session store."""
+
+    __tablename__ = "agent_chat_hidden_conversations"
+    __table_args__ = (UniqueConstraint("owner_user_id", "class_id", "conversation_id", name="uq_hidden_chat_owner_class"),)
+
+    owner_user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    class_id: Mapped[str] = mapped_column(ForeignKey("classes.id", ondelete="CASCADE"), index=True)
+    conversation_id: Mapped[str] = mapped_column(String(36))
+
+
 class SystemSetting(Base, IdMixin, TimestampMixin):
     __tablename__ = "system_settings"
 

@@ -1,6 +1,7 @@
-// 对话和请求属于当前登录会话，不属于页面 DOM；原文只保留在标签页内存。
+// 视图和在途请求保留在内存；历史从服务端恢复，原文不写入浏览器持久存储。
 import { api, AI_REQUEST_TIMEOUT_MS, createAiTaskId } from "./api.js";
 import { thinkingChoices } from "./agentThinking.js";
+import { fmtDateTime } from "./util.js";
 
 export function createChatStore({ request = api, newId = createAiTaskId, timestamp = () => new Date() } = {}) {
   const scopes = new Map();
@@ -15,6 +16,7 @@ export function createChatStore({ request = api, newId = createAiTaskId, timesta
       id: newId(), title: "新对话", createdAt: timestamp(), messages: [],
       draft: "", files: [], status: "idle", unread: false, activeController: null,
       thinkingLevel: null, thinkingNotice: "", revision: 0, deleted: false,
+      historyLoaded: true, historyLoading: false, historyError: null, historyHasMore: false, historyOffset: 0,
     };
     scope.conversations.unshift(conversation);
     scope.selectedId = conversation.id;
@@ -26,7 +28,9 @@ export function createChatStore({ request = api, newId = createAiTaskId, timesta
     if (!ownerId || !classId) throw new Error("对话需要已登录的用户和班级");
     const key = JSON.stringify([ownerId, classId]);
     if (!scopes.has(key)) {
-      const scope = { ownerId, classId, conversations: [], selectedId: null, listeners: new Set(), disposed: false, thinkingOptions: null };
+      const scope = { ownerId, classId, conversations: [], selectedId: null, listeners: new Set(), disposed: false, thinkingOptions: null,
+        historyLoaded: false, historyLoading: false, historyError: null, historyHasMore: false, historyOffset: 0,
+        historyController: new AbortController(), removedIds: new Set() };
       scopes.set(key, scope);
       createConversation(scope);
     }
@@ -49,6 +53,7 @@ export function createChatStore({ request = api, newId = createAiTaskId, timesta
     const index = scope.conversations.findIndex((conversation) => conversation.id === id);
     if (index < 0) return false;
     const [conversation] = scope.conversations.splice(index, 1);
+    scope.removedIds.add(id);
     // Remove ownership before aborting: late preflight/stream callbacks must not
     // restore a deleted conversation's draft or messages.
     conversation.deleted = true;
@@ -71,6 +76,78 @@ export function createChatStore({ request = api, newId = createAiTaskId, timesta
   function subscribe(scope, listener) {
     scope.listeners.add(listener);
     return () => scope.listeners.delete(listener);
+  }
+
+  async function loadHistory(scope, { more = false, force = false } = {}) {
+    if (scope.disposed || scope.historyLoading || (scope.historyLoaded && !more && !force)) return;
+    const initial = selectedConversation(scope);
+    const initialWasOnly = scope.conversations.length === 1;
+    scope.historyLoading = true; scope.historyError = null; notify(scope);
+    try {
+      const offset = more ? scope.historyOffset : 0;
+      const result = await request(`/classes/${scope.classId}/agent-chat/conversations?offset=${offset}&limit=50`, {
+        signal: scope.historyController.signal,
+      });
+      if (scope.disposed) return;
+      if (!Array.isArray(result.items)) throw new Error("历史对话列表格式无效");
+      for (const row of result.items) {
+        if (scope.removedIds.has(row.id) || scope.conversations.some((item) => item.id === row.id)) continue;
+        scope.conversations.push({ id: row.id, title: row.title || "历史对话", createdAt: row.created_at,
+          messages: [], draft: "", files: [], status: "history", unread: false, activeController: null,
+          thinkingLevel: null, thinkingNotice: "", revision: 0, deleted: false, remote: true,
+          historyLoaded: false, historyLoading: false, historyError: null, historyHasMore: false, historyOffset: 0 });
+      }
+      if (initialWasOnly && result.items.length && initial && scope.selectedId === initial.id && !initial.remote && !initial.messages.length
+          && !initial.draft && !initial.files.length && !initial.activeController && scope.conversations[0] === initial) {
+        scope.conversations.splice(0, 1);
+        scope.selectedId = scope.conversations[0]?.id;
+        if (!scope.selectedId) createConversation(scope);
+      }
+      scope.historyLoaded = true; scope.historyHasMore = Boolean(result.has_more);
+      scope.historyOffset = offset + result.items.length;
+    } catch (error) {
+      if (!scope.disposed) scope.historyError = error;
+    } finally {
+      if (!scope.disposed) { scope.historyLoading = false; notify(scope); }
+    }
+  }
+
+  async function loadMessages(scope, conversation, { more = false } = {}) {
+    if (scope.disposed || conversation.deleted || conversation.historyLoading || conversation.activeController
+        || (conversation.historyLoaded && !more)) return;
+    conversation.historyLoading = true; conversation.historyError = null; conversation.revision++; notify(scope);
+    try {
+      const offset = more ? conversation.historyOffset : 0;
+      const result = await request(`/classes/${scope.classId}/agent-chat/conversations/${conversation.id}/messages?offset=${offset}&limit=100`, {
+        signal: scope.historyController.signal,
+      });
+      if (scope.disposed || conversation.deleted) return;
+      if (!Array.isArray(result.messages)) throw new Error("历史消息格式无效");
+      const existing = new Set(conversation.messages.map((item) => item.id).filter(Boolean));
+      const messages = result.messages.filter((item) => !item.id || !existing.has(item.id)).map((item) => ({
+        id: item.id, role: item.role, text: item.text,
+        time: item.timestamp ? fmtDateTime(item.timestamp) : "",
+        incomplete: Boolean(item.incomplete),
+      }));
+      conversation.messages = more ? [...messages, ...conversation.messages] : messages;
+      conversation.historyLoaded = true; conversation.historyHasMore = Boolean(result.has_more);
+      conversation.historyOffset = offset + result.messages.length;
+      const last = conversation.messages.at(-1);
+      conversation.status = last?.role === "assistant" ? (last.incomplete ? "stopped" : "completed") : "history";
+    } catch (error) {
+      if (!scope.disposed && !conversation.deleted) conversation.historyError = error;
+    } finally {
+      if (!scope.disposed && !conversation.deleted) { conversation.historyLoading = false; conversation.revision++; notify(scope); }
+    }
+  }
+
+  async function removeConversation(scope, conversation) {
+    if (scope.disposed || conversation.deleted) return;
+    stopMessage(conversation);
+    await request(`/classes/${scope.classId}/agent-chat/conversations/${conversation.id}`, {
+      method: "DELETE", signal: scope.historyController.signal,
+    });
+    if (!scope.disposed) deleteConversation(scope, conversation.id);
   }
 
   function setThinkingLevel(scope, conversation, value) {
@@ -104,7 +181,7 @@ export function createChatStore({ request = api, newId = createAiTaskId, timesta
   }
 
   async function sendMessage(scope, conversation, text, files = []) {
-    if (scope.disposed || !scope.conversations.includes(conversation) || conversation.activeController) return false;
+    if (scope.disposed || !scope.conversations.includes(conversation) || conversation.activeController || !conversation.historyLoaded || conversation.historyLoading) return false;
     text = text.trim();
     if (!text && !files.length) return false;
     const uploads = [...files];
@@ -237,6 +314,7 @@ export function createChatStore({ request = api, newId = createAiTaskId, timesta
   function clear() {
     for (const scope of scopes.values()) {
       scope.disposed = true;
+      scope.historyController.abort();
       for (const conversation of scope.conversations) stopMessage(conversation);
       scope.conversations = [];
       scope.thinkingOptions = null;
@@ -247,7 +325,7 @@ export function createChatStore({ request = api, newId = createAiTaskId, timesta
   }
 
   return { getScope, createConversation, selectedConversation, selectConversation, deleteConversation, setThinkingLevel, setThinkingOptions,
-    subscribe, sendMessage, stopMessage, clear };
+    loadHistory, loadMessages, removeConversation, subscribe, sendMessage, stopMessage, clear };
 }
 
 export const agentChatStore = createChatStore();
