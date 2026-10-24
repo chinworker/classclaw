@@ -42,16 +42,16 @@ Preview:
 
 ### Attendance
 
-- “13号今天上学迟到两分钟” → `attendance.set`: today, `morning`, `late`, note `迟到两分钟`.
-- “21号今天下午请假” → today, `afternoon`, `leave`.
-- “13号今天没来” → ask whether absent or on leave and which period; do not guess.
-- A repeated write for the same student/date/period corrects that attendance slot.
+- “13号今天上学迟到两分钟” → `attendance.set`: today, `late`, note `迟到两分钟`. Do not ask for an exact time or period.
+- “21号今天请假” → today, `leave`; one daily record.
+- “13号今天没来” → ask whether absent or on leave; do not ask for a period.
+- A repeated write for the same student/date corrects that daily attendance record.
 
 Preview:
 
 ```text
 考勤预览
-13号 吴玉章｜今天上午｜迟到2分钟
+13号 吴玉章｜今天｜迟到，备注：迟到2分钟
 回复“确认”就登记。两分钟不长，记录很准。
 ```
 

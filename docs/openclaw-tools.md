@@ -72,7 +72,7 @@ OpenClaw 对话式写入使用以下预览/确认入口；网页中的结构化�
 | student_event_batch_create | POST `/student-events/batch` | 事件数组 | 事件数组 | 是 |
 | student_event_query | GET `/student-events` | 学生、类型、日期、科目 | 事件 | 否 |
 | student_event_revoke | DELETE `/student-events/{id}` | id | 软撤销事件 | 是 |
-| attendance_set | PUT `/attendance` | 学生、日期、时段、状态 | 考勤 | 否 |
+| attendance_set | PUT `/attendance` | 学生、日期、状态；每日一次 | 考勤 | 否 |
 | attendance_query | GET `/attendance` | 班级/学生/日期/状态 | 例外记录 | 否 |
 | attendance_summary | GET `/attendance/summary` | class_id,start_date,end_date | 统计 | 否 |
 | exam_create | POST `/exams` | 班级、名称、日期、科目满分 | 考试 | 否 |

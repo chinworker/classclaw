@@ -85,7 +85,7 @@ export async function render(mount, ctx) {
           ...d.attention_items.map((e) => el("p", { class: "field-error", style: { fontSize: "13px" } }, `${fmtDate(e.event_date)} · ${e.subtype}：${e.content}`))));
       }
       body.append(sectionList("近期事件", (d.events || []).map((e) => `${fmtDate(e.event_date)} · ${e.subtype} · ${e.content}`)));
-      body.append(sectionList("考勤（最近 30 条）", (d.attendance || []).map((a) => `${fmtDate(a.attendance_date)} · ${PERIOD[a.period] || a.period} · ${STATUS[a.status] || a.status}`)));
+      body.append(sectionList("考勤（最近 30 条）", (d.attendance || []).map((a) => `${fmtDate(a.attendance_date)} · ${STATUS[a.status] || a.status}`)));
       body.append(sectionList("作业（最近 20 条）", (d.homework || []).map((h) => `${STATUS[h.status] || h.status}${h.score !== null && h.score !== undefined ? ` · ${h.score} 分` : ""}`)));
       body.append(sectionList("成绩（最近 30 条）", (d.scores || []).map((sc) => `${sc.subject} · ${sc.score}/${sc.full_score}${sc.class_rank ? ` · 第 ${sc.class_rank} 名` : ""}`)));
       body.append(sectionList("值日（最近 10 条）", (d.recent_duty || []).map((t) => `${fmtDate(t.duty_date)} · ${t.item_name} · ${STATUS[t.status] || t.status}`)));
@@ -95,7 +95,6 @@ export async function render(mount, ctx) {
     }
   }
 
-  const PERIOD = { full_day: "全天", morning: "上午", afternoon: "下午", recess: "大课间", care_1: "晚托一", care_2: "晚托二" };
   const STATUS = { present: "出勤", late: "迟到/迟交", absent: "缺勤", leave: "请假", pending: "待交", submitted: "已交", missing: "未交", exempt: "免交", revision_required: "需订正", revised: "已订正", completed: "已完成" };
 
   function sectionList(title, lines) {

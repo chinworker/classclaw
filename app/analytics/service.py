@@ -84,17 +84,15 @@ def student_comprehensive(
             select(AttendanceRecord).where(
                 AttendanceRecord.student_id == student_id,
                 AttendanceRecord.attendance_date.between(start, end),
-                AttendanceRecord.period != "recess",
             )
         )
     )
     att_counts = Counter(r.status for r in attendance_rows)
-    slots = ((end - start).days + 1) * 2
+    slots = (end - start).days + 1
     absent_equivalent = 0
     for r in attendance_rows:
-        weight = 2 if r.period == "full_day" else (1 if r.period in {"morning", "afternoon"} else 0)
         if r.status in {"absent", "leave"}:
-            absent_equivalent += weight
+            absent_equivalent += 1
     attendance_rate = max(0.0, min(1.0, (slots - absent_equivalent) / slots)) if slots else None
     event_stmt = select(StudentEvent).where(
         StudentEvent.student_id == student_id,
@@ -131,7 +129,7 @@ def student_comprehensive(
     evidence: list[dict[str, Any]] = []
     evidence.extend({"id": e.id, "date": e.event_date, "type": f"event:{e.event_type}", "summary": e.content[:120]} for e in events[:20])
     evidence.extend({"id": hid, "date": assigned, "type": "homework", "summary": f"{title}：{status or 'pending'}"} for hid, title, assigned, status in homework_rows if (status or "pending") in {"missing", "late", "revision_required"})
-    evidence.extend({"id": r.id, "date": r.attendance_date, "type": "attendance", "summary": f"{r.period}:{r.status}"} for r in attendance_rows if r.status != "present")
+    evidence.extend({"id": r.id, "date": r.attendance_date, "type": "attendance", "summary": r.status} for r in attendance_rows if r.status != "present")
     attention = []
     if hw_counts["missing"]:
         attention.append({"type": "homework", "message": f"未交作业{hw_counts['missing']}次"})
@@ -209,7 +207,6 @@ def _class_student_analyses(
             AttendanceRecord.class_id == class_id,
             AttendanceRecord.student_id.in_(student_ids),
             AttendanceRecord.attendance_date.between(start, end),
-            AttendanceRecord.period != "recess",
         )
     ):
         attendance_by_student[row.student_id].append(row)
@@ -255,7 +252,7 @@ def _class_student_analyses(
                     seats[student_id] = {"row": row_index, "col": col_index, "snapshot_id": snapshot.id}
 
     analyses = []
-    slots = ((end - start).days + 1) * 2
+    slots = (end - start).days + 1
     for student in students:
         homework_rows = [(hid, title, assigned, homework_status.get((hid, student.id), "pending")) for hid, title, assigned in homework]
         hw_counts = Counter(status for _, _, _, status in homework_rows)
@@ -263,7 +260,7 @@ def _class_student_analyses(
         attendance_rows = attendance_by_student[student.id]
         att_counts = Counter(row.status for row in attendance_rows)
         absent_equivalent = sum(
-            (2 if row.period == "full_day" else 1 if row.period in {"morning", "afternoon"} else 0)
+            1
             for row in attendance_rows
             if row.status in {"absent", "leave"}
         )
@@ -288,7 +285,7 @@ def _class_student_analyses(
             if status in {"missing", "late", "revision_required"}
         )
         evidence.extend(
-            {"id": row.id, "date": row.attendance_date, "type": "attendance", "summary": f"{row.period}:{row.status}"}
+            {"id": row.id, "date": row.attendance_date, "type": "attendance", "summary": row.status}
             for row in attendance_rows
             if row.status != "present"
         )

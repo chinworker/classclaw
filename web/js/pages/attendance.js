@@ -1,16 +1,15 @@
-// 考勤：按日期+时段录入（PUT /attendance 直接写入）、查询、后端统计汇总。
+// 考勤：按日期录入（PUT /attendance 直接写入）、查询、后端统计汇总。
 
 import { el, clear, toast, todayStr, addDaysStr, fmtDate, pct } from "../util.js";
 import { api } from "../api.js";
 import { state, refreshStudents } from "../state.js";
 import { pageHeader, dataTable, statusBadge, field, errorPanel, skeleton, emptyState } from "../components.js";
 
-const PERIODS = [["full_day", "全天"], ["morning", "上午"], ["afternoon", "下午"], ["recess", "大课间"], ["care_1", "晚托一"], ["care_2", "晚托二"]];
 const STATUSES = [["present", "出勤"], ["late", "迟到"], ["absent", "缺勤"], ["leave", "请假"]];
 
 export async function render(mount) {
   const host = el("div");
-  mount.append(pageHeader("考勤", "默认全员出勤，只需标记迟到、缺勤或请假。"));
+  mount.append(pageHeader("考勤", "每天考勤一次，默认全员出勤，只需标记迟到、缺勤或请假。"));
 
   const tabs = el("div", { class: "tabs", role: "tablist" },
     el("button", { class: "active", type: "button", role: "tab", onclick: (e) => switchTab("record", e.target) }, "录入"),
@@ -29,16 +28,15 @@ export async function render(mount) {
   async function renderRecord() {
     clear(host);
     const dateInput = el("input", { type: "date", value: todayStr() });
-    const periodSelect = el("select", {}, PERIODS.map(([v, l]) => el("option", { value: v }, l)));
     const gridHost = el("div");
     const saveBtn = el("button", { class: "primary", type: "button", disabled: true, style: { marginLeft: "auto" } }, "保存考勤");
     host.append(
       el("div", { class: "filter-bar" },
-        field("日期", dateInput), field("时段", periodSelect),
+        field("日期", dateInput),
         el("button", { class: "secondary", type: "button", onclick: loadGrid }, "载入当天记录"),
         saveBtn),
       gridHost);
-    [dateInput, periodSelect].forEach((input) => input.addEventListener("change", () => { saveBtn.disabled = true; }));
+    dateInput.addEventListener("change", () => { saveBtn.disabled = true; });
 
     async function loadGrid() {
       clear(gridHost);
@@ -46,12 +44,11 @@ export async function render(mount) {
       saveBtn.disabled = true;
       saveBtn.onclick = null;
       const loadedDate = dateInput.value;
-      const loadedPeriod = periodSelect.value;
       let students, records;
       try {
         [students, records] = await Promise.all([
           refreshStudents(),
-          api(`/attendance?class_id=${state.classId}&start_date=${dateInput.value}&end_date=${dateInput.value}&period=${periodSelect.value}`),
+          api(`/attendance?class_id=${state.classId}&start_date=${dateInput.value}&end_date=${dateInput.value}`),
         ]);
       } catch (error) {
         clear(gridHost);
@@ -103,7 +100,7 @@ export async function render(mount) {
               method: "PUT",
               body: {
                 class_id: state.classId, student_id: s.id, attendance_date: loadedDate,
-                period: loadedPeriod, status: record.status, note: record.note || null,
+                status: record.status, note: record.note || null,
               },
             });
           } catch (error) {
@@ -111,11 +108,11 @@ export async function render(mount) {
             toast(`${s.name} 保存失败：${error.message}`, "error");
           }
         }
-        saveBtn.disabled = dateInput.value !== loadedDate || periodSelect.value !== loadedPeriod;
+        saveBtn.disabled = dateInput.value !== loadedDate;
         if (!failed) toast(changed.length ? `已保存 ${changed.length} 条考勤记录，其余默认出勤` : "全员默认出勤，无需额外保存", "success");
         else toast(`${failed} 条保存失败，其余已保存`, "error");
       };
-      saveBtn.disabled = dateInput.value !== loadedDate || periodSelect.value !== loadedPeriod;
+      saveBtn.disabled = dateInput.value !== loadedDate;
       gridHost.append(el("div", { class: "attendance-summary-strip" }, el("b", {}, `${students.length} 名学生`), el("span", {}, "默认状态：出勤"), allPresentBtn), el("div", { class: "table-wrap" }, table), saveInfo);
     }
     await loadGrid();
@@ -126,15 +123,14 @@ export async function render(mount) {
     clear(host);
     const startInput = el("input", { type: "date", value: addDaysStr(todayStr(), -7) });
     const endInput = el("input", { type: "date", value: todayStr() });
-    const periodSelect = el("select", {}, el("option", { value: "" }, "全部时段"), ...PERIODS.map(([v, l]) => el("option", { value: v }, l)));
     const statusSelect = el("select", {}, el("option", { value: "" }, "全部状态"), ...STATUSES.map(([v, l]) => el("option", { value: v }, l)));
     const listHost = el("div");
     host.append(
       el("div", { class: "filter-bar" },
         field("开始日期", startInput), field("结束日期", endInput),
-        field("时段", periodSelect), field("状态", statusSelect),
+        field("状态", statusSelect),
         el("button", { class: "primary", type: "button", onclick: load }, "查询"),
-        el("button", { class: "text-button", type: "button", onclick: () => { startInput.value = addDaysStr(todayStr(), -7); endInput.value = todayStr(); periodSelect.value = ""; statusSelect.value = ""; load(); } }, "清空筛选")),
+        el("button", { class: "text-button", type: "button", onclick: () => { startInput.value = addDaysStr(todayStr(), -7); endInput.value = todayStr(); statusSelect.value = ""; load(); } }, "清空筛选")),
       listHost);
 
     async function load() {
@@ -143,7 +139,6 @@ export async function render(mount) {
       const params = new URLSearchParams({ class_id: state.classId });
       if (startInput.value) params.set("start_date", startInput.value);
       if (endInput.value) params.set("end_date", endInput.value);
-      if (periodSelect.value) params.set("period", periodSelect.value);
       if (statusSelect.value) params.set("status", statusSelect.value);
       let rows;
       try {
@@ -160,7 +155,6 @@ export async function render(mount) {
         columns: [
           { key: "attendance_date", label: "日期", render: (r) => fmtDate(r.attendance_date) },
           { key: "student", label: "学生", render: (r) => { const s = byId.get(r.student_id); return s ? `${s.name}（${s.student_no}）` : r.student_id; } },
-          { key: "period", label: "时段", render: (r) => (PERIODS.find(([v]) => v === r.period) || [])[1] || r.period },
           { key: "status", label: "状态", render: (r) => statusBadge(r.status) },
           { key: "note", label: "备注", render: (r) => r.note || "—" },
         ],
@@ -198,7 +192,7 @@ export async function render(mount) {
       const students = await refreshStudents().catch(() => []);
       const byId = new Map(students.map((s) => [s.id, s]));
       const rows = data.students || data.items || [];
-      box.append(el("p", { class: "muted", style: { fontSize: "13px" } }, "说明：大课间记录不计入全天出勤率。"));
+      box.append(el("p", { class: "muted", style: { fontSize: "13px" } }, "说明：每名学生每天计算一次，无记录默认出勤；迟到计为出勤，缺勤和请假不计为出勤。"));
       box.append(dataTable({
         columns: [
           { key: "student", label: "学生", render: (r) => { const s = byId.get(r.student_id); return s ? `${s.name}（${s.student_no}）` : r.student_id; } },

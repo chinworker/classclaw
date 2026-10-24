@@ -24,7 +24,7 @@ ClassClaw 使用 SQLite + SQLAlchemy，核心业务库有 33 张应用数据表�
 | 值日 | `duty_rules`, `duty_schedules`, `duty_assignments`, `duty_score_items`, `duty_evaluations`, `duty_evaluation_details` | 规则可增删改查；任务直接使用 0–5 分，评分即完成，过往未评分任务次日补 5 分。 |
 | 作业 | `homework`, `homework_student_statuses` | 作业属于班级；每个学生对每份作业最多一条状态，可重复写入更新。 |
 | 学生事件 | `student_events` | 统一承载作业、考勤、行为、沟通、荣誉及其他事件。撤销为软删除。 |
-| 考勤 | `attendance_records` | `(student_id, attendance_date, period)` 唯一；重复登记同一时段时更新原记录。 |
+| 考勤 | `attendance_records` | `(student_id, attendance_date)` 唯一；每天仅一次，重复登记更新当天原记录。 |
 | 考试成绩 | `exams`, `exam_subjects`, `scores` | 考试包含科目满分；每名学生每场考试每科最多一条成绩，批量写入后计算排名。网页可删除考试（连同成绩、科目与分析缓存，删除走轻量审计）。 |
 | 课表 | `class_periods`, `base_timetable`, `lesson_overrides` | 基础课表按星期和节次唯一；临时覆盖按实际日期和节次覆盖基础课表。 |
 | 安排提醒 | `arrangements`, `reminders` | 一项安排最多三个提醒；未指定时默认在目标时间前三小时提醒一次。完成安排后写入完成时间。事项当天还会独立进入早报。 |
@@ -68,11 +68,11 @@ ClassClaw 使用 SQLite + SQLAlchemy，核心业务库有 33 张应用数据表�
 
 | 操作 | 用户说法 | 归一化结果 | 数据效果 |
 |---|---|---|---|
-| `attendance.set` | “13 号今天上学迟到两分钟。” | 今天、上午、`late`、备注“迟到两分钟” | 新增或更新同一学生/日期/时段的 `attendance_records`。 |
+| `attendance.set` | “13 号今天上学迟到两分钟。” | 今天、`late`、备注“迟到两分钟” | 新增或更新同一学生/日期的 `attendance_records`。 |
 | `attendance.set` | “21 号今天下午请假。” | 今天、下午、`leave` | 写入下午请假。 |
-| `attendance.set` | “13 号今天没来。” | 状态或时段不清楚，先追问 | 不生成 proposal。 |
+| `attendance.set` | “13 号今天没来。” | 缺勤或请假不清楚时，只追问状态 | 不生成 proposal。 |
 
-考勤时段固定为：全天、上午、下午、课间、托管 1、托管 2；状态固定为：正常、迟到、缺勤、请假。
+考勤每天仅一次，无需提供时段或具体时间；状态固定为：正常、迟到、缺勤、请假。内部兼容字段 `period` 固定为 `full_day`；旧请求携带的已知时段也归一为该值。迁移 `0020` 保留现有单日记录的日期、状态和备注；遇到同一学生同日多条历史记录时拒绝迁移，先核对合并，不自动选择状态或删除记录。旧的待确认考勤提案会取消，须重新按每日口径预览；历史分析缓存清空后重新计算。
 
 ### 4.3 作业与未交
 

@@ -126,7 +126,7 @@ def test_hard_delete_class_removes_business_data_and_releases_account_slot(clien
                 class_id=owned.id,
                 student_id=student.id,
                 attendance_date=date(2026, 9, 1),
-                period="morning",
+                period="full_day",
                 status="late",
             ),
             Score(exam_id=exam.id, student_id=student.id, subject="语文", score=90, full_score=100),

@@ -32,7 +32,7 @@ ClassClaw 是供 OpenClaw 智能体和网页端共用的轻量班级管理系统
 - `app/schemas/`：Pydantic 2 schema（`domain.py`、`auth.py`、`common.py`）
 - `app/core/`：`errors.py`（`AppError`）、`responses.py`（统一 `ok()` 响应）、`security.py`（`Principal`、鉴权与班级归属隔离）
 - `app/utils/time.py`：时区感知的 `now()`
-- `alembic/versions/`：迁移（当前到 `0019_class_agent_thinking`）
+- `alembic/versions/`：迁移（当前到 `0020_daily_attendance`）
 - `scripts/`：`init_db.py`、`seed_demo.py`、`backup.py`、`restore.py`、`cleanup_attachments.py`、`cleanup_deletions.py`
 - `scripts/manage.py` / `deploy/`：Ubuntu 同机部署的 `classclaw` 运维命令、systemd/Nginx 和 2 核 4 GB 配置。维护命令由 root 协调，项目命令降为服务用户执行；升级只允许 Git 快进，停两项服务并完整备份后迁移，失败保留标记禁止自动启动，不能自动 reset/downgrade。生产依赖在 `requirements-runtime.txt`，开发 `requirements.txt` 引用它。详见 `docs/deployment.md`。
 - `scripts/reset_admin_password.py`：仅限本地终端将现有唯一管理员密码重置为 `.env` 的 `CLASSCLAW_DEFAULT_ADMIN_PASSWORD`；不输出密码，事务性撤销旧会话并审计，不允许新增 HTTP/Agent 重置入口
@@ -101,6 +101,7 @@ node --test tests/web/*.test.mjs  # 对话状态、页面交互与登录切换�
 - **软删除**：学生、班级、学生事件使用 `SoftDeleteMixin`，查询需过滤 `deleted_at`。
 - **时间**：一律使用 `app.utils.time.now()`（时区感知），不要直接用 `datetime.now()`。
 - **幂等与事务**：批量写入（成绩、作业状态等）要求整批事务校验、失败回滚；未交事件等同步操作要求幂等。
+- **考勤**：每名学生每天仅一次，唯一键为学生+日期，不收集或追问上午/下午等时段或具体时间。旧请求的已知时段归一为内部 `full_day`，同日重复登记更新原记录；未登记默认出勤，迟到计出勤、缺勤和请假不计出勤，统计按天计数。迁移遇到历史同日多条时必须停下核对，不猜测状态或丢弃记录。
 - **附件**：文件名由 UUID 生成，单附件上限默认 20 MiB（`CLASSCLAW_MAX_ATTACHMENT_BYTES`）。
 - **审计**：账户、删除、智能体绑定等关键动作通过 `app/services/common.py` 的 `audit()` 写轻量审计，不保存整份前后快照。
 - **并发规模**：实现面向低并发、几十名学生规模；班级级分析使用批量查询，避免按学生逐条访问数据库。

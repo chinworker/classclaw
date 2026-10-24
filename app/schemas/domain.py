@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.schemas.common import ORMModel
 
@@ -192,10 +192,16 @@ class AttendanceSet(BaseModel):
     class_id: str
     student_id: str
     attendance_date: date
-    period: Literal["full_day", "morning", "afternoon", "recess", "care_1", "care_2"]
+    period: Literal["full_day"] = "full_day"
     status: Literal["present", "late", "absent", "leave"]
     note: str | None = None
     source_message_id: str | None = None
+
+    @field_validator("period", mode="before")
+    @classmethod
+    def daily_attendance(cls, value: Any) -> Any:
+        # Old clients may still send a named period; it never creates a second daily record.
+        return "full_day" if isinstance(value, str) and value in {"morning", "afternoon", "recess", "care_1", "care_2"} else value
 
 
 class ExamSubjectInput(BaseModel):

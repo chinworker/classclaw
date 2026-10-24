@@ -244,7 +244,7 @@ _INTERACTION_PAYLOAD_HINTS: dict[str, str] = {
     "student.update": "{class_id,student_no,changes:{...}}",
     "student.update.batch": "{class_id,student_nos:[班内学号,...],changes:{字段:新值,...},only_if_empty?:[字段名,...]}；相同变更合为一组",
     "seating.update": "{class_id,rows,cols,layout:[[student_no|null,...],...],change_note?}",
-    "attendance.set": "{class_id,student_no,attendance_date,period:full_day|morning|afternoon|recess|care_1|care_2,status:present|late|absent|leave,note?}",
+    "attendance.set": "{class_id,student_no,attendance_date,status:present|late|absent|leave,note?}；每天仅一次考勤，不填时段或具体时间",
     "homework.create": "{class_id,title,subject,description?,assigned_date,due_at?,status?}",
     "homework.status.batch": "{homework_id,items:[{student_no,status,submitted_at?,score?,level?,comment?}]}",
     "student_event.create": _student_event_payload_hint(),
@@ -269,7 +269,7 @@ _INTERACTION_RULES_TEXT = """安全与质量要求：
 5. 只有字段完整、身份唯一、日期和范围明确且 confidence>=0.75 时才可 status=ready。顶层和每个 operation 都必须返回非空 reasons：高置信度说明通过依据，低置信度说明具体问题。每个 operation 只含 operation_type、payload、summary、confidence、reasons；后端还会执行 Pydantic 校验。
 6. 语义约定：
    - “今天/昨天/明天”按 current_datetime 解析为实际日期。
-   - “上学迟到”且没有下午语义时按 morning；“没来”无法区分 absent/leave 或时段时追问。
+   - 考勤每天仅一次，只需学生、日期和状态，不填写 period 或具体时间，不追问上午/下午、节次或迟到几点。“上学迟到”按该日期 status=late；“没来”无法区分 absent/leave 时只追问缺勤还是请假。同一学生同日重复登记是更正当天记录，不能拆成多个时段。
    - 已明确指向上下文中唯一作业时，未交用 homework.status.batch/status=missing。
    - 用户明确说“不新建/不关联具体作业”时，不追问作业标题或作业 ID；改用 student_event.create，event_type=homework、subtype=homework_missing、subject=科目、content=“{科目}作业未交”。
    - “昨天布置，今天发现未交”的事件日期是今天；“昨天没交”的事件日期是昨天。
@@ -295,7 +295,7 @@ _INTERACTION_RULES_TEXT = """安全与质量要求：
    - “忘记/不再记住”用 memory.forget，memory_ids 只能来自本班上下文；歧义时澄清。
    - “明天大课间”等时间引用须结合目标日期、weekdays、有效期和别名解析；目标日期有临时规则时优先，找不到或有歧义时追问。agent_memory.effective 只适用于其中的 date，其他日期须重新按 items 计算，不能把今天的规则套到明天。
 8. questions 和 summary 必须简短，不输出内部 UUID、表名、工具名或工作流解释。
-9. 不同数据按各自要求判断：学生必须唯一匹配学号/姓名；考勤必须明确日期、时段和状态；作业必须明确作业对象及学生范围；成绩必须明确考试、科目、学生和分数；调课必须明确日期、节次及变更内容；值日评分必须唯一匹配任务；安排必须明确标题以及用户要求的时间范围。
+9. 不同数据按各自要求判断：学生必须唯一匹配学号/姓名；考勤必须明确日期和状态；作业必须明确作业对象及学生范围；成绩必须明确考试、科目、学生和分数；调课必须明确日期、节次及变更内容；值日评分必须唯一匹配任务；安排必须明确标题以及用户要求的时间范围。
 10. 返回且仅返回 JSON：
 {"status":"ready|needs_clarification|no_action","intent":"...","summary":"...","confidence":0到1,"reasons":["判断依据或具体问题"],
 "questions":["..."],"warnings":["..."],"operations":[{"operation_type":"...","payload":{...},"summary":"...","confidence":0到1,"reasons":["判断依据或具体问题"]}]}"""

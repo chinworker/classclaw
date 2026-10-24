@@ -231,6 +231,8 @@ def normalize_and_preview(operation_type: str, payload: dict, evidence: list[dic
     if operation_type in specs:
         model, title = specs[operation_type]
         normalized = _model(model, payload, exclude_unset=operation_type == "attendance.set")
+        if operation_type == "attendance.set":
+            normalized.pop("period", None)
         return normalized, {"ready": True, "title": title, "summary": normalized, "missing_fields": [], "validation_errors": [], "confirmation_message": f"即将{title}，请核对字段后确认。"}
     if operation_type == "student.update.batch":
         normalized = _model(StudentBatchUpdate, payload, exclude_unset=True)

@@ -659,7 +659,7 @@ def test_low_confidence_interaction_operation_is_excluded_and_reason_is_returned
                     },
                     "summary": "张三迟到",
                     "confidence": 0.45,
-                    "reasons": ["原消息没有说明迟到发生在上午还是下午"],
+                    "reasons": ["原消息无法区分缺勤还是请假"],
                 }
             ],
         }
@@ -667,7 +667,7 @@ def test_low_confidence_interaction_operation_is_excluded_and_reason_is_returned
     monkeypatch.setattr(openclaw_bridge, "analyze_interaction", analyze_interaction)
     response = client.post(
         "/api/v1/interaction-analyses",
-        json={"channel": "wechat", "text": "张三迟到了", "class_id": cls.id},
+        json={"channel": "wechat", "text": "张三没来", "class_id": cls.id},
     )
 
     payload = response.json()["data"]
@@ -675,7 +675,7 @@ def test_low_confidence_interaction_operation_is_excluded_and_reason_is_returned
     assert payload["analysis"]["status"] == "needs_clarification"
     assert payload["proposals"] == []
     assert payload["analysis"]["structured_json"]["operations"] == []
-    assert "上午还是下午" in payload["analysis"]["structured_json"]["rejected_reasons"][0]
+    assert "缺勤还是请假" in payload["analysis"]["structured_json"]["rejected_reasons"][0]
     assert db.scalar(select(func.count(WriteProposal.id))) == 0
 
 

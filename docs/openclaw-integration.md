@@ -101,7 +101,7 @@ openclaw doctor
 1. OpenClaw 收到原始文字或微信消息；附件先用 `classclaw_upload_file` 保存原件和哈希。
 2. 调用 `classclaw_analyze_interaction`，传入未经删改的原文、`channel`、稳定消息 id、已知 `class_id` 和附件 ids。
 3. 后端创建 `interaction_analysis`，并通过 Gateway Responses API 让 OpenClaw 在只读上下文中完成意图识别、学生按班内学号匹配和字段清洗。上下文名单只含学号、姓名、性别和状态，不携带学生 UUID；分析输出的学生引用（`student_no`/`student_nos`，座位 layout 同）由后端在绑定班级内确定性解析为内部 UUID，跨班或不存在的引用直接拒绝。
-4. 所有分析顶层及每项数据都必须返回 `confidence` 和非空 `reasons`，统一门槛为 0.75。低于门槛，或同名、日期、科目、分数、考勤时段、批量范围等不明确时，返回 `needs_clarification`、具体 `rejected_reasons` 和问题；低置信度数据不会生成 proposal。
+4. 所有分析顶层及每项数据都必须返回 `confidence` 和非空 `reasons`，统一门槛为 0.75。低于门槛，或同名、日期、科目、分数、考勤状态、批量范围等不明确时，返回 `needs_clarification`、具体 `rejected_reasons` 和问题；低置信度数据不会生成 proposal。考勤每天仅一次，不收集或追问时段、节次或具体时间。
 
 姓名错字、语音转写中的同音或近音由分析器结合本班名单匹配：只有唯一高置信度候选且不与明确学号冲突时，直接使用名单中的姓名和学号生成预览，不单独提醒改字、不另问身份，也不修改学生档案姓名。多个合理候选、同名或低置信度仍需澄清；后端学号解析保持确定性，不跨班模糊匹配。
 

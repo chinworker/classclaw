@@ -10,7 +10,7 @@
 - 工作流与运维（业务库）：`arrangements`、`reminders`、`attachments`、`attachment_links`、`interaction_analyses`、`audit_logs`、`write_proposals`、`class_onboarding_sessions`、`class_agent_bindings`、`deletion_operations`
 - AI 用量（独立 `usage.db`）：`ai_usage_records`，实体和 metadata 位于 `app/models/usage.py`
 
-所有主键为 UUID 字符串。主要唯一约束包括：班级+学号、学生+日期+考勤时段、考试+学生+科目、班级+星期+节次、班级+`lesson_key`、外部消息 ID。学生和学生事件支持软删除；班级采用停用。历史记录通过学生 UUID 关联，不靠姓名。
+所有主键为 UUID 字符串。主要唯一约束包括：班级+学号、学生+考勤日期、考试+学生+科目、班级+星期+节次、班级+`lesson_key`、外部消息 ID。考勤每天仅一次，内部兼容字段 `period` 固定为 `full_day`，数据库同时检查唯一键和固定值。学生和学生事件支持软删除；班级采用停用。历史记录通过学生 UUID 关联，不靠姓名。
 
 值日计划由静态规则生成预览，并在用户整体确认后一次性写入全部任务。`duty_assignments.score` 使用 0–5 分；评分后任务状态为完成，查询值日时会把前一天及更早仍未评分的任务补为 5 分完成。考勤无记录默认按出勤统计。
 

@@ -146,7 +146,7 @@ def attendance_set(request: Request, body: AttendanceSet, db: Session = Depends(
 
 
 @router.get("/attendance")
-def attendance_query(request: Request, class_id: str | None = None, student_id: str | None = None, start_date: date | None = None, end_date: date | None = None, period: str | None = None, status: str | None = None, db: Session = Depends(get_db)):
+def attendance_query(request: Request, class_id: str | None = None, student_id: str | None = None, start_date: date | None = None, end_date: date | None = None, status: str | None = None, db: Session = Depends(get_db)):
     class_id = scoped_class_id(request, class_id)
     if student_id:
         require_owned_student(request, db, student_id)
@@ -159,12 +159,10 @@ def attendance_query(request: Request, class_id: str | None = None, student_id: 
         stmt = stmt.where(AttendanceRecord.attendance_date >= start_date)
     if end_date:
         stmt = stmt.where(AttendanceRecord.attendance_date <= end_date)
-    if period:
-        stmt = stmt.where(AttendanceRecord.period == period)
     if status:
         stmt = stmt.where(AttendanceRecord.status == status)
     return ok(request, list(db.scalars(stmt.join(Student, Student.id == AttendanceRecord.student_id)
-                                     .order_by(AttendanceRecord.attendance_date.desc(), *student_order_by(), AttendanceRecord.period))))
+                                     .order_by(AttendanceRecord.attendance_date.desc(), *student_order_by()))))
 
 
 @router.get("/attendance/summary")

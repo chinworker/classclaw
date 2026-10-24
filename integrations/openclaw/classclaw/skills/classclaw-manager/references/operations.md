@@ -10,7 +10,7 @@ For user prose, WeChat messages, pasted lists, OCR, or attachments, do not const
 | `student.update` | `{class_id, student_no, changes:{...}}` |
 | `student.update.batch` | `{class_id, student_nos:[班内学号,...], changes:{...}, only_if_empty?:[field,...]}`；同值变更按组，最多100人；仅补性别用 `only_if_empty:["gender"]` |
 | `seating.update` | `{class_id, rows, cols, layout:[[student_no|null,...],...], change_note?}` |
-| `attendance.set` | `{class_id, student_no, attendance_date, period, status, note?}` |
+| `attendance.set` | `{class_id, student_no, attendance_date, status, note?}`; once per student/date |
 | `homework.create` | `{class_id, title, subject, description?, assigned_date, due_at?, status?}` |
 | `homework.status.batch` | `{homework_id, items:[{student_no,status,submitted_at?,score?,comment?}]}` |
 | `student_event.create` | `{class_id,student_no,event_type,subtype,event_date,content,sentiment?,severity?,...}` |
@@ -28,7 +28,7 @@ Students are always referenced by class-internal `student_no` (seating layouts i
 
 `classroom.broadcast.send` and `classroom.volume.set` drive physical devices, so their result has two layers. The backend freezes the exact sentences (default template `请{称谓}{时间}{谓词}。`, one sentence per student when `merge_mode="per_student"`) and registers a terminal command; the commit result reports registration and dispatch only. Display and speech outcomes come from the terminal receipt, and `expired` or `unknown` means the result is genuinely unknown — never claim the class heard it, and never re-send to “make sure”.
 
-Dates are `YYYY-MM-DD`; datetimes are ISO 8601 with timezone. Use a stable idempotency key derived from the external message id plus the intended operation, for example `wechat-message-id:attendance:student-no:date:period`.
+Dates are `YYYY-MM-DD`; datetimes are ISO 8601 with timezone. Use a stable idempotency key derived from the external message id plus the intended operation, for example `wechat-message-id:attendance:student-no:date`. Attendance has no period or exact-time field to collect.
 
 Evidence items use:
 
@@ -40,7 +40,7 @@ Evidence items use:
   "location": "成绩表.xlsx / Sheet1 / row 8",
   "summary": "张三数学 92 分",
   "confidence": 0.98,
-  "reasons": ["学生、日期、时段和考勤状态均已明确且唯一匹配"]
+  "reasons": ["学生、日期和考勤状态均已明确且唯一匹配"]
 }
 ```
 

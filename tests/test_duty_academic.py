@@ -38,9 +38,10 @@ def test_homework_event_idempotency_and_attendance_rate(db, sample):
     academic.batch_homework_status(db, hw.id, HomeworkBatchStatus(items=[HomeworkStatusItem(student_id=students[0].id, status="missing")]))
     assert academic.sync_missing_homework_events(db, hw.id)["created"] == 1
     assert academic.sync_missing_homework_events(db, hw.id)["created"] == 0
-    academic.set_attendance(db, AttendanceSet(class_id=cls.id, student_id=students[0].id, attendance_date=date(2026, 9, 1), period="recess", status="absent"))
+    academic.set_attendance(db, AttendanceSet(class_id=cls.id, student_id=students[0].id, attendance_date=date(2026, 9, 1), status="absent"))
     summary = academic.attendance_summary(db, cls.id, date(2026, 9, 1), date(2026, 9, 1))
-    assert summary["attendance_rate"] == 1.0
+    assert summary["attendance_rate"] == 2 / 3
+    assert summary["slot_count"] == summary["student_day_count"] == 3
     assert summary["attendance_rate"] <= 1
 
 
@@ -91,7 +92,7 @@ def test_proposal_normalize_keeps_only_provided_fields(db, sample):
         "class_id": sample[0].id, "student_id": sample[2][0].id,
         "attendance_date": "2026-09-06", "period": "morning", "status": "late",
     })
-    assert set(attendance_preview["summary"]) == {"class_id", "student_id", "attendance_date", "period", "status"}
+    assert set(attendance_preview["summary"]) == {"class_id", "student_id", "attendance_date", "status"}
     homework_normalized, _homework_preview = approval.normalize_and_preview("homework.status.batch", {
         "homework_id": "hw-1", "items": [{"student_id": "s-1", "status": "missing"}],
     })

@@ -300,12 +300,15 @@ class StudentEvent(Base, IdMixin, TimestampMixin, SoftDeleteMixin):
 
 class AttendanceRecord(Base, IdMixin, TimestampMixin):
     __tablename__ = "attendance_records"
-    __table_args__ = (UniqueConstraint("student_id", "attendance_date", "period", name="uq_attendance_slot"),)
+    __table_args__ = (
+        UniqueConstraint("student_id", "attendance_date", name="uq_attendance_day"),
+        CheckConstraint("period = 'full_day'", name="ck_attendance_daily_period"),
+    )
 
     class_id: Mapped[str] = mapped_column(ForeignKey("classes.id", ondelete="RESTRICT"), index=True)
     student_id: Mapped[str] = mapped_column(ForeignKey("students.id", ondelete="RESTRICT"), index=True)
     attendance_date: Mapped[date] = mapped_column(Date)
-    period: Mapped[str] = mapped_column(String(20))
+    period: Mapped[str] = mapped_column(String(20), default="full_day")
     status: Mapped[str] = mapped_column(String(20))
     note: Mapped[str | None] = mapped_column(Text)
     source_message_id: Mapped[str | None] = mapped_column(String(100))

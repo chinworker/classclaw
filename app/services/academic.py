@@ -33,6 +33,7 @@ from app.schemas.domain import (
 )
 from app.services.class_student import get_class, get_student
 from app.services.common import audit, entity_dict
+from app.services.student_ordering import student_order_by
 from app.utils.student_sort import student_no_key
 from app.utils.time import now
 
@@ -221,7 +222,6 @@ def set_attendance(db: Session, data: AttendanceSet, *, commit: bool = True) -> 
         select(AttendanceRecord).where(
             AttendanceRecord.student_id == data.student_id,
             AttendanceRecord.attendance_date == data.attendance_date,
-            AttendanceRecord.period == data.period,
         )
     )
     before = entity_dict(obj) if obj else None
@@ -242,39 +242,44 @@ def attendance_summary(db: Session, class_id: str, start_date: date, end_date: d
     get_class(db, class_id, include_inactive=True)
     if start_date > end_date:
         raise AppError("VALIDATION_ERROR", "end_date不能早于start_date")
-    students = list(db.scalars(select(Student.id).where(Student.class_id == class_id, Student.deleted_at.is_(None), Student.status == "active")))
+    students = list(db.scalars(select(Student.id).where(
+        Student.class_id == class_id, Student.deleted_at.is_(None), Student.status == "active",
+    ).order_by(*student_order_by())))
     records = list(
         db.scalars(
             select(AttendanceRecord).where(
                 AttendanceRecord.class_id == class_id,
                 AttendanceRecord.attendance_date.between(start_date, end_date),
-                AttendanceRecord.period != "recess",
             )
         )
     )
-    by_slot = {(r.student_id, r.attendance_date, r.period): r.status for r in records}
+    by_day = {(r.student_id, r.attendance_date): r.status for r in records}
     days = (end_date - start_date).days + 1
-    total_slots = len(students) * days * 2
+    total_slots = len(students) * days
     present_equivalent = 0
     counts = defaultdict(int)
+    student_counts = {sid: defaultdict(int) for sid in students}
     for offset in range(days):
         day = start_date + timedelta(days=offset)
         for sid in students:
-            full = by_slot.get((sid, day, "full_day"))
-            for period in ("morning", "afternoon"):
-                status = by_slot.get((sid, day, period), full or "present")
-                counts[status] += 1
-                if status in {"present", "late"}:
-                    present_equivalent += 1
+            status = by_day.get((sid, day), "present")
+            counts[status] += 1
+            student_counts[sid][status] += 1
+            if status in {"present", "late"}:
+                present_equivalent += 1
     return {
         "class_id": class_id,
         "start_date": start_date,
         "end_date": end_date,
         "student_count": len(students),
         "slot_count": total_slots,
+        "student_day_count": total_slots,
         "status_counts": dict(counts),
         "attendance_rate": present_equivalent / total_slots if total_slots else None,
-        "note": "大课间不计入出勤率；无记录默认出勤；全天口径按上午和下午两个半天计算",
+        "students": [{"student_id": sid, "attendance_rate": (item["present"] + item["late"]) / days,
+                      "late": item["late"], "absent": item["absent"], "leave": item["leave"]}
+                     for sid, item in student_counts.items()],
+        "note": "每名学生每天考勤一次；无记录默认出勤；迟到计为出勤，缺勤和请假不计为出勤",
     }
 
 
