@@ -139,6 +139,49 @@ test("model settings are scoped to the class and the dialog closes on page dispo
   assert.equal(document.body.querySelector(".modal-overlay"), null);
 });
 
+test("default thinking is saved with model settings using the Gateway binary level id", async () => {
+  modelSettings.configured.main_model = "provider/model";
+  modelSettings.models = [{ id: "provider/model", name: "Model", provider: "provider", input: ["text"] }];
+  const fallback = fetch;
+  let submitted;
+  globalThis.fetch = async (path, options = {}) => {
+    if (path.endsWith("/agent-chat/thinking")) return response({ class_default_level: null, system_default_level: "off", default_level: "off",
+      levels: [{ id: "off", label: "关闭" }, { id: "low", label: "开启" }] });
+    if (path.endsWith("/agent-chat/models") && options.method === "PATCH") { submitted = JSON.parse(options.body); return response({ restart_requested: false }); }
+    return fallback(path, options);
+  };
+  const mount = await mountPage();
+  assert.equal(mount.querySelector(".account-agent-settings").textContent.includes("null"), false);
+  button(mount, "模型设置").click(); await tick();
+  const modal = document.body.querySelector(".modal");
+  const thinking = modal.querySelector(".class-thinking-select");
+  assert.deepEqual(thinking.querySelectorAll("option").map((option) => option.value), ["", "off", "low"]);
+  assert.equal(thinking.querySelectorAll("option")[2].textContent, "开启");
+  thinking.value = "low";
+  button(modal, "保存模型设置").click(); await tick();
+  assert.deepEqual(submitted, { thinking_default: "low" });
+  assert.equal(document.body.querySelector(".modal"), null);
+});
+
+test("changing the main model defers thinking choices until its actual capabilities can be read", async () => {
+  modelSettings.configured.main_model = "provider/old";
+  modelSettings.models = [{ id: "provider/old", provider: "provider" }, { id: "provider/new", provider: "provider" }];
+  const fallback = fetch;
+  let submitted;
+  globalThis.fetch = async (path, options = {}) => {
+    if (path.endsWith("/agent-chat/models") && options.method === "PATCH") { submitted = JSON.parse(options.body); return response({ restart_requested: true }); }
+    return fallback(path, options);
+  };
+  const mount = await mountPage(); button(mount, "模型设置").click(); await tick();
+  const modal = document.body.querySelector(".modal");
+  const main = modal.querySelectorAll("select")[0];
+  main.value = "provider/new"; main.dispatchEvent(new Event("change"));
+  assert.equal(modal.querySelector(".class-thinking-select").disabled, true);
+  assert.ok(modal.textContent.includes("请先保存新的主模型"));
+  button(modal, "保存模型设置").click(); await tick();
+  assert.deepEqual(submitted, { main_model: "provider/new" });
+});
+
 test("late model settings cannot open over another account or page", async () => {
   const fallback = fetch;
   let finish;

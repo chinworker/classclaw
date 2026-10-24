@@ -72,7 +72,7 @@ export async function render(mount) {
   const agentHost = el("div", { class: "account-agent-settings" });
   mount.append(el("section", { class: "card", aria: { label: "班级 Agent 绑定与设置" } },
     el("h3", {}, "班级 Agent · 绑定与设置"),
-    el("p", { class: "muted" }, "网页 Chat 是默认启用的内置渠道，无需额外绑定。主模型、图片理解和语音识别在此设置；默认思考强度在班级设置调整，每个对话也可独立选择。"),
+    el("p", { class: "muted" }, "网页 Chat 是默认启用的内置渠道，无需额外绑定。主模型、默认思考强度、图片理解和语音识别统一在“模型设置”中调整；每个对话也可独立选择思考强度。"),
     agentHost));
   const channelsHost = el("div", { class: "account-channels" });
   mount.append(el("section", { class: "card", aria: { label: "ClassClaw Channels" } },
@@ -172,10 +172,9 @@ export async function render(mount) {
         if (dialog) view.modelDialog = dialog;
       } finally { modelButton.disabled = false; }
     });
-    agentHost.append(
-      el("p", {}, el("b", {}, binding.agent_name)),
-      binding.last_error ? el("p", { class: "field-error" }, `最近错误：${binding.last_error}`) : null,
-      el("div", { class: "row-gap" }, modelButton, el("a", { href: "#/agent" }, "进入班级 Agent")));
+    agentHost.append(el("p", {}, el("b", {}, binding.agent_name)));
+    if (binding.last_error) agentHost.append(el("p", { class: "field-error" }, `最近错误：${binding.last_error}`));
+    agentHost.append(el("div", { class: "row-gap" }, modelButton, el("a", { href: "#/agent" }, "进入班级 Agent")));
     // An account alias exists as soon as QR login starts; it is not proof of a
     // completed binding. Always keep the explicit (re)binding action available.
     view.qr = classclawChannelsPanel(classId, { binding, onDone: () => { if (live()) void loadAgent(); } });

@@ -48,7 +48,7 @@ test("leaving during capability loading aborts the view request and ignores late
   assert.equal(panel.el.querySelector("select"), null);
 });
 
-test("class settings exposes the default thinking panel independently of basic class fields", async () => {
+test("class settings keeps class fields without duplicating Agent model settings", async () => {
   installDom();
   const page = await import("../../web/js/pages/classSettings.js");
   const { state, saveSession } = await import("../../web/js/state.js");
@@ -58,8 +58,8 @@ test("class settings exposes the default thinking panel independently of basic c
   const mount = document.createElement("main"); document.body.append(mount);
   try {
     await page.render(mount, {}, {}); await tick();
-    assert.ok(mount.querySelector(".class-thinking-select"));
+    assert.equal(mount.querySelector(".class-thinking-select"), null);
     assert.ok(mount.textContent.includes("保存班级资料"));
-    assert.ok(calls.includes("/api/v1/classes/class-a/agent-chat/thinking"));
+    assert.equal(calls.includes("/api/v1/classes/class-a/agent-chat/thinking"), false);
   } finally { page.dispose(); }
 });

@@ -13,6 +13,7 @@ class ClassAgentModelUpdate(BaseModel):
     main_model: str | None = Field(default=None, max_length=200)
     image_model: str | None = Field(default=None, max_length=200)
     speech_model: str | None = Field(default=None, max_length=200)
+    thinking_default: ThinkingLevel | None = None
 
     @field_validator("main_model", "image_model", "speech_model")
     @classmethod

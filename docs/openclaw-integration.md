@@ -178,7 +178,7 @@ ClassClaw 不直接连接微信；微信连接器属于 OpenClaw。只要微信�
 
 对话列表每项提供“删除”，确认后移除本标签页内存中的消息、草稿与待发送附件，并取消该对话的在途请求；迟到的能力检查、流式片段和最终回复不能恢复已删除内容。删除当前对话后切到相邻对话，删除最后一项后自动新建空白对话；其他对话不受影响。离开页面或退出登录会关闭尚未确认的删除弹窗。此操作不撤销已保存的业务数据、不删除已上传附件，也不删除 Gateway 保存的会话历史。
 
-网页聊天 POST 支持 multipart 字段 `stream=true`（网页默认使用）及可选 `thinking_level`。省略思考强度时优先使用班级设置的默认，再使用 `openclaw.class_agent_thinking`；显式设置仅属于本会话，详见 [配置说明](configuration.md)。`GET/PATCH /classes/{class_id}/agent-chat/thinking` 负责读取能力和保存班级默认（`thinking_default=null` 恢复系统默认），均校验班级归属；保存不会修改已有会话覆盖。后端生成 `agent:{agent_id}:openresponses-user:classclaw-web-chat:{class_id}:{sender_id}:{conversation_id}`，通过 `x-openclaw-session-key` 精确关联会话；客户端不能自行指定 Gateway key。
+网页聊天 POST 支持 multipart 字段 `stream=true`（网页默认使用）及可选 `thinking_level`。省略思考强度时优先使用班级设置的默认，再使用 `openclaw.class_agent_thinking`；显式设置仅属于本会话，详见 [配置说明](configuration.md)。`GET/PATCH /classes/{class_id}/agent-chat/thinking` 负责读取能力和保存班级默认（`thinking_default=null` 恢复系统默认）；账户页模型弹窗也可通过 `PATCH /classes/{class_id}/agent-chat/models` 一起保存 `thinking_default` 和图片/语音模型选择，使用一次 Gateway 配置提交。更换主模型时，不允许同时提交未经新模型能力验证的显式思考档位。接口均校验班级归属，保存不会修改已有会话覆盖。后端生成 `agent:{agent_id}:openresponses-user:classclaw-web-chat:{class_id}:{sender_id}:{conversation_id}`，通过 `x-openclaw-session-key` 精确关联会话；客户端不能自行指定 Gateway key。
 
 当前 Gateway 的 Responses `reasoning` 字段未传给执行器，管理员 HTTP RPC 也不放行 `sessions.patch`。因此 ClassClaw 插件提供固定、Gateway 鉴权的私有 `POST /api/v1/classclaw/web-session-thinking`：仅接受 `key` 和 `thinkingLevel`，校验 key 是已绑定班级的网页会话后固定分派 `sessions.patch`；不开放会话删除、任意 RPC 或任意 Agent 配置。浏览器只调用 ClassClaw，绝不获取 Gateway Token。更新版本后须重新构建插件，并在无进行中对话时重启 Gateway 和 ClassClaw；缺少新插件端点会返回 `CHAT_PLUGIN_UPDATE_REQUIRED`。
 

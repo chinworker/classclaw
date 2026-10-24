@@ -18,7 +18,7 @@ from app.config import settings
 from app.core.errors import AppError
 from app.database import suspend_writer
 from app.schemas.agent_chat import ClassAgentModelUpdate
-from app.services import openclaw_provisioning
+from app.services import agent_thinking, openclaw_provisioning
 from app.services.common import audit
 
 _AUDIO_MIMES = {
@@ -198,6 +198,7 @@ async def class_agent_model_settings(db: Session, class_id: str) -> dict[str, An
             "main_model": binding.main_model or explicit_main,
             "image_model": binding.image_model,
             "speech_model": binding.speech_model,
+            "thinking_default": binding.thinking_default,
         },
         "effective": {
             "main_model": binding.main_model or explicit_main or default_main,
@@ -240,20 +241,29 @@ async def update_class_agent_models(
             )
 
     restart_requested = False
-    if "main_model" in changes and data.main_model != current["configured"]["main_model"]:
+    model_changed = "main_model" in changes and data.main_model != current["configured"]["main_model"]
+    if model_changed and data.thinking_default is not None:
+        raise AppError("THINKING_MODEL_CHANGED", "请先保存主模型，再选择新模型支持的默认思考强度", 422)
+    if model_changed or "thinking_default" in changes:
         async with suspend_writer(db):
             snapshot = await openclaw_provisioning.admin_rpc("config.get")
+            if data.thinking_default is not None:
+                await agent_thinking.resolve_thinking_level(binding.openclaw_agent_id, data.thinking_default)
         config = snapshot.get("config") or {}
-        rows = list((config.get("agents") or {}).get("list") or [])
+        original_rows = list((config.get("agents") or {}).get("list") or [])
+        rows = list(original_rows)
         found = False
         for index, row in enumerate(rows):
             if not isinstance(row, dict) or str(row.get("id") or row.get("agentId")) != binding.openclaw_agent_id:
                 continue
             updated = dict(row)
-            if data.main_model:
-                updated["model"] = data.main_model
-            else:
-                updated.pop("model", None)
+            if model_changed:
+                if data.main_model:
+                    updated["model"] = data.main_model
+                else:
+                    updated.pop("model", None)
+            if "thinking_default" in changes:
+                updated["thinkingDefault"] = data.thinking_default if data.thinking_default is not None else settings.openclaw_class_agent_thinking
             rows[index] = updated
             found = True
             break
@@ -267,12 +277,13 @@ async def update_class_agent_models(
         }
         if snapshot.get("hash"):
             params["baseHash"] = snapshot["hash"]
-        async with suspend_writer(db):
-            await openclaw_provisioning.admin_rpc("config.patch", params)
-        restart_requested = True
+        if rows != original_rows:
+            async with suspend_writer(db):
+                await openclaw_provisioning.admin_rpc("config.patch", params)
+            restart_requested = True
 
-    before = {name: getattr(binding, name) for name in ("main_model", "image_model", "speech_model")}
-    for name in ("main_model", "image_model", "speech_model"):
+    before = {name: getattr(binding, name) for name in ("main_model", "image_model", "speech_model", "thinking_default")}
+    for name in before:
         if name in changes:
             setattr(binding, name, changes[name])
     after = {name: getattr(binding, name) for name in before}

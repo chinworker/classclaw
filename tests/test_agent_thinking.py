@@ -163,6 +163,11 @@ def class_thinking_runtime(db, sample, monkeypatch, tmp_path):
             return {"agents": [{**config["agents"]["list"][0], "thinkingLevels": [
                 {"id": "off", "label": "off"}, {"id": "low", "label": "on"},
             ]}]}
+        if method == "models.list":
+            return {"models": [{"id": "model", "provider": "provider", "input": ["text", "image"]},
+                               {"id": "new", "provider": "provider", "input": ["text"]}]}
+        if method == "models.authStatus":
+            return {"providers": []}
         if method == "config.patch":
             assert params["baseHash"] == "current-hash"
             patch = json.loads(params["raw"])
@@ -279,3 +284,41 @@ def test_web_chat_uses_class_default_and_explicit_override_without_changing_agen
     assert session_levels == ["low", "off"]
     assert binding.thinking_default == "low"
     assert all(method == "agents.list" for method, _ in thinking_gateway[1])
+
+
+def test_model_settings_save_default_thinking_and_image_choice_together(client, sample, class_thinking_runtime):
+    binding, config, calls = class_thinking_runtime
+    path = f"/api/v1/classes/{sample[0].id}/agent-chat/models"
+    response = client.patch(path, json={"thinking_default": "low", "image_model": "provider/model"})
+    assert response.status_code == 200, response.text
+    assert binding.thinking_default == "low" and binding.image_model == "provider/model"
+    assert config["agents"]["list"][0]["thinkingDefault"] == "low"
+    assert config["agents"]["list"][0]["model"] == "provider/model"
+    assert config["agents"]["list"][1] == {"id": "other-agent", "thinkingDefault": "high"}
+    assert sum(method == "config.patch" for method, _ in calls) == 1
+    current = client.get(path).json()["data"]
+    assert current["configured"]["thinking_default"] == "low"
+
+
+def test_model_settings_reject_stale_thinking_without_saving_other_fields(client, sample, class_thinking_runtime):
+    binding, _, calls = class_thinking_runtime
+    response = client.patch(f"/api/v1/classes/{sample[0].id}/agent-chat/models",
+                            json={"thinking_default": "high", "image_model": "provider/model"})
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "CHAT_THINKING_UNSUPPORTED"
+    assert binding.thinking_default is None and binding.image_model is None
+    assert not any(method == "config.patch" for method, _ in calls)
+
+
+def test_model_settings_require_new_model_capabilities_before_explicit_thinking_choice(client, sample, class_thinking_runtime):
+    binding, config, calls = class_thinking_runtime
+    path = f"/api/v1/classes/{sample[0].id}/agent-chat/models"
+    blocked = client.patch(path, json={"main_model": "provider/new", "thinking_default": "low"})
+    assert blocked.status_code == 422
+    assert blocked.json()["error"]["code"] == "THINKING_MODEL_CHANGED"
+    assert binding.main_model is None and binding.thinking_default is None
+    assert not any(method == "config.patch" for method, _ in calls)
+    saved = client.patch(path, json={"main_model": "provider/new", "thinking_default": None})
+    assert saved.status_code == 200, saved.text
+    assert config["agents"]["list"][0]["model"] == "provider/new"
+    assert binding.main_model == "provider/new" and binding.thinking_default is None
