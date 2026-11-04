@@ -8,6 +8,7 @@ import { state, clearSession, refreshClassInfo, refreshOpenclaw } from "./js/sta
 import { defineRoutes, setRouteResolver, startRouter, dispatch, navigate, parseHash } from "./js/router.js";
 import { field } from "./js/components.js";
 import { ADMIN_NAV, ADMIN_ALIASES } from "./js/adminRoutes.js";
+import { createPageLoader } from "./js/pageLoader.js";
 
 const root = document.getElementById("root");
 installEnhancedControls();
@@ -62,36 +63,38 @@ const NAV = [...TEACHER_NAV, ...ADMIN_NAV];
 const PAGE_META = {};
 for (const group of NAV) for (const item of group.items) PAGE_META[item.path] = { ...item, group: group.group };
 
+const pageLoader = (path) => createPageLoader(new URL(path, import.meta.url));
+
 const routes = [
-  { path: "/dashboard", title: "今日仪表盘", loader: () => import("./js/pages/dashboard.js"), requiresClass: true },
-  { path: "/query", title: "快捷查询", loader: () => import("./js/pages/query.js"), requiresClass: true },
-  { path: "/students", title: "学生档案", loader: () => import("./js/pages/students.js"), requiresClass: true },
-  { path: "/seating", title: "座位表", loader: () => import("./js/pages/seating.js"), requiresClass: true },
-  { path: "/events", title: "日常表现", loader: () => import("./js/pages/events.js"), requiresClass: true },
-  { path: "/homework", title: "作业", loader: () => import("./js/pages/homework.js"), requiresClass: true },
-  { path: "/attendance", title: "考勤", loader: () => import("./js/pages/attendance.js"), requiresClass: true },
-  { path: "/exams", title: "成绩与考试", loader: () => import("./js/pages/exams.js"), requiresClass: true },
-  { path: "/timetable", title: "课表与调课", loader: () => import("./js/pages/timetablePage.js?v=20260901-week-navigation"), requiresClass: true },
-  { path: "/duty", title: "值日管理", loader: () => import("./js/pages/duty.js"), requiresClass: true },
-  { path: "/arrangements", title: "日常安排", loader: () => import("./js/pages/arrangements.js"), requiresClass: true },
-  { path: "/attachments", title: "附件", loader: () => import("./js/pages/attachments.js"), requiresClass: true },
-  { path: "/class-settings", title: "班级设置", loader: () => import("./js/pages/classSettings.js"), requiresClass: true },
-  { path: "/broadcast", title: "点名广播", loader: () => import("./js/pages/broadcast.js?v=20260923-classroom-review"), requiresClass: true },
-  { path: "/classroom", title: "教室设备与实时监控", loader: () => import("./js/pages/classroom.js?v=20260923-classroom-review"), requiresClass: true },
-  { path: "/analytics/students", title: "学生分析", loader: () => import("./js/pages/analytics.js?v=20260901-analytics-fix"), requiresClass: true, section: "students" },
-  { path: "/analytics/class", title: "班级分析", loader: () => import("./js/pages/analytics.js?v=20260901-analytics-fix"), requiresClass: true, section: "class" },
-  { path: "/analytics/attention", title: "重点关注", loader: () => import("./js/pages/analytics.js?v=20260901-analytics-fix"), requiresClass: true, section: "attention" },
-  { path: "/workflow", title: "待确认记录", loader: () => import("./js/pages/workflow.js") },
-  { path: "/agent", title: "班级 Agent", loader: () => import("./js/pages/agent.js?v=20260910-account-binding") },
-  { path: "/admin/overview", title: "概览", loader: () => import("./js/pages/adminOverview.js"), adminOnly: true },
-  { path: "/admin/settings", title: "设置中心", loader: () => import("./js/pages/adminSettings.js"), adminOnly: true },
-  { path: "/admin/access", title: "班级与账号", loader: () => import("./js/pages/adminAccess.js"), adminOnly: true },
-  { path: "/admin/ops", title: "运维中心", loader: () => import("./js/pages/adminOps.js"), adminOnly: true },
+  { path: "/dashboard", title: "今日仪表盘", loader: pageLoader("./js/pages/dashboard.js"), requiresClass: true },
+  { path: "/query", title: "快捷查询", loader: pageLoader("./js/pages/query.js"), requiresClass: true },
+  { path: "/students", title: "学生档案", loader: pageLoader("./js/pages/students.js"), requiresClass: true },
+  { path: "/seating", title: "座位表", loader: pageLoader("./js/pages/seating.js"), requiresClass: true },
+  { path: "/events", title: "日常表现", loader: pageLoader("./js/pages/events.js"), requiresClass: true },
+  { path: "/homework", title: "作业", loader: pageLoader("./js/pages/homework.js"), requiresClass: true },
+  { path: "/attendance", title: "考勤", loader: pageLoader("./js/pages/attendance.js"), requiresClass: true },
+  { path: "/exams", title: "成绩与考试", loader: pageLoader("./js/pages/exams.js"), requiresClass: true },
+  { path: "/timetable", title: "课表与调课", loader: pageLoader("./js/pages/timetablePage.js?v=20260901-week-navigation"), requiresClass: true },
+  { path: "/duty", title: "值日管理", loader: pageLoader("./js/pages/duty.js"), requiresClass: true },
+  { path: "/arrangements", title: "日常安排", loader: pageLoader("./js/pages/arrangements.js"), requiresClass: true },
+  { path: "/attachments", title: "附件", loader: pageLoader("./js/pages/attachments.js"), requiresClass: true },
+  { path: "/class-settings", title: "班级设置", loader: pageLoader("./js/pages/classSettings.js"), requiresClass: true },
+  { path: "/broadcast", title: "点名广播", loader: pageLoader("./js/pages/broadcast.js?v=20260923-classroom-review"), requiresClass: true },
+  { path: "/classroom", title: "教室设备与实时监控", loader: pageLoader("./js/pages/classroom.js?v=20260923-classroom-review"), requiresClass: true },
+  { path: "/analytics/students", title: "学生分析", loader: pageLoader("./js/pages/analytics.js?v=20260901-analytics-fix"), requiresClass: true, section: "students" },
+  { path: "/analytics/class", title: "班级分析", loader: pageLoader("./js/pages/analytics.js?v=20260901-analytics-fix"), requiresClass: true, section: "class" },
+  { path: "/analytics/attention", title: "重点关注", loader: pageLoader("./js/pages/analytics.js?v=20260901-analytics-fix"), requiresClass: true, section: "attention" },
+  { path: "/workflow", title: "待确认记录", loader: pageLoader("./js/pages/workflow.js") },
+  { path: "/agent", title: "班级 Agent", loader: pageLoader("./js/pages/agent.js?v=20260910-account-binding") },
+  { path: "/admin/overview", title: "概览", loader: pageLoader("./js/pages/adminOverview.js"), adminOnly: true },
+  { path: "/admin/settings", title: "设置中心", loader: pageLoader("./js/pages/adminSettings.js"), adminOnly: true },
+  { path: "/admin/access", title: "班级与账号", loader: pageLoader("./js/pages/adminAccess.js"), adminOnly: true },
+  { path: "/admin/ops", title: "运维中心", loader: pageLoader("./js/pages/adminOps.js"), adminOnly: true },
   ...Object.entries(ADMIN_ALIASES).map(([path, redirect]) => ({ path, redirect, adminOnly: true })),
-  { path: "/account", title: "账户设置", loader: () => import("./js/pages/account.js?v=20260923-channels-web-chat") },
-  { path: "/welcome", title: "创建班级", loader: () => import("./js/pages/welcome.js"), bare: true },
-  { path: "/onboarding", title: "班级创建向导", loader: () => import("./js/pages/onboarding.js?v=20260901-onboarding-actions") },
-  { path: "/onboarding/:id", title: "班级创建向导", loader: () => import("./js/pages/onboarding.js?v=20260901-onboarding-actions") },
+  { path: "/account", title: "账户设置", loader: pageLoader("./js/pages/account.js?v=20260923-channels-web-chat") },
+  { path: "/welcome", title: "创建班级", loader: pageLoader("./js/pages/welcome.js"), bare: true },
+  { path: "/onboarding", title: "班级创建向导", loader: pageLoader("./js/pages/onboarding.js?v=20260901-onboarding-actions") },
+  { path: "/onboarding/:id", title: "班级创建向导", loader: pageLoader("./js/pages/onboarding.js?v=20260901-onboarding-actions") },
 ];
 defineRoutes(routes);
 
@@ -309,7 +312,12 @@ setRouteResolver(async (route, ctx) => {
     if (revision !== pageRevision || !mount.isConnected) return;
     console.error(error);
     clear(mount);
-    mount.append(el("div", { class: "error-panel" }, el("b", {}, `页面加载失败：${error.message}`)));
+    mount.append(el("div", { class: "error-panel", role: "alert" },
+      el("b", {}, `页面加载失败：${error.message}`),
+      el("p", { class: "muted" }, "页面资源未能正常加载，请重试；持续失败时可重新加载整个工作台。"),
+      el("div", { class: "row-gap" },
+        el("button", { class: "primary", type: "button", onclick: () => dispatch() }, "重试打开页面"),
+        el("button", { class: "secondary", type: "button", onclick: () => location.reload() }, "重新加载工作台"))));
   }
 });
 

@@ -2,25 +2,64 @@
 
 import { el, clear, toast, todayStr, fmtDate, fmtDateTime, pct } from "../util.js";
 import { api } from "../api.js";
-import { state, refreshStudents, refreshSubjects } from "../state.js";
+import { state, refreshStudents } from "../state.js";
 import { pageHeader, dataTable, openModal, field, fieldError, errorPanel, skeleton, emptyState, statusBadge, metricCard, confirmDanger } from "../components.js";
-import { listExams } from "../featureGaps.js";
+
+let activeView = null;
+export function dispose() {
+  activeView?.controller.abort();
+  activeView = null;
+}
 
 export async function render(mount) {
-  const classSubjects = await refreshSubjects().catch(() => []);
+  dispose();
+  const view = { controller: new AbortController() };
+  activeView = view;
+  const classId = state.classId;
+  const alive = () => activeView === view && mount.isConnected;
+  let classSubjects = [];
   const host = el("div");
+  const subjectStatus = el("div");
+  const createButton = el("button", { class: "primary", type: "button", disabled: true, onclick: openCreateExam }, "创建考试");
   mount.append(
     pageHeader("成绩与考试", "创建考试，录入成绩。",
-      el("button", { class: "primary", type: "button", onclick: openCreateExam }, "创建考试")),
-    host);
+      createButton), subjectStatus, host);
+
+  async function read(path) {
+    try {
+      return await api(path, { timeoutMs: 15_000, signal: view.controller.signal });
+    } catch (error) {
+      if (error.code === "REQUEST_TIMEOUT") throw new Error("加载超时，请重试。");
+      throw error;
+    }
+  }
+
+  async function loadSubjects() {
+    createButton.disabled = true;
+    subjectStatus.replaceChildren(el("p", { class: "muted" }, "正在加载考试科目…"));
+    try {
+      const subjects = await read(`/classes/${encodeURIComponent(classId)}/subjects`);
+      if (!alive()) return;
+      classSubjects = subjects;
+      clear(subjectStatus);
+      createButton.disabled = false;
+    } catch (error) {
+      if (!alive()) return;
+      clear(subjectStatus);
+      subjectStatus.append(el("p", { class: "muted" }, "考试列表可正常查看；创建考试前请重试加载科目。"),
+        errorPanel(error, { onRetry: loadSubjects }));
+    }
+  }
 
   async function load() {
     clear(host);
     host.append(skeleton(4));
     try {
-      const exams = await listExams(state.classId);
+      const exams = await read(`/exams?class_id=${encodeURIComponent(classId)}`);
+      if (!alive()) return;
       renderExamList(exams || []);
     } catch (error) {
+      if (!alive()) return;
       clear(host);
       host.append(errorPanel(error, { onRetry: load }));
     }
@@ -89,7 +128,7 @@ export async function render(mount) {
             try {
               await api("/exams", {
                 method: "POST",
-                body: { class_id: state.classId, name: nameInput.value.trim(), exam_date: dateInput.value, subjects },
+                body: { class_id: classId, name: nameInput.value.trim(), exam_date: dateInput.value, subjects },
               });
               close();
               toast("考试已创建", "success");
@@ -297,5 +336,5 @@ export async function render(mount) {
     }
   }
 
-  await load();
+  await Promise.all([load(), loadSubjects()]);
 }
