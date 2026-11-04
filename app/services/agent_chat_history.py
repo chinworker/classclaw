@@ -18,7 +18,6 @@ from app.core.errors import AppError
 from app.database import suspend_writer
 from app.models.entities import AgentChatHiddenConversation
 from app.services import openclaw_provisioning
-from app.services.common import audit
 
 _SAFE_AGENT = re.compile(r"[a-zA-Z0-9_-]{1,100}\Z")
 _MAX_INDEX_BYTES = 4 * 1024 * 1024
@@ -217,6 +216,5 @@ def remove_conversation(db: Session, class_id: str, owner_id: str, identifier: s
     ))
     if not existing:
         db.add(AgentChatHiddenConversation(class_id=class_id, owner_user_id=owner_id, conversation_id=identifier))
-        audit(db, "remove_chat_conversation", "class", class_id, operator_id=owner_id, after={"conversation_id": identifier})
         db.commit()
     return {"conversation_id": identifier, "removed": True}

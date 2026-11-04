@@ -1,2 +1,1 @@
-from app.models.entities import *
-
+"""Database entities and shared model bases."""

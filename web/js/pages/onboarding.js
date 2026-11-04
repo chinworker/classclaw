@@ -34,7 +34,6 @@ export async function render(mount, ctx, helpers) {
   const local = {
     session: null,
     step: 0,
-    nameCheck: null,      // { name, available, message }
     proposal: null,
     classResult: null,    // confirm 后的 result_json
     provisionDone: false,
@@ -185,16 +184,15 @@ export async function render(mount, ctx, helpers) {
   const nameStatus = el("small", { class: "field-hint" }, "输入后自动检查班级与智能体名称冲突");
   const doNameCheck = debounce(async () => {
     const name = classInputs.name.value.trim();
-    if (!name) { nameStatus.textContent = "输入后自动检查班级与智能体名称冲突"; local.nameCheck = null; return; }
+    if (!name) { nameStatus.textContent = "输入后自动检查班级与智能体名称冲突"; return; }
     nameStatus.textContent = "正在检查名称…";
     try {
       const result = await api(`/class-onboarding/name-check?class_name=${encodeURIComponent(name)}`);
       if (classInputs.name.value.trim() !== name) return;
-      local.nameCheck = result;
       nameStatus.textContent = result.message;
       nameStatus.style.color = result.available ? "var(--success)" : "var(--danger)";
     } catch (error) {
-      local.nameCheck = { available: false, message: error.message };
+      if (classInputs.name.value.trim() !== name) return;
       nameStatus.textContent = error.message;
       nameStatus.style.color = "var(--danger)";
     }
@@ -223,7 +221,7 @@ export async function render(mount, ctx, helpers) {
       classInputs[key] = input;
       grid.append(field(label, input, null));
     }
-    classInputs.name.addEventListener("input", () => { local.nameCheck = null; nameStatus.style.color = ""; doNameCheck(); });
+    classInputs.name.addEventListener("input", () => { nameStatus.style.color = ""; doNameCheck(); });
     classInputs.name.addEventListener("blur", () => doNameCheck());
     panel.append(
       el("p", { class: "muted" }, "确定性字段，保存时不会被智能体改写。"),
@@ -309,7 +307,6 @@ export async function render(mount, ctx, helpers) {
     ttEditor = timetableGridEditor({
       periods: draft().periods || [],
       items: draft().base_timetable || [],
-      editable: true,
       defaultRoom: classInputs.room?.value.trim() || draft().class_info?.room || null,
       onChange: markStepDirty,
     });
@@ -426,7 +423,7 @@ export async function render(mount, ctx, helpers) {
     try {
       const completed = await api(`/write-proposals/${local.proposal.id}/confirm`, {
         method: "POST",
-        body: { revision: local.proposal.revision, confirmed_by: state.user.username, confirmation_note: "网页端根据最终预览创建班级" },
+        body: { revision: local.proposal.revision, confirmed_by: state.user.username },
       });
       local.classResult = completed.result_json;
       toast("班级已创建", "success");

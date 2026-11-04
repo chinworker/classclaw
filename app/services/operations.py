@@ -20,7 +20,7 @@ from app.models.entities import (
 )
 from app.schemas.domain import ArrangementCreate
 from app.services.class_student import get_class
-from app.services.common import audit, entity_dict
+from app.services.common import audit
 from app.utils.time import now
 
 
@@ -32,7 +32,6 @@ def create_arrangement(db: Session, data: ArrangementCreate, *, commit: bool = T
     db.flush()
     for remind_at in data.reminder_times:
         db.add(Reminder(arrangement_id=obj.id, remind_at=remind_at))
-    audit(db, "create", "arrangement", obj.id, after=entity_dict(obj), source_message_id=data.source_message_id)
     if commit:
         db.commit()
     return obj
@@ -42,7 +41,6 @@ def complete_arrangement(db: Session, arrangement_id: str) -> Arrangement:
     obj = db.get(Arrangement, arrangement_id)
     if not obj:
         raise not_found("安排", arrangement_id)
-    before = entity_dict(obj)
     obj.status = "completed"
     obj.completed_at = now()
     db.execute(
@@ -50,7 +48,6 @@ def complete_arrangement(db: Session, arrangement_id: str) -> Arrangement:
         .where(Reminder.arrangement_id == arrangement_id, Reminder.status == "pending")
         .values(status="cancelled")
     )
-    audit(db, "complete", "arrangement", obj.id, before=before, after=entity_dict(obj))
     db.commit()
     return obj
 
@@ -72,20 +69,20 @@ def refresh_overdue(db: Session) -> int:
     return len(rows)
 
 
-def due_reminders(db: Session, at: datetime | None = None) -> list[Reminder]:
-    at = at or now()
-    return list(
-        db.scalars(
-            select(Reminder)
-            .join(Arrangement, Arrangement.id == Reminder.arrangement_id)
-            .where(
-                Reminder.status == "pending",
-                Reminder.remind_at <= at,
-                Arrangement.status.not_in(["completed", "cancelled"]),
-            )
-            .order_by(Reminder.remind_at)
+def due_reminders(db: Session, at: datetime | None = None, *, class_id: str | None = None) -> list[Reminder]:
+    stmt = (
+        select(Reminder)
+        .join(Arrangement, Arrangement.id == Reminder.arrangement_id)
+        .where(
+            Reminder.status == "pending",
+            Reminder.remind_at <= (at or now()),
+            Arrangement.status.not_in(["completed", "cancelled"]),
         )
+        .order_by(Reminder.remind_at)
     )
+    if class_id is not None:
+        stmt = stmt.where(Arrangement.class_id == class_id)
+    return list(db.scalars(stmt))
 
 
 def reminder_delivery(db: Session, reminder_id: str, at: datetime | None = None) -> dict:
@@ -173,7 +170,6 @@ def save_attachment(db: Session, upload: UploadFile, source_message_id: str | No
         for entity_type, entity_id in (("class", class_id), ("class_onboarding_session", onboarding_session_id)):
             if entity_id:
                 db.add(AttachmentLink(attachment_id=obj.id, entity_type=entity_type, entity_id=entity_id))
-        audit(db, "create", "attachment", obj.id, after=entity_dict(obj), source_message_id=source_message_id)
         db.commit()
     except Exception:
         db.rollback()
@@ -255,6 +251,6 @@ def delete_attachment(db: Session, attachment: Attachment, *, class_id: str, ope
         raise AppError("ATTACHMENT_DELETE_FAILED", "附件文件删除失败，记录已保留，请重试", 503,
                        {"attachment_id": attachment.id}) from exc
     db.delete(attachment)
-    audit(db, "delete", "attachment", attachment.id, operator_id=operator_id, before={"original_name": original_name})
+    audit(db, "delete", "attachment", attachment.id, operator_id=operator_id)
     db.commit()
     return {"id": attachment.id, "original_name": original_name, "file_removed": True}

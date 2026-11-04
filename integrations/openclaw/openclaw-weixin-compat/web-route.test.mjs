@@ -143,3 +143,10 @@ test("browser route completes refreshed QR and phone verification through the re
   assert.equal(saved[0].token, "credential-secret");
   assert.doesNotMatch(JSON.stringify(verified.body), /001234|credential-secret|token-2/);
 });
+test("the plugin manifest and lockfile identify the same release as the package", async () => {
+  const readJson = async (path) => JSON.parse(await readFile(new URL(path, import.meta.url), "utf-8"));
+  const [manifest, pkg, lock] = await Promise.all(["./openclaw.plugin.json", "./package.json", "./package-lock.json"].map(readJson));
+  assert.equal(manifest.version, pkg.version);
+  assert.equal(lock.version, pkg.version);
+  assert.equal(lock.packages[""].version, pkg.version);
+});

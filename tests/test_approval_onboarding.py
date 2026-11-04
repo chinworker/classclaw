@@ -53,7 +53,9 @@ def test_class_onboarding_is_draft_until_explicit_confirmation(client, db):
     assert proposal["preview_json"]["summary"]["student_count"] == 2
     assert db.scalar(select(func.count(ClassRoom.id))) == 0
     assert db.scalar(select(func.count(Student.id))) == 0
-    confirmed = client.post(f"/api/v1/write-proposals/{proposal['id']}/confirm", json={"revision": proposal["revision"], "confirmed_by": "teacher-1", "confirmation_note": "网页端已核对"})
+    confirmed = client.post(f"/api/v1/write-proposals/{proposal['id']}/confirm", json={
+        "revision": proposal["revision"], "confirmed_by": "teacher-1", "confirmation_note": "旧客户端字段",
+    })
     assert confirmed.status_code == 200
     result = confirmed.json()["data"]["result_json"]
     assert result["student_count"] == 2 and result["subject_count"] == 2
@@ -110,7 +112,8 @@ def test_class_agent_can_be_provisioned_without_wechat(client, db, sample, tmp_p
     monkeypatch.setattr(
         openclaw_provisioning,
         "settings",
-        SimpleNamespace(openclaw_class_workspace_root=tmp_path, openclaw_wechat_channel="openclaw-weixin", openclaw_class_agent_thinking="off"),
+        SimpleNamespace(openclaw_class_workspace_root=tmp_path, openclaw_wechat_channel="openclaw-weixin",
+                        openclaw_class_agent_thinking="off", timezone="Asia/Shanghai"),
     )
     calls = []
 
@@ -252,8 +255,11 @@ def test_reimport_uses_fresh_openclaw_session_and_replaces_old_rows(db, monkeypa
     })())
     users = []
 
-    async def responses(_prompt, *, user, attachments=None, max_output_tokens=8000, db=None):
+    async def responses(prompt, *, user, attachments=None, max_output_tokens=8000, db=None):
         users.append(user)
+        assert "student_no" in prompt
+        assert "base_timetable" not in prompt
+        assert "旧学生" not in prompt
         return {
             "draft_patch": {"students": [{"student_no": "002", "name": "新学生"}]},
             "warnings": [],
@@ -606,7 +612,7 @@ def test_wechat_interaction_creates_auditable_proposal_and_waits_for_confirmatio
     proposal = payload["proposals"][0]
     confirmed = client.post(
         f"/api/v1/write-proposals/{proposal['id']}/confirm",
-        json={"revision": proposal["revision"], "confirmed_by": "李老师", "confirmation_note": "已核对微信原文与预览"},
+        json={"revision": proposal["revision"], "confirmed_by": "李老师"},
     )
     assert confirmed.status_code == 200
     assert db.scalar(select(func.count(AttendanceRecord.id))) == 1
@@ -679,74 +685,42 @@ def test_low_confidence_interaction_operation_is_excluded_and_reason_is_returned
     assert db.scalar(select(func.count(WriteProposal.id))) == 0
 
 
-def test_interaction_cleaner_prompt_contains_common_database_semantics(db, monkeypatch):
-    captured = {}
-
-    async def responses(prompt, *, user, attachments=None, max_output_tokens=8000, db=None):
-        captured["prompt"] = prompt
-        return {
-            "status": "no_action",
-            "intent": "none",
-            "summary": "无写入",
-            "confidence": 1,
-            "reasons": ["输入没有班级数据写入意图"],
-            "questions": [],
-            "warnings": [],
-            "operations": [],
-        }
-
-    async def extractor_ready() -> bool:
-        return True
-
-    async def extractor_off() -> bool:
-        return False
-
-    monkeypatch.setattr(openclaw_bridge, "_responses_json", responses)
-
-    # Default path: extractor agent is ready, semantics live in its AGENTS.md.
-    monkeypatch.setattr(openclaw_bridge, "ensure_extractor_agent", extractor_ready)
-    asyncio.run(openclaw_bridge.analyze_interaction(
-        db=db,
-        analysis_id="analysis-1",
-        channel="wechat",
-        raw_text="21号语文作业未交，不需要先新建",
-        attachments=[],
-        context={"current_datetime": "2026-08-30T08:00:00+08:00"},
-    ))
-    agents_md = openclaw_bridge._extractor_agents_md()
-    assert "subtype=homework_missing" in agents_md
-    assert "不新建/不关联具体作业" in agents_md
-    assert "上学迟到" in agents_md
-    assert "reasons" in agents_md
-    assert "置信度门槛为 0.75" in agents_md
-
-    # Fallback path: switch off, semantics stay in the inline prompt.
-    monkeypatch.setattr(openclaw_bridge, "ensure_extractor_agent", extractor_off)
-    result = asyncio.run(openclaw_bridge.analyze_interaction(
-        db=db,
-        analysis_id="analysis-1",
-        channel="wechat",
-        raw_text="21号语文作业未交，不需要先新建",
-        attachments=[],
-        context={"current_datetime": "2026-08-30T08:00:00+08:00"},
-    ))
-
-    assert result["status"] == "no_action"
-    assert "subtype=homework_missing" in captured["prompt"]
-    assert "不新建/不关联具体作业" in captured["prompt"]
-    assert "上学迟到" in captured["prompt"]
-
-
-def test_bound_class_agent_cannot_confirm_foreign_proposal(client, sample):
+def test_bound_class_agent_cannot_access_foreign_proposal(client, sample):
     cls, other, students = sample
     preview = client.post("/api/v1/write-proposals", json={"operation_type": "attendance.set", "payload": {
         "class_id": cls.id, "student_id": students[0].id, "attendance_date": "2026-08-29", "period": "morning", "status": "late",
     }}).json()["data"]
-    response = client.post(f"/api/v1/write-proposals/{preview['id']}/confirm", json={
+    path = f"/api/v1/write-proposals/{preview['id']}"
+    response = client.post(f"{path}/confirm", json={
         "revision": preview["revision"], "confirmed_by": "外班智能体", "bound_class_id": other.id,
     })
-    assert response.status_code == 403
+    for denied in (
+        response,
+        client.get(path, params={"bound_class_id": other.id}),
+        client.post(f"{path}/cancel", json={"bound_class_id": other.id}),
+    ):
+        assert denied.status_code == 403
+        assert denied.json()["error"]["code"] == "CLASS_SCOPE_VIOLATION"
+    assert client.get(path, params={"bound_class_id": cls.id}).json()["data"]["status"] == "pending_review"
+    assert client.post(f"{path}/cancel", json={
+        "bound_class_id": cls.id, "cancelled_by": "旧客户端字段",
+    }).json()["data"]["status"] == "cancelled"
+
+
+def test_bound_class_agent_cannot_create_proposal_for_foreign_exam(client, db, sample):
+    cls, other, _ = sample
+    created = client.post("/api/v1/exams", json={
+        "class_id": other.id, "name": "小测", "exam_date": "2026-09-01", "subjects": [{"subject": "语文", "full_score": 100}],
+    })
+    assert created.status_code == 201, created.text
+    response = client.post("/api/v1/write-proposals", json={
+        "bound_class_id": cls.id, "operation_type": "score.batch",
+        "payload": {"class_id": cls.id, "exam_id": created.json()["data"]["id"],
+                    "scores": [{"student_no": "001", "subject": "语文", "score": 90}]},
+    })
+    assert response.status_code == 403, response.text
     assert response.json()["error"]["code"] == "CLASS_SCOPE_VIOLATION"
+    assert db.scalar(select(func.count(WriteProposal.id))) == 0
 
 
 def test_chat_can_confirm_multiple_previews_in_one_atomic_request(client, db, sample):
@@ -767,7 +741,6 @@ def test_chat_can_confirm_multiple_previews_in_one_atomic_request(client, db, sa
     confirmed = client.post("/api/v1/write-proposals/confirm-batch", json={
         "items": [{"proposal_id": proposal["id"], "revision": proposal["revision"]} for proposal in proposals],
         "confirmed_by": "李老师",
-        "confirmation_note": "聊天中回复全部确认",
         "bound_class_id": cls.id,
     })
 

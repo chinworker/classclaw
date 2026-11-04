@@ -27,12 +27,14 @@ api_router.include_router(auth_admin.public_router)
 # 终端用设备凭据鉴权，不走用户会话，因此挂在受保护路由之外。
 api_router.include_router(classroom_terminal.router)
 api_router.include_router(classroom_streaming.public_router)
+# These authenticated operations do not write SQLite and must not queue behind its writer.
+api_router.include_router(ai_tasks.router)
+api_router.include_router(admin_console.session_cleanup_router)
 
 protected_router = APIRouter(dependencies=[Depends(require_authenticated)])
 protected_router.include_router(auth_admin.account_router)
 protected_router.include_router(auth_admin.admin_router)
 protected_router.include_router(admin_console.router)
-protected_router.include_router(ai_tasks.router)
 protected_router.include_router(agent_chat.router)
 protected_router.include_router(agent_memory.router)
 protected_router.include_router(approval.router)

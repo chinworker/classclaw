@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.core.errors import AppError
-from app.database import get_db
+from app.database import get_db, get_read_db
 from app.models.entities import DeletionOperation, Student, User, UserSession
 from app.services.accounts import user_class_id
 from app.utils.time import now
@@ -55,7 +55,7 @@ def _require_no_pending_deletion(request: Request, target_type: str, target_id: 
                        {"target_type": target_type, "target_id": target_id})
 
 
-def require_authenticated(request: Request, db: Session = Depends(get_db)) -> Principal:
+def _authenticate(request: Request, db: Session, *, allow_pending_deletion: bool = False) -> Principal:
     supplied = request.headers.get("Authorization", "")
     if not supplied.startswith("Bearer "):
         raise AppError("UNAUTHORIZED", "请先登录", 401)
@@ -78,17 +78,30 @@ def require_authenticated(request: Request, db: Session = Depends(get_db)) -> Pr
         raise AppError("UNAUTHORIZED", "登录会话已过期或账号已停用", 401)
     principal = Principal(user.id, user.username, user.role, user_class_id(db, user.id), user=user)
     request.state.principal = principal
-    # Let an existing run be cancelled and let the user log out while deletion waits.
-    route_name = getattr(request.scope.get("route"), "name", None)
-    if route_name not in {"logout", "ai_task_cancel"}:
+    if not allow_pending_deletion:
         _require_no_pending_deletion(request, "user", user.id, db)
     return principal
+
+
+def require_authenticated(request: Request, db: Session = Depends(get_db)) -> Principal:
+    # Logout still revokes sessions while a pending deletion is waiting to finish.
+    route_name = getattr(request.scope.get("route"), "name", None)
+    return _authenticate(request, db, allow_pending_deletion=route_name == "logout")
+
+
+def require_cancel_authentication(request: Request, db: Session = Depends(get_read_db)) -> Principal:
+    # An in-flight task must remain cancellable while deletion waits for it.
+    return _authenticate(request, db, allow_pending_deletion=True)
 
 
 def require_admin(principal: Principal = Depends(require_authenticated)) -> Principal:
     if not principal.is_admin:
         raise AppError("ADMIN_REQUIRED", "仅管理员可以执行此操作", 403)
     return principal
+
+
+def require_admin_read(request: Request, db: Session = Depends(get_read_db)) -> Principal:
+    return require_admin(_authenticate(request, db))
 
 
 def principal_from_request(request: Request) -> Principal:

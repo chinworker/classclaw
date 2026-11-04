@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from typing import Any, get_args
 
 from sqlalchemy.orm import Session
@@ -58,11 +57,11 @@ async def agent_thinking_options(agent_id: str, *, configured_default: str | Non
 
 async def class_thinking_options(db: Session, class_id: str) -> dict[str, Any]:
     binding = openclaw_provisioning.get_binding(db, class_id)
-    if not binding.openclaw_agent_id:
-        raise AppError("OPENCLAW_AGENT_REQUIRED", "本班专属 Agent 尚未创建", 409)
+    agent_id = openclaw_provisioning.require_bound_agent_id(binding)
+    configured = binding.thinking_default
     async with suspend_writer(db):
-        profile = await agent_thinking_options(binding.openclaw_agent_id, configured_default=binding.thinking_default)
-    return {**profile, "class_default_level": binding.thinking_default, "system_default_level": settings.openclaw_class_agent_thinking}
+        profile = await agent_thinking_options(agent_id, configured_default=configured)
+    return {**profile, "class_default_level": configured, "system_default_level": settings.openclaw_class_agent_thinking}
 
 
 async def resolve_thinking_level(agent_id: str, requested: str | None, *, configured_default: str | None = None) -> str:
@@ -78,37 +77,23 @@ async def resolve_thinking_level(agent_id: str, requested: str | None, *, config
     return level
 
 
+async def validate_class_thinking_default(agent_id: str, level: str | None) -> str:
+    if level is None:
+        return settings.openclaw_class_agent_thinking
+    # Recheck current capabilities when saving an explicit level.
+    return await resolve_thinking_level(agent_id, level)
+
+
 async def update_class_thinking(db: Session, class_id: str, level: str | None, *, operator_id: str | None) -> dict[str, Any]:
     binding = openclaw_provisioning.get_binding(db, class_id)
-    if not binding.openclaw_agent_id:
-        raise AppError("OPENCLAW_AGENT_REQUIRED", "本班专属 Agent 尚未创建", 409)
+    agent_id = openclaw_provisioning.require_bound_agent_id(binding)
     async with suspend_writer(db):
         snapshot = await openclaw_provisioning.admin_rpc("config.get")
-        # Re-read Gateway capabilities on every save; a stale UI must not select an unsupported level.
-        if level is not None:
-            await resolve_thinking_level(binding.openclaw_agent_id, level)
-        rows = list(((snapshot.get("config") or {}).get("agents") or {}).get("list") or [])
-        target = level if level is not None else settings.openclaw_class_agent_thinking
-        found = False
-        updated = []
-        for row in rows:
-            if isinstance(row, dict) and row.get("id") == binding.openclaw_agent_id:
-                updated.append({**row, "thinkingDefault": target})
-                found = True
-            else:
-                updated.append(row)
-        if not found:
-            raise AppError("OPENCLAW_AGENT_NOT_FOUND", "OpenClaw 配置中找不到本班 Agent", 409)
-        restart = updated != rows
-        if restart:
-            params = {"raw": json.dumps({"agents": {"list": updated}}, ensure_ascii=False), "replacePaths": ["agents.list"],
-                      "note": "Update ClassClaw class thinking default", "restartDelayMs": 500}
-            if snapshot.get("hash"):
-                params["baseHash"] = snapshot["hash"]
-            await openclaw_provisioning.admin_rpc("config.patch", params)
-    before = binding.thinking_default
+        target = await validate_class_thinking_default(agent_id, level)
+        restart = await openclaw_provisioning.patch_class_agent_config(
+            snapshot, agent_id, {"thinkingDefault": target}, note="Update ClassClaw class thinking default",
+        )
     binding.thinking_default = level
-    audit(db, "update_agent_thinking", "class_agent_binding", binding.id, operator_id=operator_id,
-          before={"thinking_default": before}, after={"thinking_default": level})
+    audit(db, "update_agent_thinking", "class_agent_binding", binding.id, operator_id=operator_id)
     db.commit()
     return {"class_default_level": level, "configured_default_level": target, "restart_requested": restart}

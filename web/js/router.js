@@ -1,6 +1,5 @@
 // Hash 路由器：#/path?query。支持角色守卫与“需要班级”守卫。
 
-import { saveRoute } from "./state.js";
 
 let routes = [];
 let current = { path: "", query: {}, params: {} };
@@ -72,7 +71,6 @@ export async function dispatch() {
     }
   }
   current = { path, query, params: found.params, hash: location.hash };
-  saveRoute(location.hash);
   if (hooks.resolve) await hooks.resolve(found.route, current);
 }
 

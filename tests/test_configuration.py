@@ -148,9 +148,9 @@ def test_public_app_config_exposes_only_browser_safe_values(client):
     assert response.status_code == 200
     assert response.headers["cache-control"] == "no-store, max-age=0"
     data = response.json()["data"]
-    assert data["config_hash"] == settings.config_hash
+    assert "config_hash" not in data and "agent_chat" not in data
     assert data["brand"]["name"] == settings.web.brand.name
-    assert data["features"] == settings.features.model_dump()
+    assert data["features"] == settings.features.model_dump(include={"file_analysis", "event_ai", "wechat_binding"})
     assert data["runtime"] == {"timezone": settings.timezone}
     assert data["semester_defaults"] == current_or_next_semester().as_json()
     assert "server" not in data

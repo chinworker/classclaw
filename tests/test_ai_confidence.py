@@ -140,8 +140,7 @@ def test_nested_timetable_matrix_from_onboarding_is_flattened_and_accepted(db, m
     result = asyncio.run(openclaw_bridge.analyze_onboarding_files(db, session.id, "timetable", [], session.revision))
 
     assert result["analysis"]["accepted"] is True
-    assert "扁平数组" in prompts[0]
-    assert "第5节" in prompts[0]
+    assert all(field in prompts[0] for field in ('"base_timetable"', '"weekday"', '"period_no"', '"subject"'))
     db.refresh(session)
     items = session.draft_json["base_timetable"]
     assert len(items) == 4

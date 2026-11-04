@@ -1,4 +1,4 @@
-// 内存状态 + 允许写入 sessionStorage 的少量内容（token、当前页、UI 偏好）。
+// 内存状态；只有登录令牌写入 sessionStorage。
 // 业务数据一律不落地，刷新后从 API 重新获取。
 
 import { api, getToken, setToken } from "./api.js";
@@ -6,27 +6,14 @@ import { agentChatStore } from "./agentChatStore.js";
 import { compareStudents } from "./studentOrder.js";
 
 const TOKEN_KEY = "classclaw.session.token";
-const ROUTE_KEY = "classclaw.ui.route";
-const PREF_KEY = "classclaw.ui.prefs";
 
 export const state = {
   user: null,          // /auth/me 返回的用户对象
   classId: null,       // 当前班主任班级；管理员通常为 null
   classInfo: null,     // GET /classes/{id} 的缓存（内存）
-  openclaw: null,      // /openclaw/status 缓存（内存）
   students: [],        // 当前班学生列表缓存（内存，供座位/课表/查询复用）
   subjects: [],        // 当前班科目列表（由课表自动归纳）
-  prefs: loadPrefs(),
 };
-
-function loadPrefs() {
-  try { return JSON.parse(sessionStorage.getItem(PREF_KEY) || "{}"); } catch { return {}; }
-}
-
-export function savePrefs(patch) {
-  state.prefs = { ...state.prefs, ...patch };
-  sessionStorage.setItem(PREF_KEY, JSON.stringify(state.prefs));
-}
 
 export function loadToken() { return sessionStorage.getItem(TOKEN_KEY) || null; }
 
@@ -38,7 +25,6 @@ export function saveSession(token) {
   if (token) sessionStorage.setItem(TOKEN_KEY, token); else sessionStorage.removeItem(TOKEN_KEY);
 }
 
-export function saveRoute(hash) { sessionStorage.setItem(ROUTE_KEY, hash); }
 
 export async function refreshIdentity() {
   const me = await api("/auth/me");
@@ -71,12 +57,11 @@ export async function refreshSubjects({ force = false } = {}) {
   return state.subjects;
 }
 
-export async function refreshOpenclaw({ force = false } = {}) {
-  state.openclaw = await api(`/openclaw/status${force ? "?refresh=true" : ""}`);
-  return state.openclaw;
+export function refreshOpenclaw({ force = false } = {}) {
+  return api(`/openclaw/status${force ? "?refresh=true" : ""}`);
 }
 
-export function clearClassContext() {
+function clearClassContext() {
   state.classId = null;
   state.classInfo = null;
   state.students = [];
@@ -86,6 +71,5 @@ export function clearClassContext() {
 export function clearSession() {
   saveSession(null);
   state.user = null;
-  state.openclaw = null;
   clearClassContext();
 }

@@ -1,6 +1,6 @@
 # Windows 教室终端开发交接 Prompt
 
-以下正文保留 Windows 客户端的协议与验收要求。客户端现已在 [`classroom-mate/`](../classroom-mate/README.md) 实现，产品名为 **Classroom Mate**；后续智能体应维护该实现，不要另建重复客户端。已完成跨平台 Windows x64 构建、协议回归与合成媒体联调，真实 Windows 硬件仍待现场验收。
+以下正文是历史开发任务，保留供查阅当时的要求。客户端现已在 [`classroom-mate/`](../classroom-mate/README.md) 实现，产品名为 **Classroom Mate**。当前协议以[服务端实现](classroom-monitoring.md)为准。已完成跨平台 Windows x64 构建、协议回归与合成媒体联调，真实 Windows 硬件仍待现场验收。
 
 ---
 

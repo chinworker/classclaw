@@ -9,7 +9,7 @@ from typing import ClassVar
 from app.config import settings
 from app.models.entities import Attachment, AttachmentLink
 from app.services import agent_models, agent_thinking, openclaw_bridge, openclaw_provisioning, operations
-from tests.helpers import make_binding, teacher_for_class
+from tests.helpers import FakeGateway, make_binding, teacher_for_class
 
 
 def test_web_chat_saves_file_and_targets_class_agent(client, db, sample, tmp_path, monkeypatch):
@@ -174,8 +174,11 @@ def test_gateway_chat_uses_persistent_class_session_and_prestaged_files(db, tmp_
     assert captured["json"]["model"] == "openclaw/class-agent-web"
     assert captured["json"]["user"].endswith(":97d646a7-153d-4370-aa17-bc49d3ba5593")
     assert captured["json"]["input"][0]["content"][1]["type"] == "input_file"
-    assert "attachment-web-1" in captured["json"]["instructions"]
-    assert "不要再次调用 classclaw_upload_file" in captured["json"]["instructions"]
+    instructions = captured["json"]["instructions"]
+    metadata = next(line.partition("=")[2] for line in instructions.splitlines() if line.startswith("web_ingress="))
+    assert json.loads(metadata) == {"channel": "web", "external_message_id": "web:97d646a7-153d-4370-aa17-bc49d3ba5593:message-1",
+                                   "sender_id": "teacher-1", "requested_by": "teacher", "attachment_ids": ["attachment-web-1"]}
+    assert "classclaw_upload_file" in instructions
     assert captured["headers"]["x-openclaw-message-channel"] == "web"
     assert captured["headers"]["x-openclaw-model"] == "provider/vision-model"
     assert captured["thinking"]["level"] == "high"
@@ -185,30 +188,20 @@ def test_gateway_chat_uses_persistent_class_session_and_prestaged_files(db, tmp_
 def test_class_agent_models_are_scoped_validated_and_persisted(client, db, sample, tmp_path, monkeypatch):
     cls = sample[0]
     binding = make_binding(db, cls.id, tmp_path / "workspace", openclaw_agent_id="class-agent-web", agent_name="ClassClaw 助理")
-    patches = []
     runtime_rows = [{"id": binding.openclaw_agent_id, "workspace": binding.workspace_path}]
-
-    async def fake_rpc(method, params=None):
-        if method == "config.get":
-            return {
-                "hash": "models-hash",
-                "config": {"agents": {"defaults": {"model": {"primary": "provider/text-model"}}, "list": runtime_rows}},
-            }
-        if method == "models.list":
-            return {
-                "models": [
-                    {"id": "text-model", "name": "Text", "provider": "provider", "input": ["text"], "available": True},
-                    {"id": "vision-model", "name": "Vision", "provider": "provider", "input": ["text", "image"], "available": True},
-                ]
-            }
-        if method == "models.authStatus":
-            return {"providers": [{"provider": "openai", "status": "static"}]}
-        if method == "config.patch":
-            patches.append(params)
-            return {"ok": True}
-        raise AssertionError(method)
-
-    monkeypatch.setattr(openclaw_provisioning, "admin_rpc", fake_rpc)
+    gateway = FakeGateway({
+        "config.get": {
+            "hash": "models-hash",
+            "config": {"agents": {"defaults": {"model": {"primary": "provider/text-model"}}, "list": runtime_rows}},
+        },
+        "models.list": {"models": [
+            {"id": "text-model", "name": "Text", "provider": "provider", "input": ["text"], "available": True},
+            {"id": "vision-model", "name": "Vision", "provider": "provider", "input": ["text", "image"], "available": True},
+        ]},
+        "models.authStatus": {"providers": [{"provider": "openai", "status": "static"}]},
+        "config.patch": {"ok": True},
+    })
+    monkeypatch.setattr(openclaw_provisioning, "admin_rpc", gateway)
 
     settings_response = client.get(f"/api/v1/classes/{cls.id}/agent-chat/models")
     assert settings_response.status_code == 200
@@ -232,7 +225,8 @@ def test_class_agent_models_are_scoped_validated_and_persisted(client, db, sampl
         "provider/vision-model",
         "openai/gpt-4o-transcribe",
     )
-    patched = json.loads(patches[-1]["raw"])
+    patch, = (params for method, params in gateway.calls if method == "config.patch")
+    patched = json.loads(patch["raw"])
     assert patched["agents"]["list"][0]["model"] == "provider/text-model"
 
     invalid = client.patch(

@@ -5,8 +5,6 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from app.schemas.common import ORMModel
-
 
 class ClassCreate(BaseModel):
     name: str = Field(min_length=1, max_length=100)
@@ -341,12 +339,6 @@ class InteractionAnalyzeCreate(BaseModel):
     idempotency_key: str | None = Field(default=None, max_length=200)
 
 
-class OnboardingAnalyzeText(BaseModel):
-    target_section: Literal["class_info", "subjects", "students", "timetable", "all"]
-    expected_revision: int = Field(ge=1)
-    text: str = Field(min_length=1, max_length=100_000)
-
-
 class StudentEventAnalyzeRequest(BaseModel):
     student_id: str
     event_date: date
@@ -357,10 +349,6 @@ class StudentEventAnalyzeRequest(BaseModel):
 class AttachmentLinkCreate(BaseModel):
     entity_type: str
     entity_id: str
-
-
-class ORMOut(ORMModel):
-    id: str
 
 
 class EvidenceItem(BaseModel):
@@ -381,12 +369,12 @@ class WriteProposalCreate(BaseModel):
     idempotency_key: str | None = None
     expires_in_minutes: int = Field(default=30, ge=1, le=1440)
     onboarding_session_id: str | None = None
+    bound_class_id: str | None = None
 
 
 class WriteProposalConfirm(BaseModel):
     revision: int = Field(ge=1)
     confirmed_by: str = Field(min_length=1, max_length=200)
-    confirmation_note: str | None = Field(default=None, max_length=500)
     bound_class_id: str | None = None
 
 
@@ -398,7 +386,6 @@ class WriteProposalConfirmItem(BaseModel):
 class WriteProposalBatchConfirm(BaseModel):
     items: list[WriteProposalConfirmItem] = Field(min_length=1, max_length=50)
     confirmed_by: str = Field(min_length=1, max_length=200)
-    confirmation_note: str | None = Field(default=None, max_length=500)
     bound_class_id: str | None = None
 
 

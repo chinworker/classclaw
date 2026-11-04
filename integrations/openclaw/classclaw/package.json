@@ -5,7 +5,7 @@
   "private": true,
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "plugin:build": "npm run build",
+    "plugin:sync-tools": "npm run build && node ./scripts/validate-plugin.mjs --write-tools",
     "plugin:validate": "npm run build && node ./scripts/validate-plugin.mjs",
     "test": "vitest run --config ./vitest.config.ts"
   },

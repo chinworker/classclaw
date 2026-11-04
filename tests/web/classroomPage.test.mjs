@@ -1,6 +1,6 @@
 import test, { beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { installDom, tick, response } from "./dom.mjs";
+import { findButton, installDom, tick, response } from "./dom.mjs";
 
 installDom();
 const page = await import("../../web/js/pages/classroom.js");
@@ -76,9 +76,6 @@ async function mountPage() {
   return mount;
 }
 
-function button(mount, text) {
-  return mount.querySelectorAll("button").find((node) => node.textContent === text);
-}
 
 function body(path, method = "POST") {
   const call = calls.find((row) => row.path === path && (row.options.method || "GET") === method);
@@ -134,7 +131,7 @@ test("离页期间创建成功的观看租约立即释放", async () => {
   globalThis.fetch = (path, options) => path.endsWith("/classroom/media-sessions")
     ? new Promise((resolve) => { finish = resolve; }) : fetch(path, options);
   const mount = await mountPage();
-  button(mount, "开始观看").click();
+  findButton(mount, "开始观看").click();
   await tick();
   page.dispose();
   finish(response(leasePayload, 201));
@@ -146,11 +143,11 @@ test("离页期间创建成功的观看租约立即释放", async () => {
 test("已有观看租约时不能重复申请并遗留旧租约", async () => {
   statusPayload = status({ camera: CAMERA });
   const mount = await mountPage();
-  button(mount, "开始观看").click();
+  findButton(mount, "开始观看").click();
   await tick();
   await tick();
-  assert.equal(button(mount, "开始观看").disabled, true);
-  button(mount, "开始观看").click();
+  assert.equal(findButton(mount, "开始观看").disabled, true);
+  findButton(mount, "开始观看").click();
   await tick();
   assert.equal(calls.filter((row) => row.path.endsWith("/classroom/media-sessions") && row.options.method === "POST").length, 1);
 });
@@ -159,9 +156,9 @@ test("未配对时只能生成一次性配对码", async () => {
   statusPayload = status({ device: null });
   const mount = await mountPage();
   assert.match(mount.textContent, /本班还没有教室终端/);
-  assert.equal(button(mount, "生成配对码") !== undefined, true);
+  assert.equal(findButton(mount, "生成配对码") !== undefined, true);
 
-  button(mount, "生成配对码").click();
+  findButton(mount, "生成配对码").click();
   await tick();
   await tick();
   assert.equal(calls.filter((row) => row.path.endsWith("/classroom/pairing")).length, 1);
@@ -173,8 +170,8 @@ test("终端离线时音量与测试按钮禁用", async () => {
   statusPayload = status({ device: onlineDevice({ online: false, last_seen_at: null }) });
   const mount = await mountPage();
   assert.match(mount.textContent, /教室终端离线/);
-  assert.equal(button(mount, "下发音量").disabled, true);
-  assert.equal(button(mount, "显示测试").disabled, true);
+  assert.equal(findButton(mount, "下发音量").disabled, true);
+  assert.equal(findButton(mount, "显示测试").disabled, true);
 });
 
 test("展示终端上报的设备清单与能力警告", async () => {
@@ -190,7 +187,7 @@ test("下发输出设备设置只提交已选择的项", async () => {
   const mount = await mountPage();
   const display = mount.querySelectorAll("select").find((node) => node.getAttribute("aria-label") === "目标显示屏");
   display.value = "外接投影";
-  button(mount, "下发输出设备设置").click();
+  findButton(mount, "下发输出设备设置").click();
   await tick();
   await tick();
   assert.deepEqual(body("/api/v1/classes/class-a/classroom/device/output"), { display_name: "外接投影" });
@@ -201,12 +198,12 @@ test("音量与测试指令走同一批接口并提示以回执为准", async ()
   const slider = mount.querySelectorAll("input").find((node) => node.getAttribute("aria-label") === "教室系统音量");
   slider.value = "55";
   slider.dispatchEvent(new Event("input"));
-  button(mount, "下发音量").click();
+  findButton(mount, "下发音量").click();
   await tick();
   await tick();
   assert.deepEqual(body("/api/v1/classes/class-a/classroom/volume"), { volume: 55, mute: false });
 
-  button(mount, "显示测试").click();
+  findButton(mount, "显示测试").click();
   await tick();
   await tick();
   assert.deepEqual(body("/api/v1/classes/class-a/classroom/device/test"), { kind: "display" });
@@ -224,7 +221,7 @@ test("连接摄像头提交接入路径，更换时带上当前配置版本", as
   kindSelect.value = "windows_device";
   const identifier = mount.querySelectorAll("input").find((node) => node.getAttribute("aria-label") === "设备标识");
   identifier.value = "usb-cam-1";
-  button(mount, "连接摄像头").click();
+  findButton(mount, "连接摄像头").click();
   await tick();
   await tick();
   const sent = body("/api/v1/classes/class-a/classroom/camera");
@@ -237,14 +234,14 @@ test("连接摄像头提交接入路径，更换时带上当前配置版本", as
   statusPayload = status({ camera: CAMERA });
   const remount = await mountPage();
   assert.match(remount.textContent, /配置版本 2/);
-  assert.equal(button(remount, "更换摄像头") !== undefined, true);
+  assert.equal(findButton(remount, "更换摄像头") !== undefined, true);
   const remountPath = remount.querySelectorAll("select").find((node) => node.getAttribute("aria-label") === "接入路径");
   const remountKind = remount.querySelectorAll("select").find((node) => node.getAttribute("aria-label") === "来源类型");
   remountPath.value = "windows_capture";
   remountKind.value = "windows_device";
   const remountIdentifier = remount.querySelectorAll("input").find((node) => node.getAttribute("aria-label") === "设备标识");
   remountIdentifier.value = "usb-cam-2";
-  button(remount, "更换摄像头").click();
+  findButton(remount, "更换摄像头").click();
   await tick();
   await tick();
   const replaced = calls.filter((row) => row.path.endsWith("/classroom/camera") && row.options.method === "POST").pop();
@@ -254,13 +251,13 @@ test("连接摄像头提交接入路径，更换时带上当前配置版本", as
 test("没有摄像头时不提供观看入口", async () => {
   const mount = await mountPage();
   assert.match(mount.textContent, /尚未连接摄像头/);
-  assert.equal(button(mount, "开始观看"), undefined);
+  assert.equal(findButton(mount, "开始观看"), undefined);
 });
 
 test("观看会话明确说明未接入媒体转发，并不伪造画面", async () => {
   statusPayload = status({ camera: CAMERA, viewers: 1 });
   const mount = await mountPage();
-  button(mount, "开始观看").click();
+  findButton(mount, "开始观看").click();
   await tick();
   await tick();
   const sent = body("/api/v1/classes/class-a/classroom/media-sessions");
@@ -274,17 +271,17 @@ test("观看会话明确说明未接入媒体转发，并不伪造画面", async
 test("停止观看与离页都会释放本人会话", async () => {
   statusPayload = status({ camera: CAMERA, viewers: 1 });
   const mount = await mountPage();
-  button(mount, "开始观看").click();
+  findButton(mount, "开始观看").click();
   await tick();
   await tick();
 
-  button(mount, "停止观看").click();
+  findButton(mount, "停止观看").click();
   await tick();
   await tick();
   const released = calls.filter((row) => row.path.endsWith("/media-sessions/sess-12345678") && row.options.method === "DELETE");
   assert.equal(released.length, 1);
 
-  button(mount, "开始观看").click();
+  findButton(mount, "开始观看").click();
   await tick();
   await tick();
   page.dispose();

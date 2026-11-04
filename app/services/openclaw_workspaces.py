@@ -30,7 +30,7 @@ def customized_files(workspace: Path) -> set[str]:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return set()
-    return {str(name) for name in value if name in EDITABLE_FILES} if isinstance(value, list) else set()
+    return {name for name in value if isinstance(name, str) and name in EDITABLE_FILES} if isinstance(value, list) else set()
 
 
 def _write_customized(workspace: Path, names: set[str]) -> None:
@@ -44,17 +44,19 @@ def _atomic_write(target: Path, content: str) -> None:
     temporary.replace(target)
 
 
-def ensure_defaults(workspace_path: str | Path, defaults: dict[str, str]) -> None:
+def ensure_defaults(workspace_path: str | Path, defaults: dict[str, str], *, force: bool = False) -> None:
     """Write managed defaults without replacing files customized in Agent Studio."""
     workspace = Path(workspace_path).expanduser().resolve()
     workspace.mkdir(parents=True, exist_ok=True)
-    customized = customized_files(workspace)
+    customized = set() if force else customized_files(workspace)
     for name, content in defaults.items():
-        if name not in EDITABLE_FILES or name in customized:
+        if name not in EDITABLE_FILES and name != ".classclaw-agent.json":
             continue
         target = workspace / name
-        if not target.is_file() or target.read_text(encoding="utf-8") != content:
+        if not target.is_file() or (name not in customized and target.read_text(encoding="utf-8") != content):
             _atomic_write(target, content)
+    if force:
+        _write_customized(workspace, set())
 
 
 def snapshot(workspace_path: str | Path, *, defaults: dict[str, str] | None = None) -> dict[str, Any]:
@@ -86,6 +88,7 @@ def update_file(
     filename: str,
     content: str,
     expected_sha256: str | None,
+    entity_type: str = "openclaw_agent",
 ) -> dict[str, Any]:
     if filename not in EDITABLE_FILES:
         raise AppError("WORKSPACE_FILE_NOT_ALLOWED", "该工作区文件不允许通过管理端修改", 422, {"filename": filename})
@@ -103,14 +106,7 @@ def update_file(
     customized.add(filename)
     _write_customized(workspace, customized)
     digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
-    audit(
-        db,
-        "update_workspace_file",
-        "openclaw_agent",
-        agent_id,
-        operator_type="admin",
-        after={"filename": filename, "sha256": digest, "characters": len(content)},
-    )
+    audit(db, "update_workspace_file", entity_type, agent_id, operator_type="admin")
     db.commit()
     return {"name": filename, "sha256": digest, "characters": len(content), "customized": True, "exists": True}
 
@@ -122,6 +118,7 @@ def reset_file(
     workspace_path: str | Path,
     filename: str,
     defaults: dict[str, str] | None,
+    entity_type: str = "openclaw_agent",
 ) -> dict[str, Any]:
     if filename not in EDITABLE_FILES:
         raise AppError("WORKSPACE_FILE_NOT_ALLOWED", "该工作区文件不允许通过管理端修改", 422, {"filename": filename})
@@ -134,14 +131,7 @@ def reset_file(
     customized.discard(filename)
     _write_customized(workspace, customized)
     digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
-    audit(
-        db,
-        "reset_workspace_file",
-        "openclaw_agent",
-        agent_id,
-        operator_type="admin",
-        after={"filename": filename, "sha256": digest},
-    )
+    audit(db, "reset_workspace_file", entity_type, agent_id, operator_type="admin")
     db.commit()
     return {
         "name": filename,

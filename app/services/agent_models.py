@@ -34,6 +34,7 @@ _AUDIO_MIMES = {
     "audio/x-wav",
 }
 _AUDIO_SUFFIXES = {".aac", ".flac", ".m4a", ".mp3", ".mp4", ".oga", ".ogg", ".wav", ".webm"}
+_MODEL_SETTINGS_FIELDS = ("main_model", "image_model", "speech_model", "thinking_default")
 _SPEECH_DEFAULTS = {
     "deepgram": "nova-3",
     "elevenlabs": "scribe_v2",
@@ -166,50 +167,70 @@ def _speech_models(config: dict[str, Any], auth_payload: Any) -> list[dict[str, 
     ]
 
 
-def _agent_row(config: dict[str, Any], agent_id: str) -> dict[str, Any] | None:
-    for row in (config.get("agents") or {}).get("list") or []:
-        if isinstance(row, dict) and str(row.get("id") or row.get("agentId")) == agent_id:
-            return row
-    return None
+async def _gateway_model_settings(agent_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    snapshot, models_payload, auth_payload = await asyncio.gather(
+        openclaw_provisioning.admin_rpc("config.get"),
+        openclaw_provisioning.admin_rpc("models.list"),
+        openclaw_provisioning.admin_rpc("models.authStatus"),
+    )
+    config = snapshot.get("config") or {}
+    row = openclaw_provisioning.require_configured_class_agent(config, agent_id)
+    models = _safe_models(models_payload)
+    defaults = (config.get("agents") or {}).get("defaults") or {}
+    return snapshot, {
+        "explicit_main": _model_primary(row.get("model")),
+        "default_main": _model_primary(defaults.get("model")),
+        "models": models,
+        "image_models": [item for item in models if "image" in item["input"]],
+        "speech_models": _speech_models(config, auth_payload),
+    }
 
 
 async def class_agent_model_settings(db: Session, class_id: str) -> dict[str, Any]:
     binding = openclaw_provisioning.get_binding(db, class_id)
-    if not binding.openclaw_agent_id:
-        raise AppError("OPENCLAW_AGENT_REQUIRED", "本班专属 Agent 尚未创建", 409)
+    agent_id = openclaw_provisioning.require_bound_agent_id(binding)
     async with suspend_writer(db):
-        snapshot, models_payload, auth_payload = await asyncio.gather(
-            openclaw_provisioning.admin_rpc("config.get"),
-            openclaw_provisioning.admin_rpc("models.list"),
-            openclaw_provisioning.admin_rpc("models.authStatus"),
-        )
-    config = snapshot.get("config") or {}
-    row = _agent_row(config, binding.openclaw_agent_id)
-    if not row:
-        raise AppError("OPENCLAW_AGENT_NOT_FOUND", "OpenClaw 配置中找不到本班 Agent", 409)
-    models = _safe_models(models_payload)
-    defaults = (config.get("agents") or {}).get("defaults") or {}
-    explicit_main = _model_primary(row.get("model"))
-    default_main = _model_primary(defaults.get("model"))
+        snapshot, choices = await _gateway_model_settings(agent_id)
+    main_model = binding.main_model or choices["explicit_main"]
     return {
-        "agent_id": binding.openclaw_agent_id,
+        "agent_id": agent_id,
         "agent_name": binding.agent_name,
         "configured": {
-            "main_model": binding.main_model or explicit_main,
+            "main_model": main_model,
             "image_model": binding.image_model,
             "speech_model": binding.speech_model,
             "thinking_default": binding.thinking_default,
         },
         "effective": {
-            "main_model": binding.main_model or explicit_main or default_main,
+            "main_model": main_model or choices["default_main"],
             "image_model": binding.image_model or "跟随主模型或 OpenClaw 全局图片模型",
             "speech_model": binding.speech_model or "浏览器语音识别",
         },
-        "models": models,
-        "image_models": [item for item in models if "image" in item["input"]],
-        "speech_models": _speech_models(config, auth_payload),
+        "models": choices["models"],
+        "image_models": choices["image_models"],
+        "speech_models": choices["speech_models"],
         "config_hash": snapshot.get("hash"),
     }
+
+
+def _validate_model_choices(data: ClassAgentModelUpdate, choices: dict[str, Any]) -> None:
+    models = {item["id"]: item for item in choices["models"] if item["available"]}
+    if data.main_model and data.main_model not in models:
+        raise AppError("MODEL_UNAVAILABLE", "所选主模型不在 OpenClaw 当前可用模型中", 422, {"model": data.main_model})
+    if data.image_model:
+        image = models.get(data.image_model)
+        if not image or "image" not in image["input"]:
+            raise AppError("MODEL_UNAVAILABLE", "所选图片模型当前不可用或不支持图片输入", 422, {"model": data.image_model})
+    if data.speech_model:
+        provider = data.speech_model.split("/", 1)[0]
+        configured = any(item["provider"] == provider and item["configured"] and item["available"] for item in choices["speech_models"])
+        if not configured:
+            raise AppError(
+                "MODEL_UNAVAILABLE",
+                "所选语音识别 Provider 尚未配置凭据",
+                422,
+                {"model": data.speech_model, "provider": provider},
+            )
 
 
 async def update_class_agent_models(
@@ -220,74 +241,30 @@ async def update_class_agent_models(
     operator_id: str | None,
 ) -> dict[str, Any]:
     changes = data.model_dump(exclude_unset=True)
-    current = await class_agent_model_settings(db, class_id)
     binding = openclaw_provisioning.get_binding(db, class_id)
-    models = {item["id"]: item for item in current["models"] if item["available"]}
-    if data.main_model and data.main_model not in models:
-        raise AppError("MODEL_UNAVAILABLE", "所选主模型不在 OpenClaw 当前可用模型中", 422, {"model": data.main_model})
-    if data.image_model:
-        image = models.get(data.image_model)
-        if not image or "image" not in image["input"]:
-            raise AppError("MODEL_UNAVAILABLE", "所选图片模型当前不可用或不支持图片输入", 422, {"model": data.image_model})
-    if data.speech_model:
-        provider = data.speech_model.split("/", 1)[0]
-        configured = any(item["provider"] == provider and item["configured"] and item["available"] for item in current["speech_models"])
-        if not configured:
-            raise AppError(
-                "MODEL_UNAVAILABLE",
-                "所选语音识别 Provider 尚未配置凭据",
-                422,
-                {"model": data.speech_model, "provider": provider},
+    agent_id = openclaw_provisioning.require_bound_agent_id(binding)
+    local_main = binding.main_model
+    restart_requested = False
+    async with suspend_writer(db):
+        snapshot, choices = await _gateway_model_settings(agent_id)
+        _validate_model_choices(data, choices)
+        runtime_changes: dict[str, Any] = {}
+        if "main_model" in changes and data.main_model != (local_main or choices["explicit_main"]):
+            if data.thinking_default is not None:
+                raise AppError("THINKING_MODEL_CHANGED", "请先保存主模型，再选择新模型支持的默认思考强度", 422)
+            runtime_changes["model"] = data.main_model
+        if "thinking_default" in changes:
+            runtime_changes["thinkingDefault"] = await agent_thinking.validate_class_thinking_default(agent_id, data.thinking_default)
+        if runtime_changes:
+            restart_requested = await openclaw_provisioning.patch_class_agent_config(
+                snapshot, agent_id, runtime_changes, note=f"Update ClassClaw chat models for {agent_id}",
             )
 
-    restart_requested = False
-    model_changed = "main_model" in changes and data.main_model != current["configured"]["main_model"]
-    if model_changed and data.thinking_default is not None:
-        raise AppError("THINKING_MODEL_CHANGED", "请先保存主模型，再选择新模型支持的默认思考强度", 422)
-    if model_changed or "thinking_default" in changes:
-        async with suspend_writer(db):
-            snapshot = await openclaw_provisioning.admin_rpc("config.get")
-            if data.thinking_default is not None:
-                await agent_thinking.resolve_thinking_level(binding.openclaw_agent_id, data.thinking_default)
-        config = snapshot.get("config") or {}
-        original_rows = list((config.get("agents") or {}).get("list") or [])
-        rows = list(original_rows)
-        found = False
-        for index, row in enumerate(rows):
-            if not isinstance(row, dict) or str(row.get("id") or row.get("agentId")) != binding.openclaw_agent_id:
-                continue
-            updated = dict(row)
-            if model_changed:
-                if data.main_model:
-                    updated["model"] = data.main_model
-                else:
-                    updated.pop("model", None)
-            if "thinking_default" in changes:
-                updated["thinkingDefault"] = data.thinking_default if data.thinking_default is not None else settings.openclaw_class_agent_thinking
-            rows[index] = updated
-            found = True
-            break
-        if not found:
-            raise AppError("OPENCLAW_AGENT_NOT_FOUND", "OpenClaw 配置中找不到本班 Agent", 409)
-        params: dict[str, Any] = {
-            "raw": json.dumps({"agents": {"list": rows}}, ensure_ascii=False),
-            "replacePaths": ["agents.list"],
-            "note": f"Update ClassClaw chat models for {binding.openclaw_agent_id}",
-            "restartDelayMs": 500,
-        }
-        if snapshot.get("hash"):
-            params["baseHash"] = snapshot["hash"]
-        if rows != original_rows:
-            async with suspend_writer(db):
-                await openclaw_provisioning.admin_rpc("config.patch", params)
-            restart_requested = True
-
-    before = {name: getattr(binding, name) for name in ("main_model", "image_model", "speech_model", "thinking_default")}
-    for name in before:
+    for name in _MODEL_SETTINGS_FIELDS:
         if name in changes:
             setattr(binding, name, changes[name])
-    after = {name: getattr(binding, name) for name in before}
-    audit(db, "update_agent_models", "class_agent_binding", binding.id, before=before, after=after, operator_id=operator_id)
+    after = {name: getattr(binding, name) for name in _MODEL_SETTINGS_FIELDS}
+    audit(db, "update_agent_models", "class_agent_binding", binding.id, operator_id=operator_id)
     db.commit()
     return {"configured": after, "restart_requested": restart_requested}
 

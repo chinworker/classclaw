@@ -163,7 +163,6 @@ async def suspend_writer(db: Session) -> AsyncIterator[None]:
 
 
 _READ_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
-_READ_ONLY_ROUTE_NAMES = frozenset({"ai_task_cancel", "openclaw_config_update", "openclaw_sessions_cleanup"})
 
 
 @contextmanager
@@ -209,17 +208,19 @@ def reader_session() -> Generator[Session, None, None]:
         session.close()
 
 
+def get_read_db(request: Request) -> Generator[Session, None, None]:
+    with reader_session() as db:
+        db.info["request_id"] = getattr(request.state, "request_id", None)
+        yield db
+
+
 def get_db(request: Request) -> Generator[Session, None, None]:
-    route = request.scope.get("route")
-    route_name = getattr(route, "name", None)
-    if request.method in _READ_METHODS or route_name in _READ_ONLY_ROUTE_NAMES:
-        with reader_session() as db:
-            db.info["request_id"] = getattr(request.state, "request_id", None)
-            yield db
-    else:
-        with request_writer_session() as db:
-            db.info["request_id"] = getattr(request.state, "request_id", None)
-            yield db
+    if request.method in _READ_METHODS:
+        yield from get_read_db(request)
+        return
+    with request_writer_session() as db:
+        db.info["request_id"] = getattr(request.state, "request_id", None)
+        yield db
 
 
 def init_db(*, strict_usage: bool = False) -> None:

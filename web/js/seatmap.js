@@ -1,13 +1,12 @@
-// SeatMapEditor：讲台在上的教室座位编辑器。
-// onboarding 与正式座位页复用。学生身份由 keyFn 决定（onboarding 用 student_no，正式页用 UUID）。
-
 import { el, clear, toast } from "./util.js";
 import { compareStudents } from "./studentOrder.js";
 
-export function seatMapEditor({ students = [], rows = 5, cols = 6, layout = null, keyFn = (s) => s.id, editable = true, onChange = null }) {
+const SEAT_DRAG_TYPE = "application/x-classclaw-seat";
+
+export function seatMapEditor({ students = [], rows = 5, cols = 6, layout = null }) {
   students = [...students].sort(compareStudents);
-  const byKey = new Map(students.map((s) => [keyFn(s), s]));
-  const initial = normalizeLayout(layout, rows, cols, byKey);
+  const byKey = new Map(students.map((s) => [s.id, s]));
+  const initial = normalizeLayout(layout);
   const model = {
     rows: initial.length || rows,
     cols: initial[0]?.length || cols,
@@ -15,23 +14,12 @@ export function seatMapEditor({ students = [], rows = 5, cols = 6, layout = null
   };
   let selectedPoolKey = null;   // 未排座池中选中的学生
   let selectedSeat = null;      // 选中的座位 {r,c}
-  let container = null;
-  let poolBox = null;
-  let gridBox = null;
-  let sizeInputs = null;
+  const poolBox = el("div", { class: "seat-pool" });
+  const gridBox = el("div", { class: "seat-grid-box" });
+  const sizeInputs = el("div", { class: "seat-toolbar" });
 
-  function normalizeLayout(source, r, c, validKeys) {
-    if (!source || !source.length) return [];
-    return source.map((row) => row.map((key) => (key && validKeys.has(key) ? key : null)));
-  }
-
-  function seatedKeys() {
-    return new Set(model.matrix.flat().filter(Boolean));
-  }
-
-  function unseated() {
-    const seated = seatedKeys();
-    return students.filter((s) => !seated.has(keyFn(s)));
+  function normalizeLayout(source) {
+    return (source ?? []).map((row) => row.map((key) => byKey.has(key) ? key : null));
   }
 
   function validate() {
@@ -49,21 +37,11 @@ export function seatMapEditor({ students = [], rows = 5, cols = 6, layout = null
     return errors;
   }
 
-  function emit() {
-    renderAll();
-    if (onChange) onChange({ rows: model.rows, cols: model.cols, layout: model.matrix.map((row) => [...row]) });
-  }
-
   function setSize(nextRows, nextCols) {
     nextRows = Math.min(30, Math.max(1, nextRows));
     nextCols = Math.min(30, Math.max(1, nextCols));
-    const removed = [];
     const next = Array.from({ length: nextRows }, (_, r) =>
-      Array.from({ length: nextCols }, (_, c) => {
-        const key = model.matrix[r]?.[c] ?? null;
-        if (key && (r >= nextRows || c >= nextCols)) removed.push(byKey.get(key)?.name || key);
-        return r < nextRows && c < nextCols ? key : null;
-      }));
+      Array.from({ length: nextCols }, (_, c) => model.matrix[r]?.[c] ?? null));
     // 收集被裁掉的学生提示（缩小行列时）
     if (nextRows < model.rows || nextCols < model.cols) {
       const dropped = [];
@@ -74,7 +52,7 @@ export function seatMapEditor({ students = [], rows = 5, cols = 6, layout = null
     }
     model.rows = nextRows; model.cols = nextCols; model.matrix = next;
     selectedSeat = null;
-    emit();
+    renderAll();
   }
 
   function seatCard(key, r, c) {
@@ -83,25 +61,25 @@ export function seatMapEditor({ students = [], rows = 5, cols = 6, layout = null
     const card = el("button", {
       type: "button",
       class: `seat${student ? "" : " seat-empty"}${isSelected ? " seat-selected" : ""}`,
-      draggable: editable && student ? "true" : null,
+      draggable: student ? "true" : null,
       "aria-label": student ? `第${r + 1}排第${c + 1}座 ${student.name}` : `第${r + 1}排第${c + 1}座 空座`,
       dataset: { r: String(r), c: String(c) },
     },
       el("span", { class: "seat-no" }, String(r * model.cols + c + 1).padStart(2, "0")),
       student ? el("span", { class: "seat-name" }, student.name) : el("span", { class: "seat-name muted" }, "空座"),
       student && student.student_no ? el("span", { class: "seat-sno muted" }, `学号 ${student.student_no}`) : null);
-    if (editable) {
-      card.addEventListener("click", () => onSeatClick(r, c));
-      card.addEventListener("dragstart", (e) => { e.dataTransfer.setData("text/plain", `${r},${c}`); card.classList.add("dragging"); });
-      card.addEventListener("dragend", () => card.classList.remove("dragging"));
-      card.addEventListener("dragover", (e) => { e.preventDefault(); card.classList.add("drag-over"); });
-      card.addEventListener("dragleave", () => card.classList.remove("drag-over"));
-      card.addEventListener("drop", (e) => {
-        e.preventDefault(); card.classList.remove("drag-over");
-        const [sr, sc] = (e.dataTransfer.getData("text/plain") || "").split(",").map(Number);
-        if (Number.isInteger(sr) && Number.isInteger(sc)) swapSeats(sr, sc, r, c);
-      });
-    }
+    card.addEventListener("click", () => onSeatClick(r, c));
+    card.addEventListener("dragstart", (e) => { e.dataTransfer.setData(SEAT_DRAG_TYPE, `${r},${c}`); card.classList.add("dragging"); });
+    card.addEventListener("dragend", () => card.classList.remove("dragging"));
+    card.addEventListener("dragover", (e) => { e.preventDefault(); card.classList.add("drag-over"); });
+    card.addEventListener("dragleave", () => card.classList.remove("drag-over"));
+    card.addEventListener("drop", (e) => {
+      e.preventDefault(); card.classList.remove("drag-over");
+      const source = e.dataTransfer.getData(SEAT_DRAG_TYPE);
+      if (!/^\d+,\d+$/.test(source)) return;
+      const [sr, sc] = source.split(",").map(Number);
+      if (model.matrix[sr]?.[sc]) swapSeats(sr, sc, r, c);
+    });
     return card;
   }
 
@@ -111,13 +89,11 @@ export function seatMapEditor({ students = [], rows = 5, cols = 6, layout = null
       // 放置池中学生到空座
       model.matrix[r][c] = selectedPoolKey;
       selectedPoolKey = null;
-      emit();
+      renderAll();
       return;
     }
     if (selectedSeat && (selectedSeat.r !== r || selectedSeat.c !== c)) {
       swapSeats(selectedSeat.r, selectedSeat.c, r, c);
-      selectedSeat = null;
-      emit();
       return;
     }
     if (key) {
@@ -131,24 +107,27 @@ export function seatMapEditor({ students = [], rows = 5, cols = 6, layout = null
     const a = model.matrix[r1][c1];
     model.matrix[r1][c1] = model.matrix[r2][c2];
     model.matrix[r2][c2] = a;
+    selectedSeat = null;
+    renderAll();
   }
 
   function removeFromSeat() {
     if (!selectedSeat) return;
     model.matrix[selectedSeat.r][selectedSeat.c] = null;
     selectedSeat = null;
-    emit();
+    renderAll();
   }
 
   function renderPool() {
     clear(poolBox);
-    const rest = unseated();
+    const seated = new Set(model.matrix.flat().filter(Boolean));
+    const rest = students.filter((s) => !seated.has(s.id));
     poolBox.append(el("div", { class: "pool-head" },
       el("b", {}, `未排座学生（${rest.length}）`),
       rest.length ? el("span", { class: "muted" }, "点击学生后点击空座即可入座") : null));
     if (!rest.length) { poolBox.append(el("p", { class: "muted" }, "所有学生均已排座")); return; }
     poolBox.append(el("div", { class: "pool-list" }, rest.map((s) => {
-      const key = keyFn(s);
+      const key = s.id;
       const chip = el("button", {
         type: "button",
         class: `pool-chip${selectedPoolKey === key ? " chip-selected" : ""}`,
@@ -171,7 +150,6 @@ export function seatMapEditor({ students = [], rows = 5, cols = 6, layout = null
   }
 
   function renderToolbar() {
-    if (!editable) return;
     clear(sizeInputs);
     const rowsInput = el("input", { type: "number", min: "1", max: "30", value: String(model.rows), "aria-label": "行数" });
     const colsInput = el("input", { type: "number", min: "1", max: "30", value: String(model.cols), "aria-label": "列数" });
@@ -180,10 +158,10 @@ export function seatMapEditor({ students = [], rows = 5, cols = 6, layout = null
     const undo = el("button", {
       class: "secondary", type: "button",
       onclick: () => {
-        model.matrix = normalizeLayout(layout, model.rows, model.cols, byKey);
+        model.matrix = normalizeLayout(layout);
         while (model.matrix.length < model.rows) model.matrix.push(Array(model.cols).fill(null));
         model.matrix = model.matrix.slice(0, model.rows).map((row) => { const next = row.slice(0, model.cols); while (next.length < model.cols) next.push(null); return next; });
-        selectedSeat = null; selectedPoolKey = null; emit();
+        selectedSeat = null; selectedPoolKey = null; renderAll();
         toast("已撤销本次未保存的修改");
       },
     }, "撤销修改");
@@ -200,20 +178,16 @@ export function seatMapEditor({ students = [], rows = 5, cols = 6, layout = null
     renderToolbar();
   }
 
-  container = el("div", { class: "seatmap" },
+  const container = el("div", { class: "seatmap" },
     el("div", { class: "blackboard", "aria-hidden": "true" }, "黑 板"),
     el("div", { class: "podium", "aria-hidden": "true" }, "讲 台"),
-    el("div", { class: "seat-scroll" }, (gridBox = el("div", { class: "seat-grid-box" }))),
-    editable ? (sizeInputs = el("div", { class: "seat-toolbar" })) : null,
-    editable ? (poolBox = el("div", { class: "seat-pool" })) : null,
+    el("div", { class: "seat-scroll" }, gridBox), sizeInputs, poolBox,
   );
-  if (!editable) { gridBox = container.querySelector(".seat-grid-box"); }
   renderAll();
 
   return {
     el: container,
     getLayout: () => ({ rows: model.rows, cols: model.cols, layout: model.matrix.map((row) => [...row]) }),
     validate,
-    unseated,
   };
 }

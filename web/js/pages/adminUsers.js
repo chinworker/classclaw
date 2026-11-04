@@ -32,7 +32,7 @@ export async function render(mount, ctx = {}) {
     let users;
     let classNames = new Map();
     try {
-      [users] = await Promise.all([api("/admin/users")]);
+      users = await api("/admin/users");
       const classes = await api("/classes?page_size=100").catch(() => null);
       if (classes?.items) classNames = new Map(classes.items.map((c) => [c.id, c.name]));
     } catch (error) { if (!view.active) return;

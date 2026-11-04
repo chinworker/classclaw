@@ -1,222 +1,24 @@
-# ClassClaw operation use cases
+# ClassClaw 场景参考
 
-This reference is for deciding which ClassClaw operation matches a user's request. Use only the operations and read resources listed here. Never expose UUIDs, payload JSON, proposal ids, database table names, or tool names to the user.
+仅在不确定资源或行为时查阅；预览、确认和失败处理以 Skill 为准。
 
-## Read routing
+| 要做什么 | 读资源 |
+| --- | --- |
+| 班级上下文、班级概览 | `classes`、`class_summary` |
+| 查学生、查学生档案 | `student_search`、`student_detail`；优先班内学号 |
+| 某日课表、今日早报 | `daily_timetable`、`morning_briefing`；早报保留 `today_reminders`，昨日值日读 `yesterday_duty_assignment_scores` |
+| 学生、班级分析或需关注学生 | `student_analysis`、`class_analysis`、`attention_students`；只陈述事实，不推断因果 |
+| 已确认的作息、偏好或约定 | `agent_memory`；查时段传目标 `date` 和名称 `q` |
+| 教室终端、摄像头连通性 | `classroom_status`、`classroom_camera`；这两项不采集画面 |
+| 现场概况、查询刚才的播报结果 | `classroom_observation`（明确请求才读一次）、`classroom_broadcast`（用返回的播报 ID） |
+| 查看已有预览、已有分析 | `write_proposal`、`interaction_analysis`；使用返回的对应 ID |
+| 定时提醒核验 | `reminder_delivery`；仅有效且到期才标记并发送 |
 
-| User intent | Read resource | Example answer |
-|---|---|---|
-| 班级人数、概览 | `class_summary` | `707班目前2人：吴玉章、王俊男。小班阵容，名单不迷路。` |
-| 学号或姓名查人 | `student_search` | `13号是吴玉章。` |
-| 学生完整情况 | `student_detail` | Summarize only requested fields. |
-| 某天课表 | `daily_timetable` | List periods compactly. |
-| 今日早报 | `morning_briefing` | Show only actionable items. |
-| 学生阶段分析 | `student_analysis` | State facts and limits; no causal guesses. |
-| 班级阶段分析 | `class_analysis` | Use short metrics and exceptions. |
-| 需要关注的学生 | `attention_students` | Give rule-based facts, not labels. |
-| 教室电脑在线吗、终端状态 | `classroom_status` | Report last heartbeat, whether display and speech are ready, and current volume. |
-| 摄像头正常吗 | `classroom_camera` | Report connectivity, video/audio capability and the update time; never invent a picture. |
-| 看看教室监控 | `classroom_status` | Give the web entry; WeChat cannot play the stream, so do not promise playback. |
-| 教室现在大致在做什么、描述当前画面 | `classroom_observation` | Explicit request only; one frame, capture time and limitations. No audio, identity or attendance inference; do not poll. |
-| 刚才那次点名播了吗 | `classroom_broadcast` | Use the returned `broadcast_id`; report display and speech separately. |
+常见写入边界：
 
-Reads never need confirmation and never create a write proposal. `student_detail` and `student_analysis` accept the class-internal `student_no` instead of `student_id`; student writes reference students by `student_no` and the backend resolves them to internal IDs.
-
-## Write routing and examples
-
-All prose first goes to `classclaw_analyze_interaction`. The payload examples below explain the intended normalized operation; do not bypass analysis by manually converting a WeChat message.
-
-### Students
-
-- “新来一名学生，26号陈晨” → `student.create`.
-- “把13号调到第2组” → `student.update` with only `group_no` changed.
-- Never delete a student in conversation. Direct the user to the web app.
-
-Preview:
-
-```text
-学生档案预览
-26号 陈晨｜新增
-回复“确认”就加入名单。
-```
-
-### Attendance
-
-- “13号今天上学迟到两分钟” → `attendance.set`: today, `late`, note `迟到两分钟`. Do not ask for an exact time or period.
-- “21号今天请假” → today, `leave`; one daily record.
-- “13号今天没来” → ask whether absent or on leave; do not ask for a period.
-- A repeated write for the same student/date corrects that daily attendance record.
-
-Preview:
-
-```text
-考勤预览
-13号 吴玉章｜今天｜迟到，备注：迟到2分钟
-回复“确认”就登记。两分钟不长，记录很准。
-```
-
-Success:
-
-```text
-已登记：13号今天上午迟到2分钟。数据库这次没迟到。
-```
-
-### Homework
-
-Choose exactly one path:
-
-1. Create a real assignment: “今天布置语文第三课背诵，明早交” → `homework.create`.
-2. Update an existing assignment: “21号昨天的语文背诵没交” → match one existing homework record, then `homework.status.batch` with `status=missing`.
-3. Record only an incident: “21号语文作业未交，不需要先新建” → `student_event.create` with `event_type=homework`, `subtype=homework_missing`, `subject=语文`, and content `语文作业未交`. Never ask for a homework title or invent a homework id in this path.
-
-Use the reported occurrence/discovery date as `event_date`. “昨天没交” means yesterday; “昨天布置，今天发现没交” means today. Ask only if the date affects the record and cannot be resolved.
-
-Preview for path 3:
-
-```text
-作业未交预览
-21号 王俊男｜语文｜今天发现未交
-按学生事件记录，不新建作业。回复“确认”即可。
-```
-
-### Student events
-
-Use `student_event.create`; use `student_event.batch` for several students/events.
-
-| User statement | event_type | subtype | sentiment/severity |
-|---|---|---|---|
-| “8号主动帮助同学” | `behavior` | `helping_peer` | positive/normal |
-| “和13号家长电话沟通过迟到” | `communication` | `parent_call` | neutral/normal |
-| “21号获演讲比赛一等奖” | `honor` | `competition_award` | positive/normal |
-| “21号语文作业未交，不建作业” | `homework` | `homework_missing` | negative/attention |
-| “13号连续三天早读迟到，需关注” | `attendance` | `repeated_late` | negative/attention |
-| “8号上课忘带课本” | `behavior` | `forgot_materials` | negative/normal |
-| “12号自习课一直吵闹” | `behavior` | `classroom_noise` | negative/attention |
-
-Do not turn a normal daily attendance record into an event; use `attendance.set`. An event is for narrative context, patterns, communication, honors, or a homework incident not linked to a Homework record.
-
-The teacher supplies the event facts, not the classification. Infer subtype, sentiment, and severity directly. Mild or common rule violations are still negative; do not dilute them to neutral.
-
-### Seating
-
-- A complete new seating plan → `seating.update`; it creates a new snapshot and keeps history.
-- Seat swap or history restore is web-only. Do not pretend `seating.update` can identify an unknown old layout.
-
-### Exams and scores
-
-- “建立9月月考，语数英满分100” → `exam.create`.
-- “月考13号语文92，21号语文88” → match exactly one exam, then `score.batch`.
-- If the exam name is missing or matches more than one exam, ask one short question. Never silently choose the latest exam.
-
-### Timetable changes
-
-- “明天第2节数学改语文，李老师上，公开课” → `lesson_override.create`.
-- “周五第6节停课，运动会” → `lesson_override.create` with `status=cancelled`.
-- Base timetable replacement, swap, range changes, and override removal are web-only.
-
-### Arrangements and reminders
-
-- “明天下午4点开家长会” → `arrangement.create`; no offset was given, so create exactly one reminder at 1 PM (three hours before).
-- “周五下午4点开家长会，提前2天、1天和1小时提醒” → exactly three absolute `reminder_times`.
-- “周五前交运动会名单，优先级高” → `arrangement.create`, high priority, with one default reminder three hours before the deadline.
-- At most three reminder times are allowed. If the user asks for four or more, ask them to keep three; do not silently discard one.
-- If the user asks to be reminded but gives neither `start_at` nor `due_at`, ask for the target time.
-- Near-time reminders and the morning briefing are independent delivery paths. Even after a near-time reminder is sent, include the arrangement in `morning_briefing.today_reminders` on its start/due date.
-- Every near-time reminder is sent proactively by the class Agent. The backend stores the schedule and status but does not message the user directly.
-- On a scheduled reminder turn, read `reminder_delivery`. Return only `NO_REPLY` when it is inactive or not due; otherwise call `classclaw_mark_reminder_sent` and send one short sentence. This delivery is a system lifecycle action, so do not show a write preview or ask for confirmation.
-- Completing an arrangement is a web/system operation.
-
-Preview:
-
-```text
-提醒预览
-家长会｜明天16:00
-提醒：明天13:00（默认提前3小时）
-当天早报也会出现。回复“确认”即可。
-```
-
-### Duty schedule
-
-- “确认刚才的下周值日排班” → `duty.schedule.confirm` only when a valid existing preview payload/token is available.
-- Never invent `preview_token`, a rule, or assignments. If no preview exists, direct the user to generate one in the web app.
-
-### Duty score
-
-- “今天扫地4分” → match exactly one current `recent_duty_assignments` row and use `duty.assignment.score` with score 4.
-- “今天值日3分” when several duty items match → ask which item; do not score every assignment.
-- Score range is 0–5. A successful score marks the task completed. Past unscored work is reconciled by the backend as 5 points on the following day.
-
-Preview:
-
-```text
-值日评分预览
-今天｜扫地｜4分
-回复“确认”就登记完成。
-```
-
-### Classroom broadcast and volume
-
-- “请3号和8号同学现在去扫地，显示并播报” → `classroom.broadcast.send`, `mode="three_part"`, `student_nos:["3","8"]`, `time_phrase:"现在"`, `predicate:"去扫地"`.
-- “通知张三和李四下课后来老师办公室” → same operation with `time_phrase:"下课后"`; this is the errand’s time, so it is displayed and spoken now.
-- “下课后再播报这条通知” → scheduling is not supported. Say that only immediate display and speech are available; do not create a delayed task or a reminder.
-- “念这句：请今天负责卫生的同学现在带好工具到教室后门集合。” → `mode="custom"` with the sentence verbatim in `text`, no students.
-- “一个一个念” → `merge_mode="per_student"`; otherwise several students merge into one sentence.
-- “把教室音量调到40%” / “教室静音” → `classroom.volume.set`.
-- Terminal offline, `DEVICE_OFFLINE`, or a missing capability → say the action could not be performed now and that it will not be replayed after reconnection. Do not retry silently.
-- Broadcast is not attendance: never add `attendance.set`, a duty arrangement, or a completed task because of an errand like “去扫地”.
-
-Preview:
-
-```text
-点名广播预览（1句，立即显示并播报）
-请张三、李四同学下课后来老师办公室。
-回复“确认”就发到教室屏幕和扬声器。这不是考勤，不记录到场情况。
-```
-
-After confirmation, report registration and the terminal receipt separately:
-
-```text
-已发到教室终端；屏幕已显示，播报结果为 succeeded。
-```
-
-When the receipt is missing:
-
-```text
-已下发教室终端，但还没收到显示和播报回执；不能确认全班已经听到。
-```
-
-## Multiple operations
-
-If one user message contains independent, complete facts, analyze them together and show one compact preview group. Example:
-
-```text
-登记预览（3条）
-1. 13号｜今天上午迟到2分钟
-2. 21号｜语文作业未交（不新建作业）
-3. 明天下午4点｜家长会，提前1小时提醒
-回复“全部确认”就一起写入。
-```
-
-After “全部确认”, call `classclaw_commit_writes` once. If any item fails, report that none were written.
-
-## Response style
-
-- Default to 1 heading, 1–5 compact data lines, and 1 action line.
-- Ask at most one short clarification question at a time when possible.
-- Use at most one short, kind joke. The joke must not change or obscure names, dates, periods, scores, or status.
-- No joke for serious discipline, health, family, safety, privacy, or emotionally sensitive matters.
-- Do not repeat the user's whole sentence, explain internal workflow, or add unrelated reminders.
-- Do not introduce yourself, ask how to address the user, or mention that you lack a name unless asked.
-- On success, use one sentence. On failure, state what was not written and the single next action.
-
-Good:
-
-```text
-已记录：21号语文作业未交（学生事件，不新建作业）。作业没到，记录先到了。
-```
-
-Too verbose:
-
-```text
-解析完成，需要你确认一下再登记……以下是详细证据、置信度、proposal id、后端审批方式……
-```
+- **作业**：已指明唯一作业的未交，更新该作业状态；老师明确不新建或不关联作业时，仅记未交事件。不要编造作业。
+- **值日**：0–5 分必须对应一个实际安排；排班确认必须有现成的有效排班预览。评分与安排是两件事。
+- **记忆**：临时调整另存起止日期，长期规则到期恢复。纠正或忘记已有记忆要展示具体变更，经确认才写。
+- **教室广播**：“通知某人下课后去办公室”现在播报；“下课后再播这句”是定时播报，目前不支持。完整原句原样播。离线不补播；未收到回执不能说已经显示或听到。
+- **现场概况**：仅描述单帧可见信息和限制，不推断身份、注意力、音频或考勤；直播和设备配置去网页。
+- **提醒**：有开始或截止时，没指定偏移默认提前三小时一次，最多三次；提醒送达不影响当天早报。

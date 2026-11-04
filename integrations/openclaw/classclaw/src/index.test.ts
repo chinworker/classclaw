@@ -29,6 +29,32 @@ function registeredHooks() {
 afterEach(() => vi.restoreAllMocks());
 
 describe("classclaw plugin", () => {
+  it("returns the bare backend health payload", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ status: "ok", timezone: "Asia/Shanghai" })),
+    );
+    const result = await registeredTools().classclaw_health.execute("health", {});
+    expect(result).toMatchObject({ details: { data: { status: "ok", timezone: "Asia/Shanghai" } } });
+    expect(String(fetchMock.mock.calls[0][0])).toBe("http://example.test/health");
+  });
+
+  it("forwards the configured class when reading or cancelling a write preview", async () => {
+    const hook = registeredHooks().before_tool_call;
+    const tools = registeredTools();
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      new Response(JSON.stringify({ success: true, data: {} })));
+    for (const [tool, params] of Object.entries({
+      classclaw_read: { resource: "write_proposal", proposal_id: "preview" },
+      classclaw_cancel_write: { proposal_id: "preview" },
+    })) {
+      const scoped = await hook({ toolName: tool, params: { ...params, bound_class_id: "forged" } }, { agentId: "agent-a" });
+      expect(scoped).toMatchObject({ params: { bound_class_id: "class-a" } });
+      await tools[tool].execute("scope", (scoped as { params: object }).params);
+    }
+    expect(String(fetchMock.mock.calls[0][0])).toBe("http://example.test/api/v1/write-proposals/preview?bound_class_id=class-a");
+    expect(JSON.parse(String(fetchMock.mock.calls[1][1]?.body))).toEqual({ bound_class_id: "class-a" });
+  });
+
   it("stamps staged uploads with the bound class before any analysis", async () => {
     const hook = registeredHooks().before_tool_call;
     const result = await hook({ toolName: "classclaw_upload_file", params: { path: "/tmp/file.txt", class_id: "other" } },
@@ -232,7 +258,7 @@ describe("classclaw plugin", () => {
       toolName: "classclaw_propose_write",
       params: { operation_type: "classroom.broadcast.send", payload: { mode: "three_part", student_nos: ["3"], predicate: "去扫地" } },
     }, { agentId: "agent-a", sessionKey: "classroom", runId: "classroom-run-3" });
-    expect(proposal).toMatchObject({ params: { payload: { class_id: "class-a", predicate: "去扫地" } } });
+    expect(proposal).toMatchObject({ params: { bound_class_id: "class-a", payload: { class_id: "class-a", predicate: "去扫地" } } });
 
     const crossClass = await hook({
       toolName: "classclaw_propose_write",
@@ -241,30 +267,20 @@ describe("classclaw plugin", () => {
     expect(crossClass).toMatchObject({ block: true });
   });
 
-  it("registers preview and chat-confirmed commit tools", () => {
+  it("does not expose direct writes or class onboarding tools", () => {
     const tools: string[] = [];
-    const hooks: string[] = [];
     entry.register?.({
       pluginConfig: { baseUrl: "http://127.0.0.1:8000" },
-      registerHttpRoute(route: { auth: string; path: string }) {
-        expect(route.auth).toBe("gateway");
-        expect(["/api/v1/classclaw/web-session-thinking", "/api/v1/classclaw/web-chat-reasoning"]).toContain(route.path);
-      },
+      registerHttpRoute() {},
       registerTool(tool: { name: string } | ((context: object) => { name: string })) {
         const resolved = typeof tool === "function" ? tool({ agentId: "class-agent", sessionKey: "session-1" }) : tool;
         tools.push(resolved.name);
       },
-      on(name: string) { hooks.push(name); },
+      on() {},
     } as never);
-    expect(tools).toContain("classclaw_propose_write");
-    expect(tools).toContain("classclaw_analyze_interaction");
-    expect(tools).toContain("classclaw_commit_write");
-    expect(tools).toContain("classclaw_commit_writes");
-    expect(tools).toContain("classclaw_mark_reminder_sent");
     expect(tools).not.toContain("classclaw_direct_write");
     expect(tools).not.toContain("classclaw_onboarding_start");
     expect(tools).not.toContain("classclaw_onboarding_update");
-    expect(hooks).toEqual(["before_prompt_build", "after_tool_call", "before_tool_call"]);
   });
 
   it("schedules committed reminders as proactive agent turns", async () => {

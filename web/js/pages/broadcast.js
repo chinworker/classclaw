@@ -3,7 +3,6 @@
 import { el, clear, toast, fmtDateTime, debounce } from "../util.js";
 import { api } from "../api.js";
 import { state, refreshStudents } from "../state.js";
-import { compareStudents } from "../studentOrder.js";
 import { appConfig } from "../config.js";
 import { pageHeader, field, errorPanel, skeleton, emptyState, dataTable, statusBadge, metricCard } from "../components.js";
 
@@ -23,8 +22,11 @@ export function dispose() {
 function studentPicker(students, selected, onChange) {
   const search = el("input", { type: "search", placeholder: "搜索学号或姓名", "aria-label": "搜索学生" });
   const listHost = el("div", { class: "student-pick-list", role: "group", "aria-label": "本班学生" });
+  const counter = el("span", { class: "muted", "aria-live": "polite" });
+  const updateCount = () => { counter.textContent = `已选 ${selected.size} 人`; };
 
   function draw() {
+    updateCount();
     const needle = search.value.trim().toLowerCase();
     const rows = students.filter((row) => !needle
       || row.student_no.toLowerCase().includes(needle) || row.name.toLowerCase().includes(needle));
@@ -38,6 +40,7 @@ function studentPicker(students, selected, onChange) {
         "aria-label": `${row.student_no} ${row.name}` });
       box.addEventListener("change", () => {
         if (box.checked) selected.add(row.id); else selected.delete(row.id);
+        updateCount();
         onChange();
       });
       listHost.append(el("label", { class: "student-pick-item" }, box,
@@ -47,7 +50,6 @@ function studentPicker(students, selected, onChange) {
 
   search.addEventListener("input", draw);
   draw();
-  const counter = el("span", { class: "muted" }, "");
   const box = el("div", { class: "card" },
     el("h3", {}, "选择学生"),
     el("p", { class: "muted" }, "名单按学号自然升序；可单选或多选。自定义句子模式不需要选人。"),
@@ -57,7 +59,7 @@ function studentPicker(students, selected, onChange) {
       el("button", { class: "text-button", type: "button", onclick: () => { students.forEach((row) => selected.add(row.id)); draw(); onChange(); } }, "全选"),
       counter),
     listHost);
-  return { el: box, redraw: draw, counter };
+  return { el: box, redraw: draw };
 }
 
 function quickPicks(label, values, input, onChange) {
@@ -131,7 +133,7 @@ export async function render(mount, ctx, helpers) {
     el("option", { value: "" }, "终端默认显示屏"),
     ...[...new Set([...(device?.capabilities?.displays || [])])].map((name) => el("option", { value: name }, name)));
 
-  const picker = studentPicker([...students].sort(compareStudents), view.selected, () => { picker.redraw(); schedulePreview(); });
+  const picker = studentPicker(students, view.selected, schedulePreview);
   const previewHost = el("div", { class: "broadcast-preview", "aria-live": "polite" }, el("p", { class: "muted" }, "填写后自动预览最终句子。"));
   const warningHost = el("div");
 

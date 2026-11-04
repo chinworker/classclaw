@@ -59,6 +59,12 @@ def homework_update_status(request: Request, homework_id: str, body: HomeworkBat
     return ok(request, service.batch_homework_status(db, homework_id, body), "作业状态已批量更新")
 
 
+@router.get("/homework/{homework_id}/students")
+def homework_status_list(request: Request, homework_id: str, db: Session = Depends(get_db)):
+    require_owned_record(request, db, Homework, homework_id)
+    return ok(request, service.list_homework_statuses(db, homework_id))
+
+
 @router.get("/homework/{homework_id}/summary")
 def homework_summary(request: Request, homework_id: str, db: Session = Depends(get_db)):
     require_owned_record(request, db, Homework, homework_id)

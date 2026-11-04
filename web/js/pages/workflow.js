@@ -12,7 +12,7 @@ import {
   errorPanel, skeleton, emptyState, confirmDanger, field,
 } from "../components.js";
 
-export async function render(mount, ctx, helpers) {
+export async function render(mount, ctx) {
   clear(mount);
   mount.append(pageHeader("待确认记录", "查看班级创建进度。"));
 
@@ -112,7 +112,6 @@ export async function render(mount, ctx, helpers) {
           try {
             const updated = await api(`/write-proposals/${proposal.id}/cancel`, {
               method: "POST",
-              body: { cancelled_by: state.user?.username || null },
             });
             toast("写入预览已取消", "success");
             renderProposal(updated);

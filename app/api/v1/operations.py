@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.core.errors import AppError
 from app.core.responses import ok
-from app.core.security import principal_from_request, require_owned_class, require_owned_record, scoped_class_id
+from app.core.security import principal_from_request, require_admin, require_owned_class, require_owned_record, scoped_class_id
 from app.database import get_db
 from app.models.entities import Arrangement, AuditLog
 from app.schemas.domain import ArrangementCreate, AttachmentLinkCreate
@@ -46,41 +46,45 @@ def arrangement_complete(request: Request, arrangement_id: str, db: Session = De
     return ok(request, service.complete_arrangement(db, arrangement_id), "安排已完成")
 
 
-@router.get("/reminders/due")
+@router.get("/reminders/due", deprecated=True)
 def due_reminders(request: Request, at: datetime | None = None, db: Session = Depends(get_db)):
     admin_console.require_feature("feature.reminders")
-    return ok(request, service.due_reminders(db, at))
+    return ok(request, service.due_reminders(db, at, class_id=scoped_class_id(request)))
+
+
+def _owned_reminder_delivery(request: Request, db: Session, reminder_id: str):
+    admin_console.require_feature("feature.reminders")
+    result = service.reminder_delivery(db, reminder_id)
+    arrangement = result["arrangement"]
+    if arrangement.class_id is None:
+        require_admin(principal_from_request(request))
+    else:
+        require_owned_class(request, arrangement.class_id)
+    return result
 
 
 @router.get("/reminders/{reminder_id}")
 def reminder_get(request: Request, reminder_id: str, db: Session = Depends(get_db)):
-    admin_console.require_feature("feature.reminders")
-    result = service.reminder_delivery(db, reminder_id)
-    require_owned_record(request, db, Arrangement, result["arrangement"].id)
-    return ok(request, result)
+    return ok(request, _owned_reminder_delivery(request, db, reminder_id))
 
 
 @router.post("/reminders/{reminder_id}/sent")
 def reminder_sent(request: Request, reminder_id: str, bound_class_id: str | None = Body(default=None, embed=True), db: Session = Depends(get_db)):
-    admin_console.require_feature("feature.reminders")
-    result = service.reminder_delivery(db, reminder_id)
-    require_owned_record(request, db, Arrangement, result["arrangement"].id)
+    result = _owned_reminder_delivery(request, db, reminder_id)
     if bound_class_id and result["arrangement"].class_id != bound_class_id:
         raise AppError("CLASS_SCOPE_VIOLATION", "该提醒不属于当前班级专属智能体", 403)
     return ok(request, service.mark_reminder(db, reminder_id, True), "提醒已标记发送成功")
 
 
-@router.post("/reminders/{reminder_id}/failed")
+@router.post("/reminders/{reminder_id}/failed", deprecated=True)
 def reminder_failed(request: Request, reminder_id: str, error: str | None = None, db: Session = Depends(get_db)):
-    admin_console.require_feature("feature.reminders")
+    _owned_reminder_delivery(request, db, reminder_id)
     return ok(request, service.mark_reminder(db, reminder_id, False, error), "提醒已标记发送失败")
 
 
 @router.get("/audit-logs")
 def audit_list(request: Request, entity_type: str | None = None, entity_id: str | None = None, db: Session = Depends(get_db)):
     if not principal_from_request(request).is_admin:
-        from app.core.errors import AppError
-
         raise AppError("ADMIN_REQUIRED", "仅管理员可以查看审计日志", 403)
     stmt = select(AuditLog)
     if entity_type:
@@ -105,7 +109,7 @@ def attachment_upload(
     return ok(request, service.save_attachment(db, file, source_message_id, description, class_id=class_id), "附件已保存", 201)
 
 
-@router.post("/attachments/{attachment_id}/links", status_code=201)
+@router.post("/attachments/{attachment_id}/links", status_code=201, deprecated=True, dependencies=[Depends(require_admin)])
 def attachment_link(request: Request, attachment_id: str, body: AttachmentLinkCreate, db: Session = Depends(get_db)):
     return ok(request, service.link_attachment(db, attachment_id, body.entity_type, body.entity_id), "附件关联已创建", 201)
 

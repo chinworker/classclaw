@@ -33,7 +33,10 @@ export default {
         const id = normalizeAccountId(accountId);
         const config = loadConfig();
         const classes = config.plugins?.entries?.classclaw?.config?.agentClasses || {};
-        if (!Object.values(classes).includes(classId) || (config.bindings || []).some((row) =>
+        if (!Object.values(classes).includes(classId)) {
+          throw new LoginError("WECHAT_CLASS_UNMAPPED", "本班 Agent 的微信绑定配置已变更。", 409);
+        }
+        if ((config.bindings || []).some((row) =>
           row.match?.channel === "openclaw-weixin" && row.match.accountId === id && classes[row.agentId] !== classId)) {
           throw new LoginError("WECHAT_ACCOUNT_CONFLICT", "该微信账号已用于其他绑定，不能覆盖其消息路由。", 409);
         }

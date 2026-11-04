@@ -1,7 +1,24 @@
 from __future__ import annotations
 
 from app.config import settings
-from app.models.entities import Attachment, AttachmentLink
+from app.models.entities import Attachment, AttachmentLink, WriteProposal
+from app.utils.time import now
+from app.services.class_student import list_unreferenced_attachments
+from tests.helpers import teacher_for_class
+
+
+def test_orphan_report_excludes_attachment_referenced_only_in_proposal_json(db):
+    rows = [
+        Attachment(original_name=name, stored_name=name, stored_path=f"attachments/{name}",
+                   mime_type="text/plain", file_size=1, sha256="a" * 64)
+        for name in ("referenced.txt", "orphan.txt")
+    ]
+    db.add_all(rows)
+    db.flush()
+    db.add(WriteProposal(operation_type="student_event.create", payload_json={},
+                         normalized_payload_json={"attachment_id": rows[0].id}, preview_json={}, expires_at=now()))
+    db.commit()
+    assert [row.id for row in list_unreferenced_attachments(db)] == [rows[1].id]
 
 
 def test_class_attachment_list_and_delete(client, sample):
@@ -24,6 +41,16 @@ def test_class_attachment_list_and_delete(client, sample):
     assert deleted.json()["data"]["file_removed"] is True
     assert not path.exists()
     assert client.get(f"/api/v1/classes/{cls.id}/attachments").json()["data"] == []
+
+
+def test_legacy_attachment_link_cannot_cross_classes_as_teacher(client, db, sample):
+    cls, other, _ = sample
+    headers = teacher_for_class(client, cls, db, "attachment-scope-teacher")
+    attachment = client.post("/api/v1/attachments", data={"class_id": other.id}, files={"file": ("资料.txt", b"hello")}).json()["data"]
+    url = f"/api/v1/attachments/{attachment['id']}/links"
+    body = {"entity_type": "class", "entity_id": cls.id}
+    assert client.post(url, json=body, headers=headers).status_code == 403
+    assert client.post(url, json=body).status_code == 201
 
 
 def test_delete_attachment_without_class_link_is_rejected(client, db):

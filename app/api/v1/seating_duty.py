@@ -24,7 +24,6 @@ from app.schemas.domain import (
     SeatingSwap,
 )
 from app.services import admin_console, ai_tasks, duty, openclaw_bridge, operations, seating
-from app.services.common import audit, entity_dict
 from app.services.student_ordering import student_order_by
 from app.utils.time import today
 
@@ -221,7 +220,6 @@ def duty_score_item_create(request: Request, body: dict = Body(...), db: Session
     obj = DutyScoreItem(class_id=body["class_id"], name=body["name"], max_score=float(body["max_score"]), weight=float(body.get("weight", 1)), enabled=bool(body.get("enabled", True)), sort_order=int(body.get("sort_order", 0)))
     db.add(obj)
     db.flush()
-    audit(db, "create", "duty_score_item", obj.id, after=entity_dict(obj))
     db.commit()
     return ok(request, obj, "评分项目已创建", 201)
 

@@ -12,15 +12,18 @@ from app.models.entities import AuditLog, ClassAgentBinding
 from scripts import cleanup_deletions as cleanup
 
 
-def test_broad_unowned_resource_deletion_is_refused():
-    for key in ("state_dirs", "attachments"):
-        args = SimpleNamespace(state_dirs=False, attachments=False)
-        setattr(args, key, True)
-        with pytest.raises(RuntimeError):
-            cleanup.validate_apply_selection(args)
+@pytest.mark.parametrize("old_flag", ["--state-dirs", "--attachments"])
+def test_broad_unowned_resource_deletion_is_refused_before_accessing_data(old_flag, monkeypatch):
+    def fail_if_reported():
+        pytest.fail("invalid cleanup options must be rejected before accessing data")
+
+    monkeypatch.setattr(cleanup, "report", fail_if_reported)
+    with pytest.raises(SystemExit) as error:
+        cleanup.main(["--apply", "--caches", old_flag])
+    assert error.value.code == 2
 
 
-def test_unknown_file_cleanup_preserves_unrelated_payloads_and_names(tmp_path):
+def test_unknown_file_report_and_cleanup_preserve_unrelated_files(db, monkeypatch, capsys):
     root = settings.attachment_dir
     root.mkdir()
     matched = root / f"{uuid4()}.csv"
@@ -29,9 +32,19 @@ def test_unknown_file_cleanup_preserves_unrelated_payloads_and_names(tmp_path):
     personal.write_text("真实名单")
     named = root / "名单.csv"
     named.write_bytes(matched.read_bytes())
-    assert cleanup.confirmed_test_file(matched)
-    assert not cleanup.confirmed_test_file(personal)
-    assert not cleanup.confirmed_test_file(named)
+    @contextmanager
+    def session():
+        yield db
+
+    monkeypatch.setattr(cleanup, "reader_session", session)
+    monkeypatch.setattr(cleanup, "writer_session", session)
+    cleanup.report()
+    report = capsys.readouterr().out
+    assert "匹配历史测试，可定向清理：1 个" in report
+    assert "未匹配，保留供人工核对：2 个" in report
+    cleanup._apply_local(SimpleNamespace(caches=False, state_dir=[], attachment=[], unknown_files=True))
+    assert not matched.exists()
+    assert personal.exists() and named.exists()
 
 
 def test_missing_binding_does_not_make_live_class_mapping_stale(db, sample):

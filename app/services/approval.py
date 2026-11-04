@@ -51,7 +51,6 @@ from app.schemas.student_batch import StudentBatchUpdate
 from app.schemas.agent_memory import MemoryForget, MemoryUpsert
 from app.schemas.classroom import BroadcastComposeRequest, VolumeSetRequest
 from app.services import academic, agent_memory, class_student, classroom_broadcast, classroom_devices, deletions, duty, operations, seating, student_batch, student_refs, timetable
-from app.services.common import audit, entity_dict
 from app.services.openclaw_provisioning import agent_name_for_class
 from app.utils.time import now
 
@@ -324,11 +323,12 @@ def _humanize_preview(db: Session, operation_type: str, normalized: dict, previe
 
 
 def create_proposal(db: Session, data: WriteProposalCreate, *, bound_class_id: str | None = None) -> WriteProposal:
+    if bound_class_id and (data.onboarding_session_id or data.operation_type == "class.onboarding.commit"):
+        raise AppError("WEB_ONBOARDING_REQUIRED", "班级创建只能通过网页引导操作", 403)
     if data.idempotency_key:
         existing = db.scalar(select(WriteProposal).where(WriteProposal.idempotency_key == data.idempotency_key))
         if existing:
-            if bound_class_id and _proposal_class_ids(db, existing) != {bound_class_id}:
-                raise AppError("CLASS_SCOPE_VIOLATION", "写入预览不属于本次分析的班级", 403)
+            _require_proposal_scope(db, existing, bound_class_id)
             return existing
     evidence = [item.model_dump(mode="json") for item in data.evidence]
     resolved_payload = student_refs.apply_student_refs(db, data.operation_type, data.payload, bound_class_id=bound_class_id)
@@ -353,8 +353,7 @@ def create_proposal(db: Session, data: WriteProposalCreate, *, bound_class_id: s
         expires_at=now() + timedelta(minutes=data.expires_in_minutes),
         onboarding_session_id=data.onboarding_session_id,
     )
-    if bound_class_id and _proposal_class_ids(db, obj) != {bound_class_id}:
-        raise AppError("CLASS_SCOPE_VIOLATION", "写入预览不属于本次分析的班级", 403)
+    _require_proposal_scope(db, obj, bound_class_id)
     for class_id in sorted(_proposal_class_ids(db, obj)):
         deletions.require_available(db, "class", class_id)
     db.add(obj)
@@ -367,11 +366,17 @@ def create_proposal(db: Session, data: WriteProposalCreate, *, bound_class_id: s
     return obj
 
 
-def get_proposal(db: Session, proposal_id: str) -> WriteProposal:
+def get_proposal(db: Session, proposal_id: str, *, bound_class_id: str | None = None) -> WriteProposal:
     obj = db.get(WriteProposal, proposal_id)
     if not obj:
         raise not_found("写入预览", proposal_id)
+    _require_proposal_scope(db, obj, bound_class_id)
     return obj
+
+
+def _require_proposal_scope(db: Session, proposal: WriteProposal, bound_class_id: str | None) -> None:
+    if bound_class_id and (proposal.onboarding_session_id or _proposal_class_ids(db, proposal) != {bound_class_id}):
+        raise AppError("CLASS_SCOPE_VIOLATION", "该写入预览不属于当前班级专属智能体", 403)
 
 
 def _proposal_class_ids(db: Session, proposal: WriteProposal) -> set[str]:
@@ -495,10 +500,7 @@ def _validate_confirmation(
     bound_class_id: str | None,
     allow_onboarding: bool,
 ) -> bool:
-    if bound_class_id:
-        class_ids = _proposal_class_ids(db, proposal)
-        if class_ids != {bound_class_id}:
-            raise AppError("CLASS_SCOPE_VIOLATION", "该写入预览不属于当前班级专属智能体", 403, {"proposal_id": proposal.id, "bound_class_id": bound_class_id, "proposal_class_ids": sorted(class_ids)})
+    _require_proposal_scope(db, proposal, bound_class_id)
     if proposal.status == "completed":
         if revision != proposal.revision:
             raise AppError("PENDING_CONFIRMATION_REQUIRED", "预览版本已变化，请重新核对", 409, {"proposal_id": proposal.id, "expected_revision": proposal.revision})
@@ -529,9 +531,7 @@ def _validate_confirmation(
     return True
 
 
-def _complete_proposal(db: Session, proposal: WriteProposal, *, confirmed_by: str, confirmation_note: str | None,
-                       memory_prevalidated: bool = False) -> None:
-    before = entity_dict(proposal)
+def _complete_proposal(db: Session, proposal: WriteProposal, *, confirmed_by: str, memory_prevalidated: bool = False) -> None:
     result = _execute(db, proposal, memory_prevalidated=memory_prevalidated)
     timestamp = now()
     proposal.status = "completed"
@@ -539,7 +539,6 @@ def _complete_proposal(db: Session, proposal: WriteProposal, *, confirmed_by: st
     proposal.confirmed_at = timestamp
     proposal.executed_at = timestamp
     proposal.result_json = jsonable_encoder(result)
-    audit(db, "confirm_and_execute", "write_proposal", proposal.id, before=before, after={"proposal": entity_dict(proposal), "confirmation_note": confirmation_note}, source_message_id=proposal.source_message_id)
 
 
 def _dispatch_classroom(db: Session, proposals: list[WriteProposal]) -> None:
@@ -575,7 +574,7 @@ def confirm_proposal(db: Session, proposal_id: str, data: WriteProposalConfirm) 
     if not should_execute:
         return proposal
     try:
-        _complete_proposal(db, proposal, confirmed_by=data.confirmed_by, confirmation_note=data.confirmation_note)
+        _complete_proposal(db, proposal, confirmed_by=data.confirmed_by)
         db.commit()
     except Exception:
         db.rollback()
@@ -605,8 +604,7 @@ def confirm_proposals_batch(db: Session, data: WriteProposalBatchConfirm) -> lis
         agent_memory.validate_batch(db, [proposal.normalized_payload_json for proposal in executable
                                         if proposal.operation_type in {"memory.upsert", "memory.forget"}])
         for proposal in executable:
-            _complete_proposal(db, proposal, confirmed_by=data.confirmed_by, confirmation_note=data.confirmation_note,
-                               memory_prevalidated=True)
+            _complete_proposal(db, proposal, confirmed_by=data.confirmed_by, memory_prevalidated=True)
         db.commit()
     except Exception:
         db.rollback()
@@ -615,12 +613,10 @@ def confirm_proposals_batch(db: Session, data: WriteProposalBatchConfirm) -> lis
     return proposals
 
 
-def cancel_proposal(db: Session, proposal_id: str, cancelled_by: str | None = None) -> WriteProposal:
-    proposal = get_proposal(db, proposal_id)
+def cancel_proposal(db: Session, proposal: WriteProposal) -> WriteProposal:
     if proposal.status != "pending_review":
         raise AppError("PENDING_CONFIRMATION_REQUIRED", "只有待复核预览可以取消", 409)
     proposal.status = "cancelled"
-    audit(db, "cancel", "write_proposal", proposal.id, before=None, after={"cancelled_by": cancelled_by})
     db.commit()
     return proposal
 
@@ -643,7 +639,6 @@ def create_onboarding(db: Session, data: ClassOnboardingCreate, owner_user_id: s
     obj = ClassOnboardingSession(status="draft", current_step="class_info", draft_json=data.initial_draft, field_evidence_json=data.field_evidence, warnings_json=[], revision=1, created_by=data.created_by, source_message_id=data.source_message_id, owner_user_id=owner_user_id, expires_at=now() + timedelta(days=7))
     db.add(obj)
     db.flush()
-    audit(db, "create", "class_onboarding_session", obj.id, after=entity_dict(obj), source_message_id=data.source_message_id)
     db.commit()
     return obj
 
@@ -682,7 +677,6 @@ def update_onboarding(db: Session, session_id: str, data: ClassOnboardingUpdate)
         raise AppError("PENDING_CONFIRMATION_REQUIRED", "引导会话已经结束", 409, {"status": obj.status})
     if data.expected_revision != obj.revision:
         raise AppError("PENDING_CONFIRMATION_REQUIRED", "引导内容已被其他客户端更新，请重新载入", 409, {"expected_revision": obj.revision})
-    before = entity_dict(obj)
     merged_draft = _merge_draft(obj.draft_json or {}, data.draft_patch, data.replace_lists)
     class_name = str((merged_draft.get("class_info") or {}).get("name") or "").strip()
     if class_name:
@@ -695,7 +689,6 @@ def update_onboarding(db: Session, session_id: str, data: ClassOnboardingUpdate)
     obj.revision += 1
     _, preview = _onboarding_preview(obj.draft_json, list((obj.field_evidence_json or {}).values()))
     obj.warnings_json = preview["validation_errors"] + ([{"missing_fields": preview["missing_fields"]}] if preview["missing_fields"] else [])
-    audit(db, "update", "class_onboarding_session", obj.id, before=before, after=entity_dict(obj), source_message_id=obj.source_message_id)
     db.commit()
     return obj
 

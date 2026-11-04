@@ -30,7 +30,6 @@ class TestNode extends EventTarget {
   get textContent() { return this.nodeType === 3 ? this._text : this.children.map((child) => child.textContent).join(""); }
   set textContent(value) { this.replaceChildren(new TestNode("#text", String(value))); }
   get isConnected() { return this === globalThis.document.body || Boolean(this.parentNode?.isConnected); }
-  get parentElement() { return this.parentNode; }
   append(...children) {
     for (let child of children) {
       if (!(child instanceof TestNode)) child = new TestNode("#text", String(child));
@@ -58,6 +57,7 @@ class TestNode extends EventTarget {
   }
   querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
   focus() { if (this.isConnected) document.activeElement = this; }
+  reportValidity() { return this.value === "" || this.attributes.type !== "number" || Number(this.value) >= Number(this.attributes.min ?? "-Infinity"); }
   click() { if (!this.disabled) this.dispatchEvent(new Event("click")); }
 }
 
@@ -78,3 +78,4 @@ export function installDom() {
 
 export const tick = () => new Promise((resolve) => setImmediate(resolve));
 export const response = (data, status = 200) => new Response(JSON.stringify({ success: status < 400, data }), { status });
+export const findButton = (root, label) => root.querySelectorAll("button").find((node) => node.textContent === label);

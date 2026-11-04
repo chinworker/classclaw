@@ -150,6 +150,10 @@ def test_head_teacher_domain_routes_are_scoped_to_owned_class(client, db):
     listed = client.get("/api/v1/homework", headers=headers)
     assert listed.status_code == 200
     assert [row["title"] for row in listed.json()["data"]] == ["本班作业"]
+    foreign_id = db.scalar(select(Homework.id).where(Homework.class_id == other.id))
+    statuses = client.get(f"/api/v1/homework/{foreign_id}/students", headers=headers)
+    assert statuses.status_code == 403
+    assert statuses.json()["error"]["code"] == "CLASS_ACCESS_DENIED"
     forbidden = client.post(
         "/api/v1/homework",
         headers=headers,

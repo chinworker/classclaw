@@ -84,7 +84,7 @@ function canonical(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonical);
   if (!value || typeof value !== "object") return value;
   return Object.fromEntries(Object.entries(value as Row).sort(([a], [b]) => a.localeCompare(b))
-    .filter(([key]) => !["idempotency_key", "requested_by", "confirmed_by", "confirmation_note"].includes(key))
+    .filter(([key]) => !["idempotency_key", "requested_by", "confirmed_by"].includes(key))
     .map(([key, item]) => [key, canonical(item)]));
 }
 

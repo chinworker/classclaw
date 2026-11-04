@@ -19,7 +19,6 @@ export async function render(mount, ctx = {}) {
 
   const host = el("div");
   let users = []; let classes = []; let agents = []; let agentError = null;
-  view.guard(() => false);
   mount.append(pageHeader("班级管理", "管理员维护已有班级：修改信息、分配负责人和彻底删除。新班级由班主任账号通过创建向导创建。"), host);
 
   async function load() {

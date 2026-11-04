@@ -9,7 +9,7 @@ OpenClaw 对话式写入使用以下预览/确认入口；网页中的结构化�
 | classclaw_analyze_interaction | POST `/interaction-analyses` | 微信、自然语言、粘贴文本或附件的强制 OpenClaw 清洗入口；返回澄清问题或待复核 proposal |
 | classclaw_read interaction_analysis | GET `/interaction-analyses/{id}` | 读取结构化分析、状态、置信度、原因、低置信度拒绝项和关联 proposal |
 | classclaw_propose_write | POST `/write-proposals` | 校验并生成写入预览，不改业务数据 |
-| classclaw_read proposal | GET `/write-proposals/{id}` | 重新读取待复核版本和预览 |
+| classclaw_read write_proposal | GET `/write-proposals/{id}` | 重新读取待复核版本和预览 |
 | classclaw_commit_write | POST `/write-proposals/{id}/confirm` | 用户在聊天中确认一条预览后直接执行 |
 | classclaw_commit_writes | POST `/write-proposals/confirm-batch` | 用户确认同组多条预览后原子执行；一条失败则整批回滚 |
 | classclaw_read reminder_delivery | GET `/reminders/{id}` | Agent 定时任务到点后复核提醒是否仍有效且到期 |
@@ -21,11 +21,14 @@ OpenClaw 对话式写入使用以下预览/确认入口；网页中的结构化�
 | classclaw_cancel_write | POST `/write-proposals/{id}/cancel` | 取消待复核写入 |
 | 网页 onboarding | POST/PATCH `/class-onboarding/sessions...` | 仅接受 `X-ClassClaw-Surface: web`；插件不暴露这些 mutation |
 | 网页文件清洗 | POST `/class-onboarding/sessions/{id}/files` | 无历史 extraction turn，全量替换名单或课表草稿 |
-| 网页文本清洗（已移除） | POST `/class-onboarding/sessions/{id}/analyze-text` | 返回 410；必须上传文件并编辑结构化表格 |
-| 网页最终预览 | POST `/class-onboarding/sessions/{id}/preview` | 从课表归纳科目并生成最终 proposal |
+| 网页最终预览 | POST `/class-onboarding/sessions/{id}/preview` | 按草稿基础课表中的课程归纳科目并生成最终预览；不按节次的 `enabled` 筛选 |
 | 创建专属 agent | POST `/classes/{id}/agent-binding/provision` | 创建 agent/workspace 和提示词，不要求绑定微信 |
 | 可选微信二维码 | POST `/classes/{id}/agent-binding/start` | 用户选择绑定微信后启动二维码登录 |
 | 微信绑定状态 | POST `/classes/{id}/agent-binding/wait` | 等待扫码并写入 account 到 agent 的 route binding |
+
+班级专属 Agent 通过插件注入自身的 `bound_class_id`；后端据此拒绝创建、读取、确认或取消外班提案。旧网页文本清洗端点 `POST /class-onboarding/sessions/{id}/analyze-text` 保留 410 提示，建班请使用文件导入。
+
+确认请求使用 `revision`、`confirmed_by`（批量时每项提供 `proposal_id`、`revision`）；取消无需提供操作者字段。旧客户端发送的 `confirmation_note` 或 `cancelled_by` 会被忽略，不记录为审计数据。
 
 下表是领域 API 能力索引。“确认”列表示建议在对话界面中请求用户复核。
 
@@ -60,12 +63,15 @@ OpenClaw 对话式写入使用以下预览/确认入口；网页中的结构化�
 | duty_student_query | GET `/duty/assignments` | class_id,student_id,日期 | 安排 | 否 |
 | duty_replace_student | POST `/duty/assignments/{id}/replace` | replacement_student_id | 替换记录 | 是 |
 | duty_complete | POST `/duty/assignments/{id}/complete` | id | 完成记录 | 否 |
-| duty_score_create | POST `/duty/evaluations` | schedule,date,item,details | 加权评分 | 否 |
+| duty_score_items（兼容 REST） | POST `/duty/score-items` | class_id,name,max_score,weight? | 新增加权评分项目；网页和 Agent 不调用 | 否 |
+| duty_score_create（兼容 REST） | POST `/duty/evaluations` | schedule,date,item,details | 旧版加权评分；网页和 Agent 使用任务 0–5 分评分 | 否 |
 | duty_statistics | GET `/duty/statistics` | class_id,日期 | 次数和均衡度 | 否 |
 | duty_assignment_score | PUT `/duty/assignments/{id}/score` | 0–5分 | 完成的任务 | 可经聊天预览 |
 | homework_create | POST `/homework` | class_id,title,subject,due_at | 作业 | 否 |
+| homework_status_list（REST） | GET `/homework/{id}/students` | id | 本班已登记的收缴状态、分数与备注 | 否 |
 | homework_update_status | PUT `/homework/{id}/students` | items[] | 个人状态 | 批量时是 |
 | homework_missing_list | GET `/homework/{id}/missing` | id | 未交记录 | 否 |
+| homework_sync_missing_events（仅 REST） | POST `/homework/{id}/sync-missing-events` | id | 调用即将当前未交状态幂等同步为学生事件；没有预览端点 | 否 |
 | homework_summary | GET `/homework/{id}/summary` | id | 完成率 | 否 |
 | student_event_create | POST `/student-events` | 学生、类型、实际日期、内容 | 事件 | 否 |
 | student_event_analyze | POST `/classes/{id}/student-events/analyze` | 学生、日期、科目、内容 | 智能体分类预览 | 否 |
@@ -87,7 +93,7 @@ OpenClaw 对话式写入使用以下预览/确认入口；网页中的结构化�
 | timetable_import_apply | POST `/classes/{id}/timetable/import-apply` | 已核对 periods、items | 更新节次并替换周课表 | 是 |
 | timetable_daily | GET `/classes/{id}/timetable/daily` | lesson_date | 最终日课表 | 否 |
 | lesson_override_create | POST `/lesson-overrides` | 日期、节次、替代课程、原因 | 覆盖 | 是 |
-| subject_list | GET `/classes/{id}/subjects` | class_id | 课表归纳科目 | 否 |
+| subject_list | GET `/classes/{id}/subjects` | class_id | 班级已启用科目，按名称排序 | 否 |
 | lesson_override_remove | DELETE `/lesson-overrides/{id}` | id | 恢复基础课程 | 是 |
 | lesson_swap_preview | POST `/lesson-swaps/preview` | 两个日期、两个节次（兼容同日 `lesson_date`） | 按最新课表生成的变化和冲突 | 否 |
 | lesson_swap_confirm | POST `/lesson-swaps/confirm` | 同预览 | 两条覆盖 | 是 |
@@ -96,7 +102,6 @@ OpenClaw 对话式写入使用以下预览/确认入口；网页中的结构化�
 | arrangement_create | POST `/arrangements` | 标题、时间、优先级、reminder_times | 安排 | 否 |
 | arrangement_complete | POST `/arrangements/{id}/complete` | id | 已完成安排 | 否 |
 | arrangement_query | GET `/arrangements` | class_id,status,due_before | 安排 | 否 |
-| due_reminders | GET `/reminders/due` | at | 到期提醒（诊断/兼容查询，不直接向用户发送） | 否 |
 | morning_brief | GET `/briefings/morning` | class_id,date | 结构化早报 | 否 |
 | student_comprehensive_analysis | GET `/analytics/students/{id}/comprehensive` | 日期、subject,event_type | 指标、证据、警告 | 否 |
 | student_period_compare | GET `/analytics/students/{id}/compare` | 当前/对照日期 | 两周期和差值 | 否 |
@@ -117,6 +122,8 @@ OpenClaw 对话式写入使用以下预览/确认入口；网页中的结构化�
 | classroom_media_session | GET/POST `/classes/{id}/classroom/media-sessions`、POST/DELETE `/{session_id}` | audio | 短期观看租约与音轨授权 | 否（仅网页） |
 | terminal_pair | POST `/classroom/device/pair` | 一次性配对码 | 本设备专用凭据（终端调用，不需用户会话） | 否 |
 | terminal_channel | WS `/classroom/device-channel` | hello/heartbeat/command_result | welcome/command/error | 否 |
+
+另有三个已标记废弃的兼容 REST 接口，未注册为 Agent 工具：`GET /reminders/due` 只用于查询待发送提醒（班主任仅本班，可传 `at`），不会触发发送；`POST /reminders/{id}/failed` 记录可访问提醒的发送失败；`POST /attachments/{id}/links` 仅管理员可手工补建附件关联。正常提醒仍使用 `reminder_delivery` 和 `classclaw_mark_reminder_sent`。
 
 典型调用：OpenClaw 的微信渠道收到消息后，把原文和稳定消息 id 传给 `classclaw_analyze_interaction`。后端再次通过 OpenClaw Responses 做受约束的清洗；同名或关键信息不明确时只返回问题，不创建 proposal。可确定时，后端校验每个结构化 operation 并返回 proposal；用户核对 preview 后才调用 confirm。外部 Agent 不再自行串接旧目标写接口。
 

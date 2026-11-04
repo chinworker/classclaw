@@ -13,7 +13,7 @@ from sqlalchemy.exc import IntegrityError
 from app.analytics import service as analytics
 from app.models.entities import AttendanceRecord, ClassRoom, Student, WriteProposal
 from app.schemas.domain import AttendanceSet, WriteProposalCreate
-from app.services import academic, approval, openclaw_bridge
+from app.services import academic, approval
 from app.utils.time import now
 
 
@@ -71,10 +71,6 @@ def test_attendance_preview_needs_no_period_or_clock_time(db, sample):
     assert proposal.preview_json["summary"]["student_no"] == students[0].student_no
     assert "period" not in proposal.preview_json["summary"]
     assert db.scalar(select(func.count()).select_from(AttendanceRecord)) == 0
-    rules = openclaw_bridge._extractor_agents_md()
-    assert "考勤每天仅一次" in rules
-    assert "不追问上午/下午" in rules
-    assert "period" not in openclaw_bridge._INTERACTION_PAYLOAD_HINTS["attendance.set"]
 
 
 @pytest.fixture

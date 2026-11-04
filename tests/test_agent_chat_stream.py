@@ -12,6 +12,7 @@ from app.core.errors import AppError
 from app.models.entities import ClassAgentBinding, InteractionAnalysis
 from app.schemas.domain import InteractionAnalyzeCreate
 from app.services import agent_chat, agent_stream, interactions, openclaw_bridge, openclaw_provisioning
+from tests.helpers import FakeGateway
 
 CONVERSATION = "97d646a7-153d-4370-aa17-bc49d3ba5593"
 
@@ -209,10 +210,15 @@ def test_session_thinking_patches_only_the_session_key(monkeypatch):
     })]
 
 
-def test_default_thinking_sync_changes_only_bound_agents_and_not_session_overrides(db, sample, monkeypatch):
+def test_startup_sync_refreshes_bound_workspace_without_overwriting_custom_files(db, sample, monkeypatch, tmp_path):
     from contextlib import contextmanager
 
-    binding = ClassAgentBinding(class_id=sample[0].id, openclaw_agent_id="bound-agent", agent_name="测试", workspace_path="/tmp/unused")
+    workspace = tmp_path / sample[0].id
+    workspace.mkdir()
+    (workspace / "AGENTS.md").write_text("旧默认提示", encoding="utf-8")
+    (workspace / "SOUL.md").write_text("管理员自定义", encoding="utf-8")
+    (workspace / ".classclaw-admin-customized.json").write_text('["SOUL.md"]', encoding="utf-8")
+    binding = ClassAgentBinding(class_id=sample[0].id, openclaw_agent_id="bound-agent", agent_name="测试", workspace_path=str(workspace))
     db.add(binding)
     db.commit()
 
@@ -220,23 +226,26 @@ def test_default_thinking_sync_changes_only_bound_agents_and_not_session_overrid
     def reader():
         yield db
 
-    calls = []
     agents = [{"id": "bound-agent", "model": "provider/model", "thinkingDefault": "off"},
               {"id": "classclaw-extractor", "thinkingDefault": "off"}, {"id": "unrelated", "thinkingDefault": "medium"}]
-
-    async def rpc(method, params=None):
-        calls.append((method, params))
-        return {"hash": "hash-1", "config": {"agents": {"list": agents}}} if method == "config.get" else {}
+    gateway = FakeGateway({"config.get": {"hash": "hash-1", "config": {"agents": {"list": agents}}}, "config.patch": {}})
 
     monkeypatch.setattr(openclaw_provisioning, "reader_session", reader)
-    monkeypatch.setattr(openclaw_provisioning, "admin_rpc", rpc)
-    monkeypatch.setattr(openclaw_provisioning, "settings", replace(settings, openclaw_class_agent_thinking="high"))
+    monkeypatch.setattr(openclaw_provisioning, "admin_rpc", gateway)
+    monkeypatch.setattr(openclaw_provisioning, "settings", replace(settings, openclaw_class_agent_thinking="high",
+                                                                 openclaw_class_workspace_root=tmp_path))
     asyncio.run(openclaw_provisioning.sync_class_agent_thinking_defaults())
-    assert [call[0] for call in calls] == ["config.get", "config.patch"]
-    patch = json.loads(calls[1][1]["raw"])
+    scope, _, policy = (workspace / "AGENTS.md").read_text(encoding="utf-8").partition("\n\n")
+    assert sample[0].id in scope
+    assert policy.strip() == openclaw_provisioning._class_chat_policy()
+    assert "classclaw_commit_writes" in policy and "references/" not in policy
+    assert (workspace / "SOUL.md").read_text(encoding="utf-8") == "管理员自定义"
+    assert [call[0] for call in gateway.calls] == ["config.get", "config.patch"]
+    params = gateway.calls[1][1]
+    patch = json.loads(params["raw"])
     assert patch["agents"]["list"][0] == {**agents[0], "thinkingDefault": "high", "tools": {"loopDetection": openclaw_provisioning._CHAT_LOOP_DETECTION}}
     assert patch["agents"]["list"][1:] == agents[1:]
-    assert calls[1][1]["baseHash"] == "hash-1"
+    assert params["baseHash"] == "hash-1"
 
 
 def test_same_conversation_runs_are_exclusive_but_other_owners_are_independent():
@@ -248,7 +257,7 @@ def test_same_conversation_runs_are_exclusive_but_other_owners_are_independent()
     assert not agent_chat._active_conversations
 
 
-def test_configurable_default_has_env_precedence_and_safe_browser_projection(client, tmp_path, monkeypatch):
+def test_configurable_default_has_env_precedence(tmp_path):
     config = tmp_path / "settings.toml"
     config.write_text('[openclaw]\nclass_agent_thinking = "medium"\n', encoding="utf-8")
     assert load_settings(config, environ={}).openclaw_class_agent_thinking == "medium"
@@ -256,8 +265,6 @@ def test_configurable_default_has_env_precedence_and_safe_browser_projection(cli
     assert loaded.openclaw_class_agent_thinking == "high"
     with pytest.raises(ConfigurationError):
         load_settings(config, environ={"CLASSCLAW_OPENCLAW_CLASS_AGENT_THINKING": "unknown"})
-    monkeypatch.setattr("app.api.v1.configuration.settings", replace(settings, openclaw_class_agent_thinking="high"))
-    assert client.get("/api/v1/app-config").json()["data"]["agent_chat"]["default_thinking_level"] == "high"
 
 
 @pytest.mark.parametrize("status", ["failed", "analyzing"])

@@ -1,6 +1,6 @@
 import test, { beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { installDom, tick, response } from "./dom.mjs";
+import { findButton, installDom, tick, response } from "./dom.mjs";
 
 installDom();
 const page = await import("../../web/js/pages/broadcast.js");
@@ -74,9 +74,6 @@ async function mountPage() {
   return mount;
 }
 
-function button(mount, text) {
-  return mount.querySelectorAll("button").find((node) => node.textContent === text);
-}
 
 function checkbox(mount, label) {
   return mount.querySelectorAll("input").find((node) => node.getAttribute("aria-label") === label);
@@ -149,8 +146,8 @@ test("输入变化立即阻止发送，迟到的旧预览不能覆盖新预览",
   t.mock.timers.tick(400);
   await tick();
   assert.equal(pending.length, 1);
-  button(mount, "来老师办公室").click();
-  assert.equal(button(mount, "显示并播报").disabled, true);
+  findButton(mount, "来老师办公室").click();
+  assert.equal(findButton(mount, "显示并播报").disabled, true);
   t.mock.timers.tick(400);
   await tick();
   assert.equal(pending.length, 2);
@@ -163,13 +160,13 @@ test("输入变化立即阻止发送，迟到的旧预览不能覆盖新预览",
   await tick();
   assert.equal(mount.textContent.includes("旧预览：去扫地"), false);
   choose(mount, "001 张三");
-  assert.equal(button(mount, "显示并播报").disabled, true);
+  assert.equal(findButton(mount, "显示并播报").disabled, true);
 });
 
 test("离线终端禁止发送并说明原因", async () => {
   device = { ...onlineDevice(), online: false, last_seen_at: null };
   const mount = await mountPage();
-  assert.equal(button(mount, "显示并播报").disabled, true);
+  assert.equal(findButton(mount, "显示并播报").disabled, true);
   assert.match(mount.textContent, /教室终端离线/);
 });
 
@@ -200,7 +197,7 @@ test("选中学生后按服务端预览渲染冻结句子", async (t) => {
   assert.equal(body.time_phrase, "现在");
   assert.match(mount.textContent, /请张三同学现在去扫地。/);
   assert.match(mount.textContent, /对象：001 张三/);
-  assert.equal(button(mount, "显示并播报").disabled, false);
+  assert.equal(findButton(mount, "显示并播报").disabled, false);
 });
 
 test("名单按学号自然升序，10 号不排在 2 号前面", async () => {
@@ -214,8 +211,8 @@ test("名单按学号自然升序，10 号不排在 2 号前面", async () => {
 test("快捷选项写入时间与事项并重新预览", async (t) => {
   const mount = await mountPage();
   choose(mount, "002 李四");
-  button(mount, "下课后").click();
-  button(mount, "来老师办公室").click();
+  findButton(mount, "下课后").click();
+  findButton(mount, "来老师办公室").click();
   await tick();
   t.mock.timers.tick(400);
   await tick();
@@ -234,7 +231,7 @@ test("发送使用与预览相同的字段，并轮询真实回执", async (t) =
   await tick();
   await tick();
 
-  button(mount, "显示并播报").click();
+  findButton(mount, "显示并播报").click();
   await tick();
   await tick();
 
@@ -263,7 +260,7 @@ test("回执未终结时持续轮询，终结后停止", async (t) => {
   await tick();
   await tick();
 
-  button(mount, "显示并播报").click();
+  findButton(mount, "显示并播报").click();
   await tick();
   await tick();
   const polls = () => calls.filter((row) => row.path.endsWith("/broadcasts/b-1")).length;
@@ -278,7 +275,7 @@ test("回执未终结时持续轮询，终结后停止", async (t) => {
   // 回执尚未终结时才会继续轮询。
   detailPayload = { ...detailPayload, display_status: "authorized", speak_status: "authorized",
     status_note: "已下发教室终端，尚未收到显示与播报回执" };
-  button(mount, "显示并播报").click();
+  findButton(mount, "显示并播报").click();
   await tick();
   await tick();
   const pending = polls();
@@ -293,11 +290,11 @@ test("自定义句子模式不选人也不套模板", async (t) => {
   const text = "请今天负责卫生的同学现在带好工具到教室后门集合。";
   previewPayload = { ...previewPayload, mode: "custom", texts: [text], text, recipients: [], segment_count: 1 };
   const mount = await mountPage();
-  const customButton = button(mount, "自定义句子");
+  const customButton = findButton(mount, "自定义句子");
   customButton.click();
   await tick();
   assert.equal(customButton.getAttribute("aria-pressed"), "true");
-  assert.equal(button(mount, "三段式").getAttribute("aria-pressed"), "false");
+  assert.equal(findButton(mount, "三段式").getAttribute("aria-pressed"), "false");
 
   const textarea = mount.querySelectorAll("textarea").find((node) => node.getAttribute("aria-label") === "自定义句子");
   textarea.value = text;
@@ -363,7 +360,7 @@ test("预览失败时禁用发送并显示原因", async (t) => {
   await tick();
   await tick();
   assert.match(mount.textContent, /广播句子最多 160 字/);
-  assert.equal(button(mount, "显示并播报").disabled, true);
+  assert.equal(findButton(mount, "显示并播报").disabled, true);
 });
 
 test("离页停止轮询，不再更新已卸载的视图", async (t) => {
@@ -374,7 +371,7 @@ test("离页停止轮询，不再更新已卸载的视图", async (t) => {
   await tick();
   await tick();
   detailPayload = { ...detailPayload, display_status: "authorized", speak_status: "authorized" };
-  button(mount, "显示并播报").click();
+  findButton(mount, "显示并播报").click();
   await tick();
   await tick();
   const before = calls.filter((row) => row.path.endsWith("/broadcasts/b-1")).length;

@@ -1,9 +1,11 @@
-import { access, readFile } from "node:fs/promises";
+import { access, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 
 const root = resolve(import.meta.dirname, "..");
-const manifest = JSON.parse(await readFile(resolve(root, "openclaw.plugin.json"), "utf8"));
+const manifestPath = resolve(root, "openclaw.plugin.json");
+const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
 const entry = (await import(pathToFileURL(resolve(root, "dist/index.js")).href)).default;
 const tools = [];
 const hooks = [];
@@ -21,11 +23,9 @@ entry.register({
   registerHttpRoute(route) { routes.push(route); },
 });
 
-const declared = [...(manifest.contracts?.tools ?? [])].sort();
-const registered = tools.map((item) => item.name).sort();
-if (JSON.stringify(declared) !== JSON.stringify(registered)) {
-  throw new Error(`Tool contract mismatch: declared=${declared.join(",")} registered=${registered.join(",")}`);
-}
+const registered = tools.map((item) => item.name);
+const toolMetadata = Object.fromEntries(tools.filter((item) => item.optional).map(({ name }) => [name, { optional: true }]));
+if (new Set(registered).size !== registered.length) throw new Error("Duplicate tool registration");
 if (!tools.some((item) => item.name === "classclaw_commit_write" && item.optional)) {
   throw new Error("classclaw_commit_write must be registered as an optional tool");
 }
@@ -42,4 +42,12 @@ if (routes.length !== 2 || routes.some((route) => route.auth !== "gateway")
 if (!manifest.contracts?.gatewayMethodDispatch?.includes("authenticated-request")) throw new Error("Authenticated dispatch contract is required");
 for (const skill of manifest.skills ?? []) await access(resolve(root, skill, "SKILL.md"));
 
-console.log(`ClassClaw mixed plugin is valid: ${tools.length} tools, ${hooks.length} class-scope hook, ${(manifest.skills ?? []).length} skill.`);
+if (process.argv.includes("--write-tools")) {
+  manifest.contracts.tools = registered;
+  manifest.toolMetadata = toolMetadata;
+  await writeFile(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
+} else if (!isDeepStrictEqual(manifest.contracts.tools, registered) || !isDeepStrictEqual(manifest.toolMetadata, toolMetadata)) {
+  throw new Error("Manifest tools differ from actual registration; run npm run plugin:sync-tools and commit the manifest.");
+}
+
+console.log(`ClassClaw mixed plugin is valid: ${tools.length} tools, ${hooks.length} hooks, ${(manifest.skills ?? []).length} skill.`);

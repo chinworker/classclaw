@@ -45,7 +45,7 @@ openclaw gateway restart
 
 “账户设置 → 班级 Agent · 绑定与设置”提供班级独立模型设置，“账户设置 → ClassClaw Channels”展示内置网页 Chat 并管理外部渠道连接（当前开放微信），对话页仅保留会话级思考设置。主模型写入该班 `agents.list` runtime，网页 Chat 和外部渠道共用；图片模型只在该班网页图片消息上通过受控 `x-openclaw-model` 覆盖生效，避免修改全局 `agents.defaults.imageModel` 而影响其他班；语音识别模型使用 `provider/model` 调用 `openclaw infer audio transcribe`。浏览器录音只写入临时文件，转写结束后立即删除，文字仍需在输入框复核后发送。未选择服务端 STT 时继续使用 Web Speech API，不上传录音。候选来自 Gateway `models.list` 和 OpenClaw 音频 Provider 目录；不可用的主/图片模型及未配置凭据的 STT Provider 会被后端拒绝。
 
-JSON 提取默认走自动创建的轻量提取智能体（详见 [专属智能体与微信使用说明](class-agent-onboarding.md) §5.1）：服务启动和首次分析时，后端会通过 admin RPC 创建并校正 `classclaw-extractor` 的独立 runtime。该 runtime 显式保存模型、开启 fast mode，按 `openclaw.extractor_thinking` 设置思考档位（默认 `off`，仅在配置变化时重启 Gateway），并关闭推理、记忆与技能，以 `minimal` profile 加 `deny: [session_status]` 将可调用工具降为零；不会继承 Main 的 coding profile。清洗规范自动写入 `data/openclaw-agents/_extractor/AGENTS.md`。管理员在 Agent Studio 保存的文件会记录为自定义内容，后续自动检查不会覆盖；需要跟随 ClassClaw 新默认规则时，可在管理端恢复系统默认。因此 OpenClaw 侧必须启用 `admin-http-rpc`；未启用时后端自动回退主智能体。
+班级对话流程以 [classclaw-manager Skill](../integrations/openclaw/classclaw/skills/classclaw-manager/SKILL.md) 为准。班级工作区的托管 `AGENTS.md` 从同一份正文生成，并加上本班绑定。JSON 提取默认走自动创建的轻量提取智能体（详见 [专属智能体与微信使用说明](class-agent-onboarding.md) §5.1）。其工作区只声明提取角色；后端给每个请求提供共同的输入边界，以及该任务的字段与规则。`classclaw-extractor` 无工具、记忆和技能；模型与思考档位仍按原配置。初始化依赖 `admin-http-rpc`；不可用时，一般提取走主智能体与同一任务提示，成绩表头识别不回退。启动时刷新班级与提取器的托管提示；在 Agent Studio 保存的自定义文件不会被覆盖，需要采用新默认内容时可在管理端恢复默认。
 
 回合守卫以 Agent、会话和 run ID 隔离，在进程内跨插件注册实例共享有时效的计数和参数哈希，防止嵌套提取加载插件后丢失状态。单条/批量提交失败会返回不可自动重试的结构化错误，本轮不允许重新分析、替换预览或重复提交；新预览仍需重新复核。班级默认工作区要求省略工具前自述，工具结束后再给结果。批量提取的主要等待在模型生成，优化方向（如短学生引用、更低延迟模型）需先做协议与质量验证，不得静默替换用户选择的模型或思考档位。
 
@@ -111,7 +111,7 @@ openclaw doctor
 7. 用户在聊天中明确回复“确认”“可以”“写入”“都确认”等肯定意思后，单条调用 `classclaw_commit_write`，同组多条调用 `classclaw_commit_writes`。聊天复核是唯一审批，不再弹出系统审批卡。
 8. 后端再次校验 revision、状态、有效期和班级归属；批量确认在一个事务中执行，任一条失败则全部回滚。
 
-`classclaw_register_message` 和 `classclaw_propose_write` 保留给兼容流程及已经确定的结构化操作。微信、自然语言、粘贴名单、OCR 和附件不得用它们绕过 `classclaw_analyze_interaction`。
+`classclaw_propose_write` 用于已经确定的结构化操作。微信、自然语言、粘贴名单、OCR 和附件必须先通过 `classclaw_analyze_interaction`。
 
 班级档案批量补充直接分析原文，上下文提供完整名单及现有 `gender`、`status`（按学号排序，不含内部 UUID）。相同变更用 `student.update.batch` 分组，按 `student_nos` 引用学生，例如按学号数值分别生成男女两组，仅补空值须带 `only_if_empty:["gender"]`。预览包含完整名单和变更字段旧值，确认时重新校验；任一组档案已变更则整批回滚。这样避免逐人生成大量 operation 导致输出截断或超过单次 10 个预览的限制。
 
@@ -179,6 +179,8 @@ ClassClaw 不直接连接微信；微信连接器属于 OpenClaw。只要微信�
 对话列表每项提供“删除”，确认后移除本标签页内存中的消息、草稿与待发送附件，并取消该对话的在途请求；迟到的能力检查、流式片段和最终回复不能恢复已删除内容。删除当前对话后切到相邻对话，删除最后一项后自动新建空白对话；其他对话不受影响。离开页面或退出登录会关闭尚未确认的删除弹窗。此操作不撤销已保存的业务数据、不删除已上传附件，也不删除 Gateway 保存的会话历史。
 
 网页聊天 POST 支持 multipart 字段 `stream=true`（网页默认使用）及可选 `thinking_level`。省略思考强度时优先使用班级设置的默认，再使用 `openclaw.class_agent_thinking`；显式设置仅属于本会话，详见 [配置说明](configuration.md)。`GET/PATCH /classes/{class_id}/agent-chat/thinking` 负责读取能力和保存班级默认（`thinking_default=null` 恢复系统默认）；账户页模型弹窗也可通过 `PATCH /classes/{class_id}/agent-chat/models` 一起保存 `thinking_default` 和图片/语音模型选择，使用一次 Gateway 配置提交。更换主模型时，不允许同时提交未经新模型能力验证的显式思考档位。接口均校验班级归属，保存不会修改已有会话覆盖。后端生成 `agent:{agent_id}:openresponses-user:classclaw-web-chat:{class_id}:{sender_id}:{conversation_id}`，通过 `x-openclaw-session-key` 精确关联会话；客户端不能自行指定 Gateway key。
+
+两个班级设置入口共用同一套 Gateway 配置更新逻辑：读取一份带版本的配置，只修改本班 Agent 的目标字段。已有配置相同时跳过 Gateway 写入；版本冲突时返回 `CONFIG_CONFLICT`，提示刷新后重试，本次设置不会写入 ClassClaw 数据库。
 
 当前 Gateway 的 Responses `reasoning` 字段未传给执行器，管理员 HTTP RPC 也不放行 `sessions.patch`。因此 ClassClaw 插件提供固定、Gateway 鉴权的私有 `POST /api/v1/classclaw/web-session-thinking`：仅接受 `key` 和 `thinkingLevel`，校验 key 是已绑定班级的网页会话后固定分派 `sessions.patch`；不开放会话删除、任意 RPC 或任意 Agent 配置。浏览器只调用 ClassClaw，绝不获取 Gateway Token。更新版本后须重新构建插件，并在无进行中对话时重启 Gateway 和 ClassClaw；缺少新插件端点会返回 `CHAT_PLUGIN_UPDATE_REQUIRED`。
 
@@ -288,9 +290,9 @@ ClassClaw 在 OpenClaw 中产生三类 session：
 
 1. **提取会话（一次性，会累积）**：每次后端分析调用都用唯一 `user` 键（`classclaw-onboarding-import-*`、`classclaw-timetable-import-*`、`classclaw-seating-import-*`、`classclaw-event-*`、`classclaw-interaction-*`），在 Responses 端点各生成一个新 session。这是刻意的「无记忆提取」设计：不复用历史可避免跨文件污染，也避免把学生名单等原始文本累积进会话存储。
 2. **聊天会话（长期复用，不要清理）**：微信按 channel/peer 隔离；网页按“账号 + 班级 + 新对话 ID”隔离。它们是智能体上下文的来源。
-3. **提醒定时任务**：插件用 `--session isolated --delete-after-run` 创建，执行完自动删除。
+3. **提醒定时任务**：插件用 `--session isolated --delete-after-run` 创建，执行完自动删除。插件运行在 Gateway 进程内；如需覆盖提醒时区或 CLI 路径，请在该进程的环境中设置 `CLASSCLAW_TIMEZONE`（默认 `Asia/Shanghai`）或 `OPENCLAW_BIN`（默认 `openclaw`）。后端的 TOML 配置不会传给 Gateway 插件。
 
-提取会话**不应复用**：复用会把原始输入累积进会话历史（违背「不保存消息原文」原则），并让每次调用的上下文随历史增长而变慢。前缀缓存收益不依赖会话复用——静态规范已冻结在 extractor 的 `AGENTS.md`，provider 端前缀缓存跨会话即可命中。
+提取会话**不应复用**：复用会把原始输入累积进会话历史，让每次调用的上下文随历史增长而变慢。任务提示把固定规则放在本次数据之前；是否命中前缀缓存由模型服务决定。
 
 清理依赖 OpenClaw 内建机制（`admin-http-rpc` 白名单不含 `sessions.*`，后端无法代删）：
 

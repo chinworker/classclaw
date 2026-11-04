@@ -73,11 +73,11 @@ SQLite 连接自动启用 `foreign_keys=ON`、`busy_timeout=5000` 和文件数�
 
 ## 已实现功能
 
-- 多班级、当前班级、停用、班级彻底删除与学生软删除；彻底删除会清理关联业务数据和 Agent 运行配置，并释放班主任账号名额
+- 班级管理、班主任账号绑定、停用、班级彻底删除与学生软删除；彻底删除会清理关联业务数据和 Agent 运行配置，并释放班主任账号名额
 - 座位完整时间快照、交换、历史恢复与位置变化
-- 静态值日规则校验、无写入预览、均衡排班、整体确认、替换、完成、加权评分
-- 作业默认 pending、批量状态、迟交判断、未交事件幂等同步
-- 学生事件、考勤例外记录与不超过 100% 的半天统计口径
+- 静态值日规则校验、无写入预览、均衡排班、整体确认、替换、完成、0–5 分评分
+- 作业默认待交、批量登记收缴状态、迟交判断；未交事件同步可通过 REST 显式触发
+- 学生事件、每日一次考勤及按天统计
 - 考试列表与日期/状态筛选、科目、整批成绩事务校验、排名与统计
 - 基础周课表、稳定 `lesson_key`、临时覆盖、取消、互换、长期批量预览/确认
 - 安排、多提醒、逾期计算、附件哈希，以及关键账户/智能体操作的轻量审计
@@ -95,10 +95,13 @@ SQLite 连接自动启用 `foreign_keys=ON`、`busy_timeout=5000` 和文件数�
 ## 测试
 
 ```bash
-pytest
+pytest                                      # 后端
+node --test tests/web/*.test.mjs              # 网页
+(cd integrations/openclaw/classclaw && npm ci && npm run build && npm test && npm run plugin:validate)
+(cd integrations/openclaw/openclaw-weixin-compat && npm ci && npm test)
 ```
 
-测试使用独立内存 SQLite，覆盖学号唯一与同名、关键审计、座位快照、值日预览确认、作业幂等、考勤口径、成绩整批回滚、调课覆盖、分析、早报、统一响应和班级 onboarding 原子提交。
+四套回归分别运行。后端使用独立内存 SQLite；网页回归不需要安装前端依赖，`web/package.json` 的 `type: module` 供 Node 将网页 `.js` 源文件按 ES 模块导入，请保留。
 
 ## 备份与恢复
 

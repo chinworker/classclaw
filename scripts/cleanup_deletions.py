@@ -28,7 +28,6 @@ from app.database import reader_session, writer_session
 from app.models.entities import (
     AnalysisCache,
     Attachment,
-    AttachmentLink,
     AuditLog,
     ClassAgentBinding,
     ClassRoom,
@@ -36,7 +35,7 @@ from app.models.entities import (
     Exam,
 )
 from app.services import deletion_files, deletion_runtime, openclaw_provisioning
-from app.services.class_student import referenced_attachment_ids
+from app.services.class_student import list_unreferenced_attachments
 
 CACHE_PREFIX = "exam_statistics:"
 
@@ -57,15 +56,6 @@ def orphan_state_dirs(db) -> list[Path]:
         return []
     keep = _default_agent_ids() | {row.openclaw_agent_id for row in db.scalars(select(ClassAgentBinding)) if row.openclaw_agent_id}
     return [child for child in sorted(root.iterdir()) if child.is_dir() and child.name not in keep]
-
-
-def orphan_attachments(db) -> list[Attachment]:
-    linked = set(db.scalars(select(AttachmentLink.attachment_id)))
-    rows = [row for row in db.scalars(select(Attachment)) if row.id not in linked]
-    if not rows:
-        return []
-    referenced = referenced_attachment_ids(db, {row.id for row in rows})
-    return [row for row in rows if row.id not in referenced]
 
 
 def disk_only_files(db) -> list[Path]:
@@ -145,11 +135,6 @@ def confirmed_test_file(path):
         return path.stat().st_size < 1024 and hashlib.sha256(path.read_bytes()).hexdigest() in _TEST_HASHES.get(path.suffix, set())
     except (ValueError, OSError, AppError):
         return False
-
-
-def validate_apply_selection(args):
-    if args.state_dirs or args.attachments:
-        raise RuntimeError("禁止按无绑定/无引用条件批量删除；请使用 --state-dir 或 --attachment 指定已核实目标")
 
 
 async def validate_state_targets(args, config):
@@ -236,7 +221,7 @@ def report() -> None:
     with reader_session() as db:
         caches = orphan_exam_caches(db)
         states = orphan_state_dirs(db)
-        attachments = orphan_attachments(db)
+        attachments = list_unreferenced_attachments(db)
         files = disk_only_files(db)
         pending = unfinished_deletions(db)
         print(f"孤儿考试统计缓存：{len(caches)} 条")
@@ -248,18 +233,22 @@ def report() -> None:
         print(f"数据库内无引用附件：{len(attachments)} 个")
         for row in attachments:
             print(f"  {row.id} {row.stored_path}")
-        print(f"附件目录中无记录的疑似测试残留文件：{len(files)} 个")
-        for path in files[:20]:
-            print(f"  {path}")
-        if len(files) > 20:
-            print(f"  … 其余 {len(files) - 20} 个")
+        matched, unmatched = [], []
+        for path in files:
+            (matched if confirmed_test_file(path) else unmatched).append(path)
+        print(f"附件目录中无数据库记录的文件：{len(files)} 个")
+        for label, paths in (("匹配历史测试，可定向清理", matched), ("未匹配，保留供人工核对", unmatched)):
+            print(f"  {label}：{len(paths)} 个")
+            for path in paths[:20]:
+                print(f"    {path}")
+            if len(paths) > 20:
+                print(f"    … 其余 {len(paths) - 20} 个")
         print(f"未完成的删除记录：{len(pending)} 条")
         for row in pending:
             print(f"  {row.id} {row.target_type} {row.target_id} phase={row.phase} status={row.status} error={row.error_code}")
 
 
-def apply(args) -> None:
-    validate_apply_selection(args)
+def _apply_local(args) -> None:
     with writer_session() as db:
         if args.caches:
             caches = orphan_exam_caches(db)
@@ -268,11 +257,9 @@ def apply(args) -> None:
             db.commit()
             print(f"已删除孤儿考试统计缓存 {len(caches)} 条")
 
-        if args.state_dirs or args.state_dir:
+        if args.state_dir:
             available = {path.name: path for path in orphan_state_dirs(db)}
-            targets = [path for path in available.values()] if args.state_dirs else [
-                available.get(name) for name in args.state_dir
-            ]
+            targets = [available.get(name) for name in args.state_dir]
             removed = 0
             for path in targets:
                 if path is None:
@@ -284,10 +271,9 @@ def apply(args) -> None:
                 print(f"  未找到或仍有绑定的状态目录：{', '.join(missing)}")
             print(f"已删除 Agent 状态目录 {removed} 个")
 
-        if args.attachments or args.attachment:
-            rows = orphan_attachments(db)
-            if args.attachment:
-                rows = [row for row in rows if row.id in set(args.attachment)]
+        if args.attachment:
+            selected = set(args.attachment)
+            rows = [row for row in list_unreferenced_attachments(db) if row.id in selected]
             removed_files = 0
             for row in rows:
                 path = deletion_files.safe_path(settings.attachment_dir, settings.attachment_dir.parent / row.stored_path)
@@ -313,18 +299,16 @@ def apply(args) -> None:
             print(f"已删除内容匹配历史测试且无数据库记录的文件 {removed} 个")
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="定向清理删除残留；默认只检查，--apply 才执行。")
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="定向清理删除残留；默认只检查，--apply 才执行。", allow_abbrev=False)
     parser.add_argument("--apply", action="store_true", help="执行清理（默认只报告）")
     parser.add_argument("--caches", action="store_true", help="删除已删除考试的统计缓存")
-    parser.add_argument("--state-dirs", action="store_true", help="已禁用：请用 --state-dir 明确指定目录")
     parser.add_argument("--state-dir", action="append", default=[], help="只删除指定名称的 Agent 状态目录，可重复")
-    parser.add_argument("--attachments", action="store_true", help="已禁用：请用 --attachment 明确指定已核实附件")
     parser.add_argument("--attachment", action="append", default=[], help="只删除指定附件 ID，可重复")
     parser.add_argument("--unknown-files", action="store_true", help="仅删除 UUID 文件名、无数据库记录且内容匹配历史测试的文件")
     parser.add_argument("--gateway", action="store_true", help="清理 Gateway 中指向已删除班级/智能体的 agentClasses 映射")
     parser.add_argument("--wechat-account", action="append", default=[], help="需要登出并清除本地凭据的微信账号，可重复")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     try:
         report()
@@ -334,14 +318,8 @@ def main() -> int:
     if not args.apply:
         print("当前为只检查模式；确认以上内容后加 --apply 与对应清理项执行。")
         return 0
-    if not any((args.caches, args.state_dirs, args.state_dir, args.attachments, args.attachment, args.unknown_files, args.gateway, args.wechat_account)):
-        print("--apply 需要至少一个清理项（--caches/--state-dirs/--state-dir/--attachments/--attachment/--unknown-files/--gateway/--wechat-account）。")
-        return 1
-
-    try:
-        validate_apply_selection(args)
-    except RuntimeError as exc:
-        print(str(exc))
+    if not any((args.caches, args.state_dir, args.attachment, args.unknown_files, args.gateway, args.wechat_account)):
+        print("--apply 需要至少一个清理项（--caches/--state-dir/--attachment/--unknown-files/--gateway/--wechat-account）。")
         return 1
     if args.gateway or args.wechat_account or args.state_dir:
         try:
@@ -349,7 +327,7 @@ def main() -> int:
         except (OSError, RuntimeError, AppError) as exc:
             print(f"Gateway 清理失败：{exc}")
             return 1
-    apply(args)
+    _apply_local(args)
     return 0
 
 

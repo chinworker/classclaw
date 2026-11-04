@@ -29,7 +29,7 @@ ClassClaw 是供 OpenClaw 智能体和网页端共用的轻量班级管理系统
 - `app/services/`：业务逻辑层（`class_student`、`seating`、`duty`、`academic`、`timetable`、`operations`、`approval`、`interactions`、`accounts`、`deletions`、`deletion_runtime`、`deletion_files`、`openclaw_bridge`、`openclaw_provisioning`、`classroom`、`classroom_channel`、`classroom_devices`、`classroom_broadcast`、`classroom_camera`、`classroom_media` 等）
 - `app/analytics/service.py`：仅基于数据库事实生成结构化指标和证据的分析服务
 - `app/models/entities.py`：全部 SQLAlchemy 实体（单文件）；`app/models/base.py` 提供 `IdMixin`（UUID 字符串主键）、`TimestampMixin`、`SoftDeleteMixin`
-- `app/schemas/`：Pydantic 2 schema（`domain.py`、`auth.py`、`common.py`）
+- `app/schemas/`：按领域组织的 Pydantic 2 schema（如 `domain.py`、`auth.py`、`classroom.py`）
 - `app/core/`：`errors.py`（`AppError`）、`responses.py`（统一 `ok()` 响应）、`security.py`（`Principal`、鉴权与班级归属隔离）
 - `app/utils/time.py`：时区感知的 `now()`
 - `alembic/versions/`：迁移（当前到 `0022_exam_import`）
@@ -45,7 +45,7 @@ ClassClaw 是供 OpenClaw 智能体和网页端共用的轻量班级管理系统
 - 网页思考选项必须来自 Gateway `agents.list` 返回的本班模型 `thinkingLevels`，区分档位 ID 与显示标签（如 `low` / `on`）；发送前刷新并由后端复核，不得写死模型能力表。配置默认不兼容时使用 Gateway 有效默认并在网页提示，显式不支持的选择不得静默替换
 - 网页常用思考档位只列模型支持的 `off/low/medium/high`，二态模型保留“关闭／开启”标签。思考文本与正文分开，通过插件 Gateway 鉴权的只读 `web-chat-reasoning` 订阅获取；后端同时匹配班级网页会话 key 与本次 Responses run ID，不向浏览器转发工具事件、内部 key 或凭据。折叠状态和计时只存内存，离页清理界面定时器不能取消聊天；无思考文本时明确提示，不伪造内容
 - `integrations/openclaw/`：OpenClaw 原生插件与兼容层
-- `classroom-mate/`：Windows 教室终端（.NET 10 WinForms 托盘；Core 协议/账本、Windows 原生 UI/音量/DPAPI、按需 aiortc/PyAV 媒体子进程）。`scripts/package.py` 生成 Windows x64 自包含发布包，依赖与二进制仅在被忽略的 `.dist-cache/`、`dist/` 中。运行 `dotnet run --project classroom-mate/tests/ClassroomMate.Tests` 验证协议，媒体验证见其 README。登录自启到托盘，正常暂停/退出；摄像头只由有效 `media_state` 授权，Job Object 保证托盘退出不遗留采集子进程。真实 Windows 硬件尚待验收。
+- `classroom-mate/`：Windows 教室终端（.NET 10 WinForms 托盘；Core 协议/账本、Windows 原生 UI/音量/DPAPI、按需 aiortc/PyAV 媒体子进程）。`classroom-mate/scripts/package.py` 生成 Windows x64 自包含发布包，依赖与二进制仅在被忽略的 `.dist-cache/`、`dist/` 中。运行 `dotnet run --project classroom-mate/tests/ClassroomMate.Tests` 验证协议，媒体验证见其 README。登录自启到托盘，正常暂停/退出；摄像头只由有效 `media_state` 授权，Job Object 保证托盘退出不遗留采集子进程。真实 Windows 硬件尚待验收。
 - `tests/`：pytest 测试（内存 SQLite）
 - `docs/`：详细设计文档（架构、数据库、分析、账户、onboarding、OpenClaw 集成等），改动涉及对应领域时应同步更新
 
@@ -80,7 +80,8 @@ node --test tests/web/*.test.mjs  # 对话状态、页面交互与登录切换�
 ```
 
 - 测试使用独立内存 SQLite（`StaticPool`），通过 `app.dependency_overrides[get_db]` 注入；OpenClaw 连接状态在 `tests/conftest.py` 中被 monkeypatch 掉，测试不依赖 OpenClaw 在线。
-- 当前后端回归 483 个用例、网页回归 134 个、插件回归 67 个（数量随新增测试变化）。覆盖：学号唯一与同名歧义、班内学号确定性解析（全角/“13号”/前导零/歧义候选/跨班）、座位快照、值日预览确认、作业幂等、考勤口径、成绩整批回滚、调课覆盖、分析、早报、统一响应、账户/管理员、onboarding 原子提交、删除分阶段重试与共享资源保护、班级 Agent 记忆（重复合并、更正冲突、临时规则到期恢复）、教室终端与点名广播（配对一次性与限流、命令状态机与到期清扫、冻结文本、每班唯一摄像头、观看租约与音轨授权、WebSocket 通道、提案投递回执）。
+- 保留 `web/package.json` 的 `type: module`：`node --test` 导入网页 `.js` 源文件时依赖它确定 ES 模块格式；不需要在该文件中重复维护测试脚本。
+- 后端、网页、OpenClaw 插件及微信兼容层的回归分别运行；用例数以各运行器输出为准。主要覆盖：学号唯一与同名歧义、班内学号确定性解析（全角/“13号”/前导零/歧义候选/跨班）、座位快照、值日预览确认、作业幂等、考勤口径、成绩整批回滚、调课覆盖、分析、早报、统一响应、账户/管理员、onboarding 原子提交、删除分阶段重试与共享资源保护、班级 Agent 记忆（重复合并、更正冲突、临时规则到期恢复）、教室终端与点名广播（配对一次性与限流、命令状态机与到期清扫、冻结文本、每班唯一摄像头、观看租约与音轨授权、WebSocket 通道、提案投递回执）。
 - 账户页 QR 回归通过 `classclawChannels.js` 组合校验；不要恢复为要求账户页直接包含二维码 DOM 的旧断言。
 - 新增业务功能应同步增加测试；测试客户端默认带 `X-ClassClaw-Surface: web` 头和 Bearer Token（若配置了 `CLASSCLAW_API_TOKEN`）。
 
@@ -132,10 +133,11 @@ python scripts/cleanup_deletions.py     # 定向清理删除残留；默认只�
 ## OpenClaw 集成
 
 - 仓库自带插件 `integrations/openclaw/classclaw`（工具边界）与 `classclaw-manager` Skill（对话/分析流程边界）。插件只注册读、附件暂存、interaction analysis、proposal 和提交工具，不暴露创建班级的 mutation；新班级只允许从网页 onboarding 创建。
-- 轻量提取 agent 默认启用（`CLASSCLAW_OPENCLAW_EXTRACTOR_ENABLED=true`，无需设置）：JSON 提取走自动创建的 `classclaw-extractor`（无工具、清洗规范在其工作区 AGENTS.md），创建失败自动回退主智能体与完整内联提示词；`CLASSCLAW_OPENCLAW_EXTRACTOR_ENABLED=false` 可关闭。
+- 对话流程统一维护在 `classclaw-manager/SKILL.md`；班级工作区 `AGENTS.md` 由 Skill 正文（参考标记之前）和班级绑定生成。后端提取提示只负责数据识别与输出结构，不重复维护对话确认流程。
+- 轻量提取 agent 默认启用（`CLASSCLAW_OPENCLAW_EXTRACTOR_ENABLED=true`，无需设置）：JSON 提取走自动创建的 `classclaw-extractor`（无工具）。`_responses_json` 统一提供提取边界，各任务只带所需字段和规则；交互写入规则不放进通用工作区。一般提取失败可回退主智能体使用同一任务提示，考试表头仍要求专用提取器。
 - 后端通过 Gateway `/tools/invoke` 验证插件可用（`classclaw_health`），用 `/v1/responses` 处理网页上传文件；连接失败时后端会阻止业务 API。
 - 微信二维码 provider discovery 兼容层位于 `integrations/openclaw/openclaw-weixin-compat`。
-- 微信兼容层 `.2` 为 ClassClaw 提供 Gateway 认证的私有网页登录端点：短轮询不销毁会话，新二维码同步返回网页，数字验证码通过本班 `/agent-binding/verify` 提交。`login_id` / `challenge_id` 隔离旧请求；二维码和验证码仅在内存中处理，禁止日志或持久存储。运行 `cd integrations/openclaw/openclaw-weixin-compat && npm test` 验证，官方消息收发与 CLI 登录不变
+- 微信兼容层 `2.4.6-classclaw.4` 为 ClassClaw 提供 Gateway 认证的私有网页登录端点：短轮询不销毁会话，新二维码同步返回网页，数字验证码通过本班 `/agent-binding/verify` 提交。`login_id` / `challenge_id` 隔离旧请求；二维码和验证码仅在内存中处理，禁止日志或持久存储。运行 `cd integrations/openclaw/openclaw-weixin-compat && npm test` 验证，官方消息收发与 CLI 登录不变
 - 提取会话（后端分析调用）是一次性设计：唯一 `user` 键、无记忆、不复用（避免原文累积与污染），治理用 OpenClaw session 容量上限与 `openclaw sessions cleanup`（后端按 `CLASSCLAW_OPENCLAW_SESSION_CLEANUP_HOURS` 定时经 CLI 触发，另有 `/api/v1/admin/openclaw/sessions/cleanup` 手动端点）；聊天会话长期复用，不要清理。详见 `docs/openclaw-integration.md` §8。
 - 安装与详细命令见 `docs/openclaw-integration.md` 和插件 README。
 

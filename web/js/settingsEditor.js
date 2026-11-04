@@ -4,7 +4,7 @@ import { sourceEditor, applyTomlChanges } from "./sourceEditor.js";
 
 const secretPath = (path) => /token|password|credential|secret|api.?key/i.test(path);
 const displayValue = (value) => value === undefined || value === null ? "—" : typeof value === "object" ? JSON.stringify(value) : String(value);
-export const sourceLabel = (source) => source?.startsWith("environment:") ? "ENV" : source === "file" ? "TOML" : "默认";
+const sourceLabel = (source) => source?.startsWith("environment:") ? "ENV" : source === "file" ? "TOML" : "默认";
 
 export function diffPreviewModal(rows, { view, onSave, title = "预览配置差异", onError = () => {} }) {
   const errors = el("div");
@@ -32,7 +32,7 @@ export function needsRestart(snapshot) {
   return !!snapshot.active_config_hash && snapshot.active_config_hash !== snapshot.config_hash;
 }
 
-export function settingsEditor({ snapshot: initial, view, sectionIds = null, initialSection = "", hideTree = false, onSaved = () => {} }) {
+export function settingsEditor({ snapshot: initial, view, sectionIds = null, initialSection = "", hideTree = false }) {
   let snapshot = initial;
   let text = snapshot.toml_text || "";
   let formText = text;
@@ -237,7 +237,6 @@ export function settingsEditor({ snapshot: initial, view, sectionIds = null, ini
         reset(); renderBanner(); toast("配置已写入，需重启 ClassClaw 生效", "success");
         try { await refresh(); }
         catch (error) { if (view.active) messages.append(errorPanel(error, { onRetry: refresh })); }
-        onSaved(result);
       }, onError: (error) => {
         showIssues(error);
         if (error.code === "CONFIG_CONFLICT") refresh().catch(() => {});

@@ -17,8 +17,6 @@ from app.services.class_student import get_class
 from app.services.student_ordering import student_order_by
 
 TEMPLATE = "请{称谓}{时间}{谓词}。"
-DEFAULT_SALUTATION = "同学"
-DEFAULT_TIME_PHRASE = "现在"
 STOP_KINDS = {"broadcast.stop", "broadcast.clear"}
 
 

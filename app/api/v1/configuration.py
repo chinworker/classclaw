@@ -16,11 +16,9 @@ def app_config(request: Request):
     response = ok(
         request,
         {
-            "config_hash": settings.config_hash,
             "brand": settings.web.brand.model_dump(),
-            "features": settings.features.model_dump(),
+            "features": settings.features.model_dump(include={"file_analysis", "event_ai", "wechat_binding"}),
             "runtime": {"timezone": settings.timezone},
-            "agent_chat": {"default_thinking_level": settings.openclaw_class_agent_thinking},
             "storage": {"max_attachment_bytes": settings.max_attachment_bytes},
             "semester_defaults": semester_defaults,
             "web": {
@@ -36,16 +34,11 @@ def app_config(request: Request):
             },
             "classroom": {
                 "broadcast_max_chars": settings.classroom.broadcast_max_chars,
-                "broadcast_max_segments": settings.classroom.broadcast_max_segments,
                 "display_seconds_default": settings.classroom.display_seconds_default,
                 "display_seconds_max": settings.classroom.display_seconds_max,
                 "speak_repeat_max": settings.classroom.speak_repeat_max,
                 "volume_ceiling": settings.classroom.volume_ceiling,
-                "media_lease_seconds": settings.classroom.media_lease_seconds,
-                "media_stop_grace_seconds": settings.classroom.media_stop_grace_seconds,
-                "media_provider": settings.classroom.media_provider,
                 "pairing_code_ttl_seconds": settings.classroom.pairing_code_ttl_seconds,
-                "heartbeat_timeout_seconds": settings.classroom.heartbeat_timeout_seconds,
             },
         },
     )

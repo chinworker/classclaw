@@ -10,11 +10,12 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app import usage_database
 from app.config import settings
-from app.database import Base, build_engine, get_db
+from app.database import Base, build_engine, get_db, get_read_db
 from app.main import app
 from app.models import entities  # noqa: F401
 from app.models.entities import ClassRoom, Student
 from app.services import openclaw_bridge
+from tests.helpers import FakeGateway
 
 
 @pytest.fixture(autouse=True)
@@ -60,30 +61,23 @@ def deletion_gateway(client, monkeypatch):
 
     Depends on ``client`` so the conftest no-real-WeChat guard is installed first.
     """
-    calls: list[tuple[str, dict | None]] = []
-
-    async def fake_admin_rpc(method: str, params: dict | None = None):
-        calls.append((method, params))
-        if method == "config.get":
-            return {"hash": "deletion-hash", "config": {
+    gateway = FakeGateway({
+        "config.get": {"hash": "deletion-hash", "config": {
                 "agents": {"list": []},
                 "bindings": [],
                 "plugins": {"entries": {"classclaw": {"config": {"agentClasses": {}}}}},
-            }}
-        if method == "tasks.list":
-            return {"tasks": []}
-        if method == "channels.logout":
-            return {"cleared": True, "loggedOut": True}
-        if method == "config.patch":
-            return {"ok": True}
-        raise AssertionError(method)
+        }},
+        "tasks.list": {"tasks": []},
+        "channels.logout": {"cleared": True, "loggedOut": True},
+        "config.patch": {"ok": True},
+    })
 
     async def cancel_wechat(class_id: str, action: str, **params):
         return {"cancelled": True, "accountIds": []}
 
-    monkeypatch.setattr("app.services.openclaw_provisioning.admin_rpc", fake_admin_rpc)
+    monkeypatch.setattr("app.services.openclaw_provisioning.admin_rpc", gateway)
     monkeypatch.setattr("app.services.wechat_login.call", cancel_wechat)
-    return calls
+    return gateway.calls
 
 
 @pytest.fixture()
@@ -152,9 +146,11 @@ def client(db: Session, monkeypatch):
     monkeypatch.setattr(openclaw_bridge, "connection_status", connected)
     monkeypatch.setattr(openclaw_bridge, "ensure_extractor_agent", extractor_off)
     app.dependency_overrides[get_db] = override
+    app.dependency_overrides[get_read_db] = override
     headers = {"X-ClassClaw-Surface": "web"}
     if settings.api_token:
         headers["Authorization"] = f"Bearer {settings.api_token}"
     with TestClient(app, headers=headers) as value:
         yield value
     app.dependency_overrides.pop(get_db, None)
+    app.dependency_overrides.pop(get_read_db, None)

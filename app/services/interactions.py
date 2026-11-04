@@ -47,7 +47,6 @@ def _context(db: Session, class_id: str | None) -> dict[str, Any]:
         if not cls or cls.deleted_at is not None:
             raise not_found("班级", class_id)
         # 班级专属分析只需要本班上下文；学生以班内学号引用，不暴露内部 UUID。
-        result["classes"] = [{"id": cls.id, "name": cls.name, "grade": cls.grade, "status": cls.status}]
         students = list(
             db.scalars(
                 select(Student)
@@ -75,7 +74,15 @@ def _context(db: Session, class_id: str | None) -> dict[str, Any]:
             for row in db.scalars(select(Student).where(Student.id.in_({item.student_id for item in recent_duty})))
         } if recent_duty else {}
         result["selected_class"] = {"id": cls.id, "name": cls.name, "grade": cls.grade}
-        result["agent_memory"] = agent_memory.read(db, class_id)
+        memories = agent_memory.read(db, class_id)
+        # The planner resolves rules for the requested date from items. The
+        # public read API's rendered descriptions and today's effective copy
+        # are redundant here.
+        result["agent_memory"] = {"items": [
+            {key: value for key, value in item.items()
+             if key not in {"description", "revision", "expired"} and value not in (None, "", [])}
+            for item in memories["items"]
+        ]}
         result["students"] = [{"student_no": row.student_no, "name": row.name, "gender": row.gender,
                                "status": row.status} for row in students]
         result["subjects"] = [{"name": row.name, "teacher": row.teacher, "default_full_score": row.default_full_score} for row in subjects]

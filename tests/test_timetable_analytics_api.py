@@ -5,7 +5,7 @@ from pydantic import ValidationError
 from sqlalchemy import func, select
 
 from app.analytics.service import morning_briefing, student_comprehensive
-from app.models.entities import LessonOverride, Reminder
+from app.models.entities import ClassSubject, DutyAssignment, DutySchedule, LessonOverride, Reminder
 from app.schemas.domain import (
     ArrangementCreate,
     LessonOverrideCreate,
@@ -16,6 +16,62 @@ from app.schemas.domain import (
     TimetableReplace,
 )
 from app.services import academic, operations, timetable
+from tests.helpers import teacher_for_class
+
+
+def test_legacy_reminder_routes_preserve_class_isolation(client, db, sample):
+    cls, other, _ = sample
+    headers = teacher_for_class(client, cls, db, "reminder-scope-teacher")
+    remind_at = datetime(2026, 9, 7, 9, tzinfo=timezone.utc)
+    arrangements = [operations.create_arrangement(db, ArrangementCreate(
+        class_id=class_id, title="提醒", start_at=remind_at + timedelta(hours=3), reminder_times=[remind_at],
+    )) for class_id in (cls.id, other.id, None)]
+    own, foreign, global_reminder = [db.scalar(select(Reminder).where(Reminder.arrangement_id == row.id)) for row in arrangements]
+    params = {"at": (remind_at + timedelta(hours=1)).isoformat()}
+    assert {row["id"] for row in client.get("/api/v1/reminders/due", params=params).json()["data"]} == {
+        own.id, foreign.id, global_reminder.id,
+    }
+    listing = client.get("/api/v1/reminders/due", params=params, headers=headers)
+    assert listing.status_code == 200
+    assert [row["id"] for row in listing.json()["data"]] == [own.id]
+    for denied in (foreign, global_reminder):
+        assert client.get(f"/api/v1/reminders/{denied.id}", headers=headers).status_code == 403
+        for outcome in ("sent", "failed"):
+            assert client.post(f"/api/v1/reminders/{denied.id}/{outcome}", headers=headers).status_code == 403
+    assert client.post(f"/api/v1/reminders/{own.id}/failed", headers=headers).status_code == 200
+    db.refresh(foreign)
+    assert foreign.status == "pending"
+
+
+def test_subject_selectors_only_list_enabled_subjects(client, db, sample):
+    cls, other, _ = sample
+    db.add_all([
+        ClassSubject(class_id=cls.id, name="语文", enabled=True),
+        ClassSubject(class_id=cls.id, name="旧科目", enabled=False),
+        ClassSubject(class_id=other.id, name="外班科目", enabled=True),
+    ])
+    db.commit()
+    result = client.get(f"/api/v1/classes/{cls.id}/subjects")
+    assert result.status_code == 200, result.text
+    assert [row["name"] for row in result.json()["data"]] == ["语文"]
+
+
+def test_morning_briefing_includes_direct_duty_scores(client, db, sample):
+    cls, _, students = sample
+    yesterday = date(2026, 9, 6)
+    schedule = DutySchedule(class_id=cls.id, name="值日", start_date=yesterday, end_date=yesterday)
+    db.add(schedule)
+    db.flush()
+    db.add_all([
+        DutyAssignment(duty_schedule_id=schedule.id, duty_date=yesterday, student_id=student.id, item_name="扫地",
+                       status=status, score=score)
+        for student, status, score in zip(students, ("completed", "replaced", "pending"), (4, 3, None))
+    ])
+    db.commit()
+    result = client.get("/api/v1/briefings/morning", params={"class_id": cls.id, "date": "2026-09-07"})
+    assert result.status_code == 200, result.text
+    scores = result.json()["data"]["yesterday_duty_assignment_scores"]
+    assert [(s["student_id"], s["score"]) for s in scores] == [(students[0].id, 4)]
 
 
 def test_lesson_key_override_swap_and_remove(db, sample):

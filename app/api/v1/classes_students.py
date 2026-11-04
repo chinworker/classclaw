@@ -50,10 +50,10 @@ async def class_delete(request: Request, class_id: str, db: Session = Depends(ge
     return ok(request, result, "班级及关联业务数据已彻底删除")
 
 
-@router.post("/classes/{class_id}/current")
+@router.post("/classes/{class_id}/current", deprecated=True)
 def class_set_current(request: Request, class_id: str, db: Session = Depends(get_db)):
     require_owned_class(request, class_id)
-    return ok(request, service.set_current_class(db, class_id), "当前班级已切换")
+    return ok(request, service.set_current_class(db, class_id), "旧版当前班级偏好已记录；网页班级由账号绑定决定")
 
 
 @router.post("/classes/{class_id}/deactivate")

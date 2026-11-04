@@ -1,7 +1,4 @@
 {
   "private": true,
-  "type": "module",
-  "scripts": {
-    "test": "node --test ../tests/web/*.test.mjs"
-  }
+  "type": "module"
 }

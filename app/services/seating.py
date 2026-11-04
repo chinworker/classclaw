@@ -9,7 +9,6 @@ from app.core.errors import AppError, not_found
 from app.models.entities import SeatingSnapshot, Student
 from app.schemas.domain import SeatingCreate, SeatingSwap
 from app.services.class_student import get_class
-from app.services.common import audit, entity_dict
 from app.utils.time import now
 
 
@@ -69,7 +68,7 @@ def layout_changes(previous: list[list[str | None]] | None, current: list[list[s
     return changes
 
 
-def create_snapshot(db: Session, class_id: str, data: SeatingCreate, action: str = "create", *, commit: bool = True) -> dict:
+def create_snapshot(db: Session, class_id: str, data: SeatingCreate, *, commit: bool = True) -> dict:
     get_class(db, class_id)
     validate_layout(db, class_id, data.rows, data.cols, data.layout)
     previous = current_snapshot(db, class_id, required=False)
@@ -83,7 +82,6 @@ def create_snapshot(db: Session, class_id: str, data: SeatingCreate, action: str
     )
     db.add(snapshot)
     db.flush()
-    audit(db, action, "seating_snapshot", snapshot.id, before=entity_dict(previous) if previous else None, after=entity_dict(snapshot))
     changes = layout_changes(previous.layout_json if previous else None, data.layout)
     if commit:
         db.commit()
@@ -108,7 +106,6 @@ def swap_students(db: Session, class_id: str, data: SeatingSwap) -> dict:
         db,
         class_id,
         SeatingCreate(rows=current.rows, cols=current.cols, layout=layout, change_note=data.change_note or "交换座位"),
-        action="swap",
     )
 
 
@@ -122,7 +119,6 @@ def restore_snapshot(db: Session, class_id: str, snapshot_id: str) -> dict:
         db,
         class_id,
         SeatingCreate(name=f"{source.name}（恢复）", rows=source.rows, cols=source.cols, layout=deepcopy(source.layout_json), change_note=f"恢复座位表“{source.name}”"),
-        action="restore",
     )
 
 
@@ -130,9 +126,7 @@ def rename_snapshot(db: Session, snapshot_id: str, name: str) -> SeatingSnapshot
     snapshot = db.get(SeatingSnapshot, snapshot_id)
     if not snapshot:
         raise not_found("座位表", snapshot_id)
-    before = entity_dict(snapshot)
     snapshot.name = name.strip()
-    audit(db, "rename", "seating_snapshot", snapshot.id, before=before, after=entity_dict(snapshot))
     db.commit()
     return snapshot
 
@@ -141,8 +135,7 @@ def delete_snapshot(db: Session, snapshot_id: str) -> dict:
     snapshot = db.get(SeatingSnapshot, snapshot_id)
     if not snapshot:
         raise not_found("座位表", snapshot_id)
-    before = entity_dict(snapshot)
+    name = snapshot.name
     db.delete(snapshot)
-    audit(db, "delete", "seating_snapshot", snapshot_id, before=before, after=None)
     db.commit()
-    return {"deleted_id": snapshot_id, "deleted_name": before["name"]}
+    return {"deleted_id": snapshot_id, "deleted_name": name}

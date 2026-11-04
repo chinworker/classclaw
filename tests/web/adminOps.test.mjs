@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
-import { installDom, response, tick } from "./dom.mjs";
+import { findButton, installDom, response, tick } from "./dom.mjs";
 import { trendChart, barList } from "../../web/js/charts.js";
 import { logViewer, logParams, logText } from "../../web/js/logViewer.js";
 import { gatewayChanges, gatewaySettingsEditor } from "../../web/js/gatewaySettingsEditor.js";
@@ -19,7 +19,6 @@ let viewer;
 let view;
 afterEach(() => { viewer?.dispose(); view?.dispose(); usage.dispose(); access.dispose(); settings.dispose(); ops.dispose(); maintenance.dispose(); });
 const find = (tag, label, root = document.body) => root.querySelectorAll(tag).find((node) => node.getAttribute("aria-label") === label);
-const button = (label) => document.body.querySelectorAll("button").find((node) => node.textContent === label);
 const log = { timestamp: "2026-09-15T09:21:33.120+08:00", level: "ERROR", logger: "request", request_id: "req-a", message: "Failed" };
 
 test("charts render empty states, single points and sorted distribution without NaN", () => {
@@ -46,10 +45,10 @@ test("request_id refills the filter and details drop level to show the request c
   installDom(); const calls = [];
   globalThis.fetch = async (url) => { calls.push(url); return response({ items: [log], cursor: 5, available: true }); };
   viewer = logViewer({ level: "ERROR" }); document.body.append(viewer.el); await viewer.load();
-  button("req-a").click(); await tick();
+  findButton(document.body, "req-a").click(); await tick();
   assert.equal(find("input", "request_id").value, "req-a");
   assert.ok(calls.at(-1).includes("request_id=req-a"));
-  button("请求详情").click(); await tick();
+  findButton(document.body, "请求详情").click(); await tick();
   assert.equal(new URL(calls.at(-1), "http://test").searchParams.get("level"), null);
   assert.ok(document.body.querySelector(".drawer"));
 });
@@ -96,7 +95,7 @@ test("Gateway conflicts keep the error visible and automatically refresh the sou
   };
   const editor = gatewaySettingsEditor({ view }); document.body.append(editor.el); await editor.load();
   const select = find("select", "会话隔离"); select.value = "main"; select.dispatchEvent(new Event("change"));
-  button("预览差异并保存").click(); await tick(); button("确认保存").click(); await tick();
+  findButton(document.body, "预览差异并保存").click(); await tick(); findButton(document.body, "确认保存").click(); await tick();
   assert.equal(reads, 2);
   assert.ok(document.body.textContent.includes("配置已被其他操作修改"));
   assert.equal(editor.isDirty(), false);
@@ -115,11 +114,11 @@ test("shared Agent panel previews only this class's changed model and keeps pend
   assert.ok(document.body.textContent.includes("尚未连接"));
   const main = document.body.querySelectorAll("select")[0]; main.value = "provider/main"; main.dispatchEvent(new Event("change"));
   assert.equal(view.isDirty(), true);
-  button("保存模型").click(); await tick(); assert.equal(writes.length, 0);
-  button("确认保存").click(); await tick();
+  findButton(document.body, "保存模型").click(); await tick(); assert.equal(writes.length, 0);
+  findButton(document.body, "确认保存").click(); await tick();
   assert.deepEqual(writes, [{ url: "/api/v1/classes/class-a/agent-chat/models", body: { main_model: "provider/main" } }]);
   assert.equal(view.isDirty(), false);
-  button("ClassClaw Channels").click(); await tick();
+  findButton(document.body, "ClassClaw Channels").click(); await tick();
   assert.ok(document.body.querySelector(".classclaw-channels-panel"));
   assert.ok(document.body.querySelector(".classclaw-web-channel").textContent.includes("默认启用"));
   assert.equal(document.body.querySelector(".classclaw-web-channel").querySelector("a"), null);
@@ -178,7 +177,7 @@ test("maintenance lists unfinished deletions and retries them in place", async (
   await maintenance.render(mount);
   assert.ok(mount.textContent.includes("未完成的删除清理"));
   assert.ok(mount.textContent.includes("DELETION_WECHAT_INCOMPLETE"));
-  button("重试清理").click();
+  findButton(document.body, "重试清理").click();
   await tick(); await tick();
   assert.ok(calls.some(([url, method]) => url.endsWith("/admin/deletions/job-1/retry") && method === "POST"));
 });

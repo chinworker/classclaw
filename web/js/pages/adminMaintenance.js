@@ -67,7 +67,6 @@ export async function render(mount, ctx = {}) {
   }
 
   async function load() {
-    clear(host); host.append(skeleton(6));
     try {
       clear(host);
       host.append(el("section", { class: "card config-file-guide" }, el("h3", {}, "备份与恢复"),

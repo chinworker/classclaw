@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
-import { installDom, response, tick } from "./dom.mjs";
+import { findButton, installDom, response, tick } from "./dom.mjs";
 import { adminView } from "../../web/js/adminView.js";
 import { settingsEditor, diffPreviewModal, needsRestart } from "../../web/js/settingsEditor.js";
 import { applyTomlChanges, sourceEditor } from "../../web/js/sourceEditor.js";
@@ -17,7 +17,6 @@ function fixture(locked = false) {
   const editor = settingsEditor({ snapshot, view }); document.body.append(editor.el);
   return { editor, snapshot, port: editor.el.querySelectorAll("input").find((node) => node.dataset.path === "server.port") };
 }
-const button = (text) => document.body.querySelectorAll("button").find((node) => node.textContent === text);
 
 test("form edits track dirty rows and group badges, validate and discard", () => {
   const { editor, port } = fixture();
@@ -29,8 +28,8 @@ test("form edits track dirty rows and group badges, validate and discard", () =>
   assert.equal(editor.el.querySelector(".settings-tree").textContent, "全部设置服务监听1");
   port.value = "70000"; port.dispatchEvent(new Event("input"));
   assert.equal(port.getAttribute("aria-invalid"), "true");
-  assert.equal(button("预览差异并保存").disabled, true);
-  button("放弃全部").click();
+  assert.equal(findButton(document.body, "预览差异并保存").disabled, true);
+  findButton(document.body, "放弃全部").click();
   assert.equal(editor.isDirty(), false);
   assert.ok(editor.el.textContent.includes("所有修改已保存"));
 });
@@ -59,19 +58,19 @@ test("locked enums show the environment value while source retains the file valu
   assert.equal(select.disabled, true);
   assert.deepEqual(select.querySelectorAll("option").filter((option) => option.getAttribute("selected") !== null).map((option) => option.value), ["ERROR"]);
   assert.equal(editor.isDirty(), false);
-  button("源码").click();
+  findButton(document.body, "源码").click();
   assert.equal(editor.el.querySelector("textarea").value, text);
 });
 
 test("invalid source cannot switch to form and highlights the backend error line", async () => {
   const { editor } = fixture();
-  button("源码").click();
+  findButton(document.body, "源码").click();
   const input = editor.el.querySelector("textarea");
   input.value = "[server]\nport = invalid"; input.dispatchEvent(new Event("input"));
   globalThis.fetch = async () => new Response(JSON.stringify({ success: false, error: {
     code: "CONFIG_TOML_INVALID", message: "TOML 语法错误", details: { errors: [{ line: 2, message: "非法值" }] },
   } }), { status: 422 });
-  button("表单").click(); await tick();
+  findButton(document.body, "表单").click(); await tick();
   assert.equal(editor.el.querySelector("textarea"), input);
   assert.equal(editor.el.querySelector(".source-line-error").textContent, "2\n");
   assert.ok(editor.el.textContent.includes("TOML 语法错误"));
@@ -89,7 +88,7 @@ test("diff masks credential values and retains inline failures in its modal", as
   installDom(); view = adminView();
   diffPreviewModal([{ path: "gateway.token", old: "private-old", new: "private-new" }], { view, onSave: async () => { throw new Error("Save failed"); } });
   assert.equal(document.body.textContent.includes("private-"), false);
-  button("确认保存").click(); await tick();
+  findButton(document.body, "确认保存").click(); await tick();
   assert.ok(document.body.querySelector(".modal"));
   assert.ok(document.body.textContent.includes("Save failed"));
 });
@@ -107,9 +106,9 @@ test("save previews exact draft and restart banner persists until active hash ma
     return response({ ...snapshot, toml_text: "[server]\nport = 8001\n", config_hash: "h2", values: { "server.port": 8001 } });
   };
   port.value = "8001"; port.dispatchEvent(new Event("input"));
-  button("预览差异并保存").click(); await tick();
+  findButton(document.body, "预览差异并保存").click(); await tick();
   assert.equal(writes, 0);
-  button("确认保存").click(); await tick();
+  findButton(document.body, "确认保存").click(); await tick();
   assert.equal(writes, 1);
   assert.ok(document.body.querySelector(".settings-restart-banner"));
   assert.equal(needsRestart({ config_hash: "h2", active_config_hash: "h1" }), true);
@@ -128,7 +127,7 @@ test("typing during validation cannot save a draft different from the preview", 
   const { port, snapshot } = fixture(); let finish;
   globalThis.fetch = () => new Promise((resolve) => { finish = resolve; });
   port.value = "8001"; port.dispatchEvent(new Event("input"));
-  button("预览差异并保存").click();
+  findButton(document.body, "预览差异并保存").click();
   port.value = "8002"; port.dispatchEvent(new Event("input"));
   finish(response({ diff: [{ path: "server.port", old: 8000, new: 8001 }], values: { "server.port": 8001 }, layout: snapshot.layout }));
   await tick();

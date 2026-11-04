@@ -2,7 +2,7 @@
 
 主要表按领域分组：
 
-- 班级与学生：`classes`、`system_settings`、`students`、`class_subjects`（`system_settings` 仅保留运行数据如当前班级选择，不承载部署配置）
+- 班级与学生：`classes`、`system_settings`、`students`、`class_subjects`（`system_settings` 兼容保留 `current_class_id`；网页按账号绑定选择班级，不读取此值）
 - 座位：`seating_snapshots`，二维 JSON 保存完整布局；每个版本有名称，可重命名或单独删除，最新版本作为当前座位表
 - 值日：`duty_rules`、`duty_schedules`、`duty_assignments`、`duty_score_items`、`duty_evaluations`、`duty_evaluation_details`
 - 教学：`homework`、`homework_student_statuses`、`student_events`、`attendance_records`、`exams`、`exam_subjects`、`scores`；确定性分析缓存保存在 `analysis_cache`（以数据指纹为键，超上限自动清理最旧条目，删除考试时同步清理）

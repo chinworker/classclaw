@@ -29,6 +29,20 @@ test("seating pool sorts the roster without rearranging assigned seats or the so
   assert.deepEqual(editor.el.querySelectorAll(".pool-chip").map((node) => node.querySelector("small").textContent.trim()), expected.filter((no) => no !== "10" && no !== "2"));
 });
 
+test("dragging a student swaps seats and immediately updates their displayed names", async () => {
+  installDom();
+  const { seatMapEditor } = await import("../../web/js/seatmap.js");
+  const students = ["2", "10"].map((id) => ({ id, student_no: id, name: `学生${id}` }));
+  const editor = seatMapEditor({ students, layout: [["2", "10"]] });
+  const data = new Map();
+  const dataTransfer = { setData: (type, value) => data.set(type, value), getData: (type) => data.get(type) ?? "" };
+  const [first, second] = editor.el.querySelectorAll(".seat");
+  first.dispatchEvent(Object.assign(new Event("dragstart"), { dataTransfer }));
+  second.dispatchEvent(Object.assign(new Event("drop", { cancelable: true }), { dataTransfer }));
+  assert.deepEqual(editor.getLayout().layout, [["10", "2"]]);
+  assert.deepEqual(editor.el.querySelectorAll(".seat-name").map((node) => node.textContent), ["学生10", "学生2"]);
+});
+
 test("student preview rows use ascending order without mutating the write proposal", async () => {
   installDom();
   const { proposalReview } = await import("../../web/js/components.js");

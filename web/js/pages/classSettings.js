@@ -6,7 +6,6 @@ import { appConfig } from "../config.js";
 import { refreshClassInfo, refreshIdentity } from "../state.js";
 import { navigate } from "../router.js";
 import { pageHeader, field, errorPanel, skeleton, confirmDanger, statusBadge } from "../components.js";
-import { deleteClass } from "../featureGaps.js";
 
 let activeView = null;
 export function dispose() { activeView = null; }
@@ -103,7 +102,7 @@ export async function render(mount, ctx, helpers) {
     });
     if (!ok) return;
     try {
-      await deleteClass(cls.id);
+      await api(`/classes/${encodeURIComponent(cls.id)}`, { method: "DELETE" });
       toast("班级已彻底删除", "success");
       await refreshIdentity();
       helpers.refreshShell();

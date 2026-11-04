@@ -3,20 +3,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from sqlalchemy import select
-
 from app.database import reader_session
-from app.models.entities import Attachment, AttachmentLink
-
-
-def list_orphans() -> list[Attachment]:
-    with reader_session() as db:
-        linked = select(AttachmentLink.attachment_id)
-        return list(db.scalars(select(Attachment).where(Attachment.id.not_in(linked))))
+from app.services.class_student import list_unreferenced_attachments
 
 
 if __name__ == "__main__":
-    rows = list_orphans()
+    with reader_session() as db:
+        rows = list_unreferenced_attachments(db)
     print(f"发现 {len(rows)} 个无引用附件。此脚本默认只报告，不自动删除。")
     for row in rows:
         print(row.id, row.stored_path)

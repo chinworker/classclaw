@@ -60,15 +60,12 @@ class OpenClawAgentUpdate(BaseModel):
     memory_search_enabled: bool | None = None
     model_params: dict[str, str | int | float | bool | None] | None = None
 
-    @field_validator("model_params")
+    @field_validator("model_params", mode="before")
     @classmethod
     def validate_model_params(cls, value):
-        if value is None:
-            return None
         allowed = {"temperature", "topP", "maxTokens", "cacheRetention"}
-        unknown = sorted(set(value) - allowed)
-        if unknown:
-            raise ValueError(f"不支持的模型参数：{', '.join(unknown)}")
+        if isinstance(value, dict) and value.keys() - allowed:
+            raise ValueError("模型参数只能包含 temperature、topP、maxTokens、cacheRetention")
         return value
 
 

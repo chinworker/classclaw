@@ -66,8 +66,8 @@ cd <项目根目录>
 
 管理员可使用：
 
-- `GET /api/v1/admin/agents`：查看班级、所有者、Agent、微信账号和错误状态。
-- `POST /api/v1/admin/agents/{class_id}/wechat/start`：刷新 Agent 配置并重新生成微信二维码。
+- `GET /api/v1/admin/agents`：旧验收台兼容列表。当前管理端 Agent 目录使用 `GET /api/v1/admin/openclaw/agents/catalog`。
+- `POST /api/v1/admin/agents/{class_id}/wechat/start`：旧验收台兼容入口。当前网页使用班级级 `POST /api/v1/classes/{class_id}/agent-binding/start`。
 - `GET /api/v1/admin/database/overview`：查看数据库表及行数，`database` 标明 `core`（业务库）或 `usage`（用量库）；用量库不可用时仍可查看业务库。
 - `GET /api/v1/admin/database/tables/{table}?offset=0&limit=50`：分页查看只读表数据。
 
@@ -81,7 +81,7 @@ cd <项目根目录>
 
 - `GET /api/v1/admin/overview`：用户、班级、学生、智能体、会话、SQLite/附件占用及 OpenClaw 健康状态。
 - `POST /api/v1/admin/classes`：已停用，固定返回 `WEB_ONBOARDING_REQUIRED`——管理员不具备任何建班入口，新班级只能由班主任账号通过 `/app/#/onboarding` 创建向导完成资料复核、专属智能体与微信绑定；管理员在班级创建后经此页分配/解除负责人。`PATCH /api/v1/admin/classes/{id}/owner`：分配或解除班主任；班级字段修改和删除复用 `/classes/{id}`。
-- `GET|PATCH /api/v1/admin/openclaw/config`：读取 Gateway 摘要并修改 Responses、DM Scope、ClassClaw 插件开关。Gateway Token 仅返回是否配置，不返回原文或尾号；另返回全局主/图片模型、Provider 名称与 Gateway 提供的配置文件路径。
+- `GET|PATCH /api/v1/admin/openclaw/config`：旧版结构化兼容入口；当前网页使用 `/api/v1/admin/openclaw/config/raw`。旧入口的 Gateway Token 仍只返回是否配置。
 - `GET /api/v1/admin/openclaw/agents/catalog`：统一列出 Main、数据提取和全部班级智能体。系统智能体使用 `main`、`extractor` 作为稳定管理标识，班级智能体继续使用班级 ID。
 - `GET /api/v1/admin/openclaw/agents/{identifier}/settings`、`PATCH /api/v1/admin/openclaw/agents/{identifier}`：读取模型目录、单智能体 Runtime 和 workspace 摘要；修改显示名、主/回退/utility 模型、thinking effort、reasoning、verbose、fast mode、上下文注入、Prompt 字符预算、Skill 预算、memory search 及模型参数。
 - `PUT /api/v1/admin/openclaw/agents/{identifier}/workspace/{filename}`、`POST .../reset`：编辑 `AGENTS.md`、`SOUL.md`、`IDENTITY.md`、`TOOLS.md`、`USER.md`、`HEARTBEAT.md`。文件名使用白名单，保存时带 SHA-256 版本检查；班级和提取智能体可恢复 ClassClaw 默认内容，Main 只允许保存和版本校验，不提供默认内容覆盖。自定义内容不会被日常 Agent 修复流程覆盖。
@@ -121,5 +121,5 @@ python run.py
 - 网页导入、聊天和班级 Agent 上传同时保存附件归属，数据库保存失败会清除新写入的文件。共享引用仍会阻止附件删除。
 - 班级资料页删除单个附件时，其他班级归属、业务引用或重复文件路径都会阻止删除。文件清理失败返回非成功状态并保留附件记录供重试；文件已不存在视为完成。先安全删除文件，再提交元数据删除，中断后仍可通过原附件记录重试；不返回“文件仍在”的普通成功提示。多文件上传逐个保存，失败后只重试尚未成功的部分。
 - `python scripts/cleanup_deletions.py` 默认只报告。执行前停止 ClassClaw 并备份业务库、用量库、附件及 OpenClaw 状态。
-- 维护脚本禁用 `--state-dirs` / `--attachments` 批量清理。`--state-dir` 必须有对应班级删除审计且 Gateway 无配置引用或运行任务；`--wechat-account` 必须无当前引用，并有历史配置和删除审计证明归属。
+- 清理状态目录和附件须分别用 `--state-dir <目录名>`、`--attachment <附件 ID>` 指定已核实目标。`--state-dir` 必须有对应班级删除审计且 Gateway 无配置引用或运行任务；`--wechat-account` 必须无当前引用，并有历史配置和删除审计证明归属。
 - `--gateway` 仅清理已审计删除班级的失效映射；单独使用 `--wechat-account` 不会顺便清理其他映射。`--unknown-files` 仅删除 UUID 命名、无数据库记录且内容哈希匹配历史测试样例的文件。归属不明附件保持不动。

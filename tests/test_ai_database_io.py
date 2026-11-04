@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import sys
 import threading
+import uuid
 from types import SimpleNamespace
 from typing import Annotated
 
@@ -16,9 +17,11 @@ from app import database
 from app.api.v1 import agent_chat, interactions
 from app.core.errors import AppError
 from app.core.security import require_authenticated
+from app.main import app as application
 from app.main import app_error_handler
-from app.models.entities import ClassAgentBinding, ClassOnboardingSession, ClassRoom, InteractionAnalysis
-from app.services import agent_models, openclaw_bridge, openclaw_provisioning
+from app.models.entities import AuditLog, ClassAgentBinding, ClassOnboardingSession, ClassRoom, DeletionOperation, InteractionAnalysis
+from app.schemas.auth import UserCreate
+from app.services import accounts, admin_console, agent_models, agent_thinking, ai_tasks, openclaw_bridge, openclaw_provisioning
 
 
 @pytest.fixture
@@ -117,6 +120,129 @@ def test_io_cancellation_reacquires_without_blocking_event_loop(managed_database
         with pytest.raises(asyncio.CancelledError):
             await task
         assert not database._write_lock.locked()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(("path", "body", "service", "action"), [
+    ("/admin/openclaw/config", {"responses_enabled": True}, admin_console, "gateway_config_patch"),
+    ("/admin/openclaw/config/raw", {"patch": {"gateway.http.endpoints.responses.enabled": True}, "base_hash": "old"},
+     admin_console, "gateway_config_patch"),
+    ("/classes/{class_id}/agent-chat/models", {"main_model": "test/new"}, agent_models, "update_agent_models"),
+    ("/classes/{class_id}/agent-chat/thinking", {"thinking_default": "low"}, agent_thinking, "update_agent_thinking"),
+])
+def test_gateway_config_wait_allows_writes_then_audits_with_writer(managed_database, monkeypatch, path, body, service, action):
+    from app.config import settings
+
+    async def run():
+        patch_started = asyncio.Event()
+        gateway_ready = asyncio.Event()
+        real_audit = service.audit
+
+        async def rpc(method, _params=None):
+            assert not database._write_lock.locked()
+            if method == "config.get":
+                return {"hash": "old", "config": {"agents": {"list": [{"id": "test-agent", "model": "test/old"}]}}}
+            if method == "models.list":
+                return {"models": [{"id": "new", "provider": "test"}]}
+            if method == "models.authStatus":
+                return {"providers": []}
+            if method == "agents.list":
+                return {"agents": [{"id": "test-agent", "thinkingLevels": [{"id": "low"}]}]}
+            assert method == "config.patch"
+            patch_started.set()
+            await gateway_ready.wait()
+            return {"hash": "new"}
+
+        def audit(db, *args, **kwargs):
+            assert not db.info.get("read_only")
+            assert database._write_lock.locked()
+            return real_audit(db, *args, **kwargs)
+
+        def concurrent_write():
+            with database.writer_session() as db:
+                db.get(ClassRoom, managed_database).name = "网关等待期间修改"
+                db.commit()
+
+        monkeypatch.setattr(openclaw_provisioning, "admin_rpc", rpc)
+        monkeypatch.setattr(service, "audit", audit)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=application), base_url="http://test",
+                                     headers={"Authorization": f"Bearer {settings.api_token}"}) as client:
+            pending = asyncio.create_task(client.patch("/api/v1" + path.format(class_id=managed_database), json=body))
+            try:
+                await asyncio.wait_for(patch_started.wait(), timeout=2)
+                await asyncio.wait_for(asyncio.to_thread(concurrent_write), timeout=2)
+            finally:
+                gateway_ready.set()
+                result = await asyncio.wait_for(pending, timeout=2)
+        assert result.status_code == 200, result.text
+        with database.reader_session() as db:
+            assert db.get(ClassRoom, managed_database).name == "网关等待期间修改"
+            row = db.scalars(select(AuditLog).where(AuditLog.action == action)).one()
+            if action == "gateway_config_patch":
+                assert row.after_json == {"paths": ["gateway.http.endpoints.responses.enabled"],
+                                          "old_config_hash": "old", "new_config_hash": "new"}
+            else:
+                binding = db.scalars(select(ClassAgentBinding).where(ClassAgentBinding.class_id == managed_database)).one()
+                assert row.entity_id == binding.id
+                assert all(getattr(binding, name) == value for name, value in body.items())
+
+    asyncio.run(run())
+
+
+def test_task_cancellation_needs_no_writer_and_survives_pending_account_deletion(managed_database):
+    with database.writer_session() as db:
+        user = accounts.create_teacher(db, UserCreate(username="cancelling-user"))
+        token, _ = accounts.issue_session(db, user)
+        db.add(DeletionOperation(target_type="user", target_id=user.id, phase="business", status="failed"))
+        db.commit()
+        user_id = user.id
+
+    async def run():
+        from app.core.security import Principal
+
+        task_id = str(uuid.uuid4())
+        request = Request({"type": "http", "headers": [(ai_tasks.AI_TASK_ID_HEADER.lower().encode(), task_id.encode())]})
+        request.state.principal = Principal(user_id, "cancelling-user", "head_teacher", None)
+        async with ai_tasks.track(request, check_disconnect=False) as cancelled:
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=application), base_url="http://test") as client:
+                url = f"/api/v1/ai/tasks/{task_id}/cancel"
+                assert (await client.post(url)).status_code == 401
+                assert not await cancelled()
+                with database.writer_session():
+                    response = await asyncio.wait_for(client.post(url, headers={"Authorization": f"Bearer {token}"}), timeout=2)
+                    assert response.status_code == 200, response.text
+                    assert response.json()["data"]["state"] == "running"
+                    assert await cancelled()
+
+    asyncio.run(run())
+
+
+def test_session_cleanup_does_not_hold_writer_and_still_requires_admin(managed_database, monkeypatch):
+    from app.config import settings
+
+    with database.writer_session() as db:
+        user = accounts.create_teacher(db, UserCreate(username="cleanup-teacher"))
+        token, _ = accounts.issue_session(db, user)
+        db.commit()
+
+    async def cleanup(*, enforce):
+        assert enforce is False
+        # A writer already held by another operation must not block this request.
+        assert database._write_lock.locked()
+        return {"ok": True, "enforce": enforce}
+
+    async def run():
+        monkeypatch.setattr(openclaw_bridge, "run_session_cleanup", cleanup)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=application), base_url="http://test") as client:
+            url = "/api/v1/admin/openclaw/sessions/cleanup?enforce=false"
+            assert (await client.post(url, headers={"Authorization": f"Bearer {token}"})).status_code == 403
+            with database.writer_session():
+                response = await asyncio.wait_for(
+                    client.post(url, headers={"Authorization": f"Bearer {settings.api_token}"}), timeout=2,
+                )
+                assert response.status_code == 200, response.text
+                assert response.json()["data"] == {"ok": True, "enforce": False}
+
     asyncio.run(run())
 
 

@@ -1,8 +1,6 @@
-# Write operations
+# 写入字段参考
 
-Use `classclaw_propose_write` with one supported `operation_type`. Payloads use the same field names as the ClassClaw REST schemas.
-
-For user prose, WeChat messages, pasted lists, OCR, or attachments, do not construct these operations directly. Call `classclaw_analyze_interaction`; the backend asks OpenClaw for a structured plan, validates the payloads, and returns proposal records. Use the table below when reviewing validation failures or handling a deterministic guided operation.
+仅在确定性结构化流程需要具体字段时查阅。自然语言或附件走分析，直接使用已返回的预览。
 
 | Operation | Payload shape |
 |---|---|
@@ -21,35 +19,12 @@ For user prose, WeChat messages, pasted lists, OCR, or attachments, do not const
 | `arrangement.create` | `{class_id?,title,summary?,start_at?,due_at?,priority?,reminder_times?}`; at most 3 reminders, default once at target minus 3 hours |
 | `duty.schedule.confirm` | Confirmed structured duty preview payload |
 | `duty.assignment.score` | `{assignment_id,score:0..5,note?}`; assignment must come from current read context |
+| `memory.upsert` | `{class_id, entries:[{kind:"schedule"\|"preference"\|"fact",name,memory_id?,aliases?,content?,start_time?,end_time?,weekdays?,valid_from?,valid_to?}]}`; schedules require both times and weekdays (1–7); preferences and facts require content; temporary entries require both dates |
+| `memory.forget` | `{class_id, memory_ids:[...]}`; use handles from confirmed class memory, never guess |
 | `classroom.broadcast.send` | `{class_id, mode:"three_part"\|"custom", student_nos?:[班内学号,...], salutation?:称呼, time_phrase?:时间, predicate?:事项, text?:自定义完整原文, merge_mode?:"combined"\|"per_student", display_seconds?, repeat_count?, gap_seconds?, volume?}`；`three_part` 必须给 `student_nos` 和 `predicate`，`custom` 必须给 `text` 且不选人 |
 | `classroom.volume.set` | `{class_id, volume?:0..100, mute?, restore_after_broadcast?}`；至少给 `volume` 或 `mute` 其中一项，上限由服务端配置决定 |
 
-Students are always referenced by class-internal `student_no` (seating layouts included); the backend resolves them to internal UUIDs within the bound class. `homework_id`, `exam_id`, `assignment_id`, `proposal_id`, `attachment_id` and `broadcast_id` remain opaque handles returned by tools.
 
-`classroom.broadcast.send` and `classroom.volume.set` drive physical devices, so their result has two layers. The backend freezes the exact sentences (default template `请{称谓}{时间}{谓词}。`, one sentence per student when `merge_mode="per_student"`) and registers a terminal command; the commit result reports registration and dispatch only. Display and speech outcomes come from the terminal receipt, and `expired` or `unknown` means the result is genuinely unknown — never claim the class heard it, and never re-send to “make sure”.
+学生用班内学号；日期用 YYYY-MM-DD，时间用带时区 ISO 8601。考试、作业、值日安排、预览和记忆 ID 必须来自已知数据。幂等键用消息标识与操作的稳定组合。
 
-Dates are `YYYY-MM-DD`; datetimes are ISO 8601 with timezone. Use a stable idempotency key derived from the external message id plus the intended operation, for example `wechat-message-id:attendance:student-no:date`. Attendance has no period or exact-time field to collect.
-
-Evidence items use:
-
-```json
-{
-  "source_type": "file",
-  "source_id": "external-message-id",
-  "attachment_id": "attachment-uuid",
-  "location": "成绩表.xlsx / Sheet1 / row 8",
-  "summary": "张三数学 92 分",
-  "confidence": 0.98,
-  "reasons": ["学生、日期和考勤状态均已明确且唯一匹配"]
-}
-```
-
-If a preview returns `ready=false`, do not call the commit tool.
-
-After showing one preview, an explicit affirmative reply authorizes `classclaw_commit_write` directly. After showing several previews together, an affirmative covering all of them authorizes one atomic `classclaw_commit_writes` call. There is no separate OpenClaw approval card.
-
-Student event enums are fixed: `event_type=homework|attendance|behavior|communication|honor|other`, `sentiment=positive|neutral|negative`, `severity=normal|attention|serious`. Rule-breaking such as playing cards at school uses `behavior`, never `discipline`; never use `low|medium|high` for severity. Infer the category and severity from the stated facts; do not require a handling outcome or invent one.
-
-When a user says an unsubmitted homework item should not be linked to or create a homework record, represent it as `student_event.create` with `event_type="homework"`, `subtype="homework_missing"`, and content such as “语文作业未交”.
-
-For student events, infer subtype/sentiment/severity from content. The following are always negative unless the user is explicitly negating that they happened: homework missing, forgotten materials, late arrival, absence, sleeping in class, noise, disruption, fighting, rule violations, and unfinished tasks. Neutral is reserved for factual communication or information without praise or a problem.
+学生事件枚举：`event_type=homework|attendance|behavior|communication|honor|other`，`sentiment=positive|neutral|negative`，`severity=normal|attention|serious`。校内玩牌等违规用 `behavior`；不编造处理结果。

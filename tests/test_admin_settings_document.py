@@ -199,6 +199,25 @@ def test_gateway_whitelist_rejects_invalid_without_rpc(client, monkeypatch, patc
     assert result.status_code == 422
 
 
+@pytest.mark.parametrize(("method", "path", "body", "loc", "error_type"), [
+    ("GET", "/api/v1/admin/usage?days=synthetic-private-input", None, ["query", "days"], "int_parsing"),
+    ("POST", "/api/v1/auth/login",
+     {"username": "example", "password": ["synthetic-private-input"]}, ["body", "password"], "string_type"),
+    ("POST", "/api/v1/admin/settings/check", {"toml_text": "", "synthetic-private-input": "value"}, ["body"], "extra_forbidden"),
+    ("PATCH", "/api/v1/admin/openclaw/agents/main",
+     {"model_params": {"synthetic-private-input": {"invalid": True}}}, ["body", "model_params"], "value_error"),
+])
+def test_request_validation_preserves_field_errors_without_echoing_input(client, method, path, body, loc, error_type):
+    response = client.request(method, path, json=body)
+    assert response.status_code == 422, response.text
+    assert "synthetic-private-input" not in response.text
+    error = response.json()["error"]
+    assert error["code"] == "VALIDATION_ERROR"
+    issue, = error["details"]["errors"]
+    assert set(issue) == {"loc", "type", "msg"}
+    assert issue["loc"] == loc and issue["type"] == error_type and issue["msg"]
+
+
 def test_gateway_redaction_patch_hash_conflict_and_audit(client, db, monkeypatch):
     calls = []
 

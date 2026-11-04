@@ -88,21 +88,27 @@ FIELDS = {
     "wechat.gateway_wait_timeout_seconds": ("wechat", "wechat.gateway_wait_timeout_seconds", "二维码等待超时（秒）", "不能大于 Gateway 请求超时。"),
 }
 
-_LEGACY_KEYS = {
-    **{f"features.{name}": f"feature.{name}" for name in ("file_analysis", "event_ai", "wechat_binding", "reminders")},
-    "web.usage_window_days": "admin.usage_window_days",
-    "web.database_page_size": "admin.database_page_size",
+LEGACY_SETTING_PATHS = {
+    **{f"feature.{name}": f"features.{name}" for name in ("file_analysis", "event_ai", "wechat_binding", "reminders")},
+    "admin.usage_window_days": "web.usage_window_days",
+    "admin.database_page_size": "web.database_page_size",
 }
+_LEGACY_KEYS = {path: key for key, path in LEGACY_SETTING_PATHS.items()}
+
+
+def setting_value(settings: Settings, path: str) -> Any:
+    value: Any = settings
+    for part in FIELDS[path][1].split("."):
+        value = getattr(value, part)
+    return value
 
 
 def list_settings(settings: Settings) -> list[dict[str, Any]]:
     sources = dict(settings.config_sources)
     schema = ConfigDocument.model_json_schema()
     rows = []
-    for path, (section, attribute, label, description) in FIELDS.items():
-        value: Any = settings
-        for part in attribute.split("."):
-            value = getattr(value, part)
+    for path, (section, _, label, description) in FIELDS.items():
+        value = setting_value(settings, path)
         if isinstance(value, Path):
             value = str(value)
         constraints = schema

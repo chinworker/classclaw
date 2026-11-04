@@ -56,7 +56,7 @@ openclaw config set plugins.entries.openclaw-weixin.enabled true
 openclaw gateway restart
 ```
 
-当前固定的腾讯插件 `2.4.6` 缺少 OpenClaw 2026.7 的 provider discovery 声明，并且其 CLI 式登录在单次等待超时后删除会话、仅在终端显示刷新二维码、通过 stdin 读取数字验证码。仓库兼容层 `2.4.6-classclaw.2` 保留官方微信消息收发与 CLI 登录，另实现 ClassClaw 专用的网页登录状态机；不要只升级方法声明或直接移除兼容层。实现与测试见 [兼容层 README](../integrations/openclaw/openclaw-weixin-compat/README.md)。
+当前固定的腾讯插件 `2.4.6` 缺少 OpenClaw 2026.7 的 provider discovery 声明，并且其 CLI 式登录在单次等待超时后删除会话、仅在终端显示刷新二维码、通过 stdin 读取数字验证码。仓库兼容层 `2.4.6-classclaw.4` 保留官方微信消息收发与 CLI 登录，另实现 ClassClaw 专用的网页登录状态机；不要只升级方法声明或直接移除兼容层。实现与测试见 [兼容层 README](../integrations/openclaw/openclaw-weixin-compat/README.md)。
 
 每个班级的每次网页登录都有独立 `login_id`，仅在兼容层内存中存在，成功后才将微信账号标识写入班级绑定。二维码内容由后端编码为 PNG Data URL；轮询只携带登录标识，二维码刷新时立即返回新图片。出现手机数字验证时，账户设置会显示输入框，按原样输入数字（保留前导零），无需操作服务器终端。官方协议来源：<https://github.com/Tencent/openclaw-weixin>。
 
@@ -74,13 +74,13 @@ openclaw config set plugins.entries.classclaw.config.timeoutMs 120000
 openclaw gateway restart
 ```
 
-`timeoutMs` 是班级智能体调用 `classclaw_analyze_interaction` 等工具的等待上限，必须不小于后端 TOML 的 `openclaw.timeout_seconds`；默认 30 秒会在分析较慢时把工具调用变成超时失败。
+`timeoutMs` 是班级智能体调用 `classclaw_analyze_interaction` 等工具的等待上限，必须不小于后端 TOML 的 `openclaw.timeout_seconds`；插件默认 120 秒（上限也是 120 秒）；Gateway 调用超时应与其协调。
 
 ### 5.1 轻量提取智能体（默认开启，提升分析速度）
 
 默认启用独立提取智能体（TOML 的 `openclaw.extractor_enabled=true`，无需额外设置）。后端所有 JSON 提取（interaction 清洗、onboarding 导入、课表/座位文件和事件分类）走一个专用的无工具智能体，默认名 `classclaw-extractor`（可用 `openclaw.extractor_agent_id` 修改）。服务启动和首次使用时会自动创建并校正它的独立 OpenClaw runtime：显式固定当前默认模型作为独立模型、开启 fast mode、按 `openclaw.extractor_thinking` 设置思考档位（默认 `off`）、关闭 reasoning/verbose、技能和记忆，并用 `minimal + deny session_status` 保证向模型暴露零个工具。它不会再继承 Main 的 coding 工具集或思考级别；提高提取思考强度会在配置变化时触发一次 Gateway 重启。
 
-清洗规范自动写入其工作区 `data/openclaw-agents/_extractor/AGENTS.md`，内容哈希变化时自动覆写（手工修改会被下次规则更新覆盖），请求 prompt 只携带数据。设 `openclaw.extractor_enabled=false` 可回退主智能体与完整内联提示词。创建和运行配置校正依赖 5.3 节的 `admin-http-rpc`，未启用时自动回退。
+提取器工作区只声明提取角色。后端按请求传入需要的规则，例如识别成绩表头时不附带班级写入规则，只传标题、表头及列映射格式。创建和运行配置校正依赖 `admin-http-rpc`。提取器未启用或不可用时，一般提取使用主智能体和同一任务提示；考试表头识别必须使用专用提取器。
 
 ClassClaw 自动维护 `plugins.entries.classclaw.config.agentClasses` 和顶层 `bindings`，不要手工把多个班级指向同一个 agent 或微信 account。
 

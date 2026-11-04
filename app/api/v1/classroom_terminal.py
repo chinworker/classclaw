@@ -191,7 +191,7 @@ async def device_channel(websocket: WebSocket):
         device_id = str(raw.get("device_id") or "")
         welcome = await _run(_hello, device_id, raw)
         connection = classroom_channel.TerminalConnection(
-            device_id=device_id, class_id=welcome["class_id"], send=websocket.send_json,
+            device_id=device_id, class_id=welcome["class_id"],
             loop=asyncio.get_running_loop(),
         )
         classroom_channel.register(connection)

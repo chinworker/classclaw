@@ -50,7 +50,7 @@ from app.models.entities import (
     WriteProposal,
 )
 from app.schemas.domain import ClassCreate, ClassUpdate, StudentCreate, StudentUpdate
-from app.services.common import audit, entity_dict
+from app.services.common import audit
 from app.services.student_ordering import student_order_by
 from app.utils.time import now, today
 
@@ -66,7 +66,7 @@ def create_class(db: Session, data: ClassCreate, *, commit: bool = True) -> Clas
     obj = ClassRoom(**data.model_dump())
     db.add(obj)
     db.flush()
-    audit(db, "create", "class", obj.id, after=entity_dict(obj))
+    audit(db, "create", "class", obj.id)
     if commit:
         db.commit()
     return obj
@@ -74,10 +74,15 @@ def create_class(db: Session, data: ClassCreate, *, commit: bool = True) -> Clas
 
 def update_class(db: Session, class_id: str, data: ClassUpdate) -> ClassRoom:
     obj = get_class(db, class_id, include_inactive=True)
-    before = entity_dict(obj)
-    for key, value in data.model_dump(exclude_unset=True).items():
+    changes = data.model_dump(exclude_unset=True)
+    if {"semester_start", "semester_end"} & changes.keys():
+        start = changes.get("semester_start", obj.semester_start)
+        end = changes.get("semester_end", obj.semester_end)
+        if start is not None and end is not None and end < start:
+            raise AppError("VALIDATION_ERROR", "学期结束日期不能早于开始日期", 422)
+    for key, value in changes.items():
         setattr(obj, key, value)
-    audit(db, "update", "class", obj.id, before=before, after=entity_dict(obj))
+    audit(db, "update", "class", obj.id)
     db.commit()
     return obj
 
@@ -141,6 +146,12 @@ def referenced_attachment_ids(db: Session, attachment_ids: set[str], *, ignore_e
             remaining_attachment_ids.update(_attachment_ids_from_value(proposal.preview_json))
             remaining_attachment_ids.update(_attachment_ids_from_value(proposal.result_json))
     return remaining_attachment_ids
+
+
+def list_unreferenced_attachments(db: Session) -> list[Attachment]:
+    candidates = list(db.scalars(select(Attachment).where(~select(AttachmentLink.id).where(AttachmentLink.attachment_id == Attachment.id).exists())))
+    referenced = referenced_attachment_ids(db, {row.id for row in candidates})
+    return [row for row in candidates if row.id not in referenced]
 
 
 def hard_delete_class(db: Session, class_id: str, *, operator_id: str | None = None, operation: DeletionOperation | None = None) -> dict:
@@ -359,13 +370,11 @@ def list_classes(db: Session, page: int, page_size: int, status: str | None = No
 def set_current_class(db: Session, class_id: str) -> ClassRoom:
     cls = get_class(db, class_id)
     setting = db.scalar(select(SystemSetting).where(SystemSetting.key == "current_class_id"))
-    before = setting.value_json if setting else None
     if not setting:
         setting = SystemSetting(key="current_class_id", value_json=class_id)
         db.add(setting)
     else:
         setting.value_json = class_id
-    audit(db, "set_current", "class", class_id, before={"class_id": before}, after={"class_id": class_id})
     db.commit()
     return cls
 
@@ -406,7 +415,6 @@ def create_student(db: Session, data: StudentCreate, *, commit: bool = True) -> 
     except IntegrityError as exc:
         db.rollback()
         raise _student_integrity_error(exc) from exc
-    audit(db, "create", "student", obj.id, after=entity_dict(obj))
     if commit:
         db.commit()
     return obj
@@ -414,7 +422,6 @@ def create_student(db: Session, data: StudentCreate, *, commit: bool = True) -> 
 
 def update_student(db: Session, student_id: str, data: StudentUpdate, *, commit: bool = True) -> Student:
     obj = get_student(db, student_id)
-    before = entity_dict(obj)
     for key, value in data.model_dump(exclude_unset=True).items():
         setattr(obj, key, value)
     try:
@@ -422,7 +429,6 @@ def update_student(db: Session, student_id: str, data: StudentUpdate, *, commit:
     except IntegrityError as exc:
         db.rollback()
         raise _student_integrity_error(exc) from exc
-    audit(db, "update", "student", obj.id, before=before, after=entity_dict(obj))
     if commit:
         db.commit()
     return obj
@@ -430,10 +436,9 @@ def update_student(db: Session, student_id: str, data: StudentUpdate, *, commit:
 
 def delete_student(db: Session, student_id: str) -> Student:
     obj = get_student(db, student_id)
-    before = entity_dict(obj)
     obj.deleted_at = now()
     obj.status = "inactive"
-    audit(db, "soft_delete", "student", obj.id, before=before, after=entity_dict(obj))
+    audit(db, "soft_delete", "student", obj.id)
     db.commit()
     return obj
 

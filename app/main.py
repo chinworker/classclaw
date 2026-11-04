@@ -107,12 +107,12 @@ async def app_error_handler(request: Request, exc: AppError):
 
 @app.exception_handler(RequestValidationError)
 async def validation_error_handler(request: Request, exc: RequestValidationError):
-    # ctx 里是校验器抛出的原始异常对象，不能被 JSON 序列化；msg 已包含同样的说明。
-    errors = jsonable_encoder([{key: value for key, value in error.items() if key != "ctx"} for error in exc.errors()])
-    if (request.url.path.endswith("/agent-binding/verify")
-            or request.url.path.startswith(f"{settings.api_prefix}/admin/settings/")
-            or request.url.path.endswith("/admin/openclaw/config/raw")):
-        errors = [{key: value for key, value in error.items() if key in {"loc", "msg", "type"}} for error in errors]
+    errors = [
+        # For unknown fields the last path component is an untrusted input key.
+        {"loc": item["loc"][:-1] if item["type"] == "extra_forbidden" else item["loc"],
+         "msg": item["msg"], "type": item["type"]}
+        for item in exc.errors()
+    ]
     return JSONResponse(status_code=422, content={"success": False, "error": {"code": "VALIDATION_ERROR", "message": "请求参数校验失败", "details": {"errors": errors}}, "request_id": request.state.request_id})
 
 

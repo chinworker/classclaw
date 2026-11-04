@@ -237,7 +237,7 @@ openclaw plugins install --link ./integrations/openclaw/openclaw-weixin-compat
 openclaw config set plugins.entries.openclaw-weixin.enabled true
 ```
 
-`classclaw-manager` Skill 随插件安装。微信兼容层 `2.4.6-classclaw.3` 固定上游微信插件 `2.4.6`，必须保留其网页登录状态机，详见 [兼容层说明](../integrations/openclaw/openclaw-weixin-compat/README.md)。
+`classclaw-manager` Skill 随插件安装。微信兼容层 `2.4.6-classclaw.4` 固定上游微信插件 `2.4.6`，必须保留其网页登录状态机，详见 [兼容层说明](../integrations/openclaw/openclaw-weixin-compat/README.md)。
 
 兼容层 `.4` 提供带已保存账号清单的班级级扫码取消和 `channels.logout` 账号登出能力，班级删除依赖它们清理微信凭据。升级顺序固定为先更新兼容层（并在空闲时重启 Gateway），再升级后端；在旧兼容层上删除班级会停在 `WECHAT_PLUGIN_UPDATE_REQUIRED`，更新后从失败阶段重试即可，业务数据尚未删除。
 
@@ -637,4 +637,4 @@ ClassClaw 不只通过 HTTP 调 Gateway，还直接写班级/提取器工作区�
 
 ## 可选教室媒体服务
 
-教室实时音视频另按 [媒体部署](classroom-media-deployment.md) 安装同机 MediaMTX 与 FFmpeg，并使用配套可选 systemd drop-in。媒体 unit 随 ClassClaw 停止/重启，遵守升级失败标记；不开公网信令/控制 API。Windows 程序按 [交接提示词](windows-client-agent-prompt.md) 实现。
+教室实时音视频另按 [媒体部署](classroom-media-deployment.md) 安装同机 MediaMTX 与 FFmpeg，并使用配套可选 systemd drop-in。媒体 unit 随 ClassClaw 停止/重启，遵守升级失败标记；不开公网信令/控制 API。Windows 终端安装与现场验收见 [Classroom Mate](../classroom-mate/README.md)。

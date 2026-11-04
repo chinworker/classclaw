@@ -7,7 +7,7 @@ providers and multiple external accounts per Agent are planned; this wrapper
 remains WeChat-specific.
 See [the channel architecture](../../../docs/classclaw-channels.md).
 
-Version `2.4.6-classclaw.2` delegates message transport, channel registration and
+Version `2.4.6-classclaw.4` delegates message transport, channel registration and
 CLI login to `@tencent-weixin/openclaw-weixin@2.4.6`. It preserves the web-login
 provider discovery declarations and adds a **ClassClaw-only browser login**.
 
@@ -24,7 +24,8 @@ stdin. ClassClaw's web flow must not delegate to that implementation.
   Other accounts' saved tokens are not submitted when generating a QR.
 - `web-route.js`: `POST /api/v1/classclaw/wechat-login`, registered with Gateway
   authentication and exact path matching. Only currently mapped ClassClaw
-  classes can use the fixed `start`, `wait`, `verify` operations. No arbitrary
+  classes can use the fixed `start`, `wait`, `verify` operations. The backend
+  can also cancel a class's pending login during deletion. No arbitrary
   RPC, URL, filesystem path, or client-selected account destination is allowed.
 
 Start accepts class ID, force, timeout and TTL; wait additionally requires the

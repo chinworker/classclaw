@@ -168,13 +168,13 @@ export async function render(mount) {
     }
   }
 
-  async function openScores(exam, preloaded = null) {
+  async function openScores(exam) {
     const body = el("div", {}, skeleton(5));
     const modal = openModal({ title: `成绩录入 · ${exam.name}`, wide: true, headClose: false, body, actions: [{ label: "关闭", kind: "secondary" }] });
     try {
       const [students, scores] = await Promise.all([
         refreshStudents(),
-        preloaded ? Promise.resolve(preloaded) : api(`/exams/${exam.id}/scores`),
+        api(`/exams/${exam.id}/scores`),
       ]);
       clear(body);
       if (!students.length) { body.append(emptyState("没有学生", "请先添加学生。")); return; }
@@ -287,9 +287,7 @@ export async function render(mount) {
     try {
       const stats = await api(`/exams/${exam.id}/statistics`);
       clear(body);
-      const subjects = Array.isArray(stats.subjects)
-        ? stats.subjects
-        : Object.entries(stats.subjects || {}).map(([name, m]) => ({ subject: name, ...m }));
+      const subjects = stats.subjects;
       const totals = stats.totals || [];
       const summary = stats.summary || {};
 
@@ -346,7 +344,6 @@ export async function render(mount) {
         body.append(el("p", { class: "muted chart-meta" },
           `分析由程序基于库内数据确定性实时计算${stats.cache_hit ? "（命中缓存）" : "（本次新生成，已留缓存）"} · 生成于 ${fmtDateTime(stats.generated_at)}`));
       }
-      if (stats.warnings?.length) body.append(...stats.warnings.map((w) => el("p", { class: "field-error" }, w)));
     } catch (error) {
       clear(body);
       body.append(errorPanel(error));

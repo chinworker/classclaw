@@ -44,7 +44,6 @@ def create_homework(db: Session, data: HomeworkCreate, *, commit: bool = True) -
     obj = Homework(**data.model_dump())
     db.add(obj)
     db.flush()
-    audit(db, "create", "homework", obj.id, after=entity_dict(obj), source_message_id=data.source_message_id)
     if commit:
         db.commit()
     return obj
@@ -66,7 +65,6 @@ def batch_homework_status(db: Session, homework_id: str, data: HomeworkBatchStat
                 HomeworkStudentStatus.student_id == item.student_id,
             )
         )
-        before = entity_dict(obj) if obj else None
         values = item.model_dump()
         submitted_at = values.get("submitted_at")
         if values["status"] == "submitted" and submitted_at and homework.due_at:
@@ -84,7 +82,6 @@ def batch_homework_status(db: Session, homework_id: str, data: HomeworkBatchStat
             obj = HomeworkStudentStatus(homework_id=homework_id, **values)
             db.add(obj)
         db.flush()
-        audit(db, "update_status", "homework_student_status", obj.id, before=before, after=entity_dict(obj))
         result.append(obj)
     if commit:
         db.commit()
@@ -106,6 +103,17 @@ def homework_summary(db: Session, homework_id: str) -> dict:
     explicit = sum(counts.values())
     counts["pending"] = counts.get("pending", 0) + max(0, total_students - explicit)
     return {"homework": homework, "student_count": total_students, "status_counts": counts, "completion_rate": complete / total_students if total_students else None}
+
+
+def list_homework_statuses(db: Session, homework_id: str) -> list[dict]:
+    stmt = (
+        select(HomeworkStudentStatus.student_id, HomeworkStudentStatus.status, HomeworkStudentStatus.score, HomeworkStudentStatus.comment)
+        .join(Homework, Homework.id == HomeworkStudentStatus.homework_id)
+        .join(Student, Student.id == HomeworkStudentStatus.student_id)
+        .where(Homework.id == homework_id, Student.class_id == Homework.class_id, Student.deleted_at.is_(None))
+        .order_by(*student_order_by())
+    )
+    return [dict(row) for row in db.execute(stmt).mappings()]
 
 
 def sync_missing_homework_events(db: Session, homework_id: str) -> dict:
@@ -149,7 +157,6 @@ def sync_missing_homework_events(db: Session, homework_id: str) -> dict:
             )
         )
         created += 1
-    audit(db, "sync_missing_events", "homework", homework_id, after={"created": created, "student_ids": missing_ids})
     db.commit()
     return {"created": created, "already_existing": len(missing_ids) - created}
 
@@ -173,7 +180,6 @@ def create_student_event(db: Session, data: StudentEventCreate, *, commit: bool 
     obj = StudentEvent(**data.model_dump())
     db.add(obj)
     db.flush()
-    audit(db, "create", "student_event", obj.id, after=entity_dict(obj), source_message_id=data.source_message_id)
     if commit:
         db.commit()
     return obj
@@ -197,7 +203,6 @@ def batch_student_events(db: Session, items: list[StudentEventCreate], *, commit
         obj = StudentEvent(**data.model_dump())
         db.add(obj)
         db.flush()
-        audit(db, "create", "student_event", obj.id, after=entity_dict(obj), source_message_id=data.source_message_id)
         result.append(obj)
     if commit:
         db.commit()
@@ -208,9 +213,8 @@ def revoke_student_event(db: Session, event_id: str) -> StudentEvent:
     obj = db.get(StudentEvent, event_id)
     if not obj or obj.deleted_at:
         raise not_found("学生事件", event_id)
-    before = entity_dict(obj)
     obj.deleted_at = now()
-    audit(db, "revoke", "student_event", obj.id, before=before, after=entity_dict(obj))
+    audit(db, "revoke", "student_event", obj.id)
     db.commit()
     return obj
 
@@ -225,7 +229,6 @@ def set_attendance(db: Session, data: AttendanceSet, *, commit: bool = True) -> 
             AttendanceRecord.attendance_date == data.attendance_date,
         )
     )
-    before = entity_dict(obj) if obj else None
     if obj:
         for key, value in data.model_dump(exclude_unset=True).items():
             setattr(obj, key, value)
@@ -233,7 +236,6 @@ def set_attendance(db: Session, data: AttendanceSet, *, commit: bool = True) -> 
         obj = AttendanceRecord(**data.model_dump())
         db.add(obj)
     db.flush()
-    audit(db, "set", "attendance", obj.id, before=before, after=entity_dict(obj), source_message_id=data.source_message_id)
     if commit:
         db.commit()
     return obj
@@ -296,7 +298,6 @@ def create_exam(db: Session, data: ExamCreate, *, commit: bool = True) -> Exam:
         db.add(ExamSubject(exam_id=exam.id, **subject.model_dump()))
     # Imports validate scores against these subjects before committing the transaction.
     db.flush()
-    audit(db, "create", "exam", exam.id, after={"exam": entity_dict(exam), "subjects": [s.model_dump() for s in data.subjects]})
     if commit:
         db.commit()
     return exam
@@ -307,12 +308,11 @@ def delete_exam(db: Session, exam_id: str, *, commit: bool = True) -> dict:
     if not exam:
         raise not_found("考试", exam_id)
     score_count = db.scalar(select(func.count(Score.id)).where(Score.exam_id == exam_id)) or 0
-    before = {"name": exam.name, "exam_date": exam.exam_date.isoformat(), "status": exam.status, "score_count": score_count}
     name = exam.name
     db.execute(delete(Score).where(Score.exam_id == exam_id))
     db.execute(delete(ExamSubject).where(ExamSubject.exam_id == exam_id))
     db.execute(delete(AnalysisCache).where(AnalysisCache.kind == f"exam_statistics:{exam_id}"))
-    audit(db, "delete", "exam", exam_id, before=before)
+    audit(db, "delete", "exam", exam_id)
     db.delete(exam)
     db.flush()
     if commit:
@@ -382,17 +382,14 @@ def save_scores(db: Session, exam_id: str, data: ScoreBatch, *, commit: bool = T
         obj = db.scalar(select(Score).where(Score.exam_id == exam_id, Score.student_id == row.student_id, Score.subject == row.subject))
         full_score = subjects[row.subject].full_score
         if obj:
-            before = entity_dict(obj)
             obj.score = row.score
             obj.full_score = full_score
             if "note" in row.model_fields_set:
                 obj.note = row.note
         else:
-            before = None
             obj = Score(exam_id=exam_id, student_id=row.student_id, subject=row.subject, score=row.score, full_score=full_score, note=row.note)
             db.add(obj)
         db.flush()
-        audit(db, "upsert", "score", obj.id, before=before, after=entity_dict(obj))
         result.append(obj)
     db.flush()
     for subject in {row.subject for row in data.scores}:

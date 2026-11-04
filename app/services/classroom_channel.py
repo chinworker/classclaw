@@ -6,7 +6,7 @@ SQLite 是唯一的执行账本；这里只保存当前在线的 WebSocket，用
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -18,7 +18,6 @@ from app.utils.time import now
 class TerminalConnection:
     device_id: str
     class_id: str
-    send: Callable[[dict], Awaitable[None]]
     loop: asyncio.AbstractEventLoop
     notify: asyncio.Event = field(default_factory=asyncio.Event)
     closing: asyncio.Event = field(default_factory=asyncio.Event)

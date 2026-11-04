@@ -17,7 +17,6 @@ from app.schemas.domain import (
     TimetableReplace,
 )
 from app.services.class_student import get_class
-from app.services.common import audit, entity_dict
 
 _CN_DIGITS = "零一二三四五六七八九"
 
@@ -55,7 +54,6 @@ def create_period(db: Session, class_id: str, data: PeriodCreate, *, commit: boo
     except IntegrityError as exc:
         db.rollback()
         raise AppError("TIMETABLE_CONFLICT", "该班级节次编号已存在", 409) from exc
-    audit(db, "create", "class_period", obj.id, after=entity_dict(obj))
     if commit:
         db.commit()
     return obj
@@ -70,7 +68,6 @@ def replace_base_timetable(db: Session, class_id: str, data: TimetableReplace, *
     invalid = sorted({item.period_no for item in data.items} - period_nos)
     if invalid:
         raise AppError("TIMETABLE_CONFLICT", "课表使用了未定义或未启用节次", details={"period_nos": invalid})
-    before = [entity_dict(x) for x in db.scalars(select(BaseTimetable).where(BaseTimetable.class_id == class_id))]
     db.execute(delete(BaseTimetable).where(BaseTimetable.class_id == class_id))
     result = []
     for item in data.items:
@@ -79,7 +76,6 @@ def replace_base_timetable(db: Session, class_id: str, data: TimetableReplace, *
         result.append(obj)
     db.flush()
     sync_subjects_from_timetable(db, class_id, data.items)
-    audit(db, "replace", "base_timetable", class_id, before={"items": before}, after={"items": [entity_dict(x) for x in result]})
     if commit:
         db.commit()
     return result
@@ -200,7 +196,6 @@ def create_override(db: Session, data: LessonOverrideCreate, *, commit: bool = T
     key = lesson_key(data.lesson_date, data.period_no)
     obj = db.scalar(select(LessonOverride).where(LessonOverride.class_id == data.class_id, LessonOverride.lesson_key == key))
     if obj:
-        before = entity_dict(obj)
         obj.original_subject = base.subject
         obj.original_teacher = base.teacher
         obj.replacement_subject = data.replacement_subject
@@ -208,7 +203,6 @@ def create_override(db: Session, data: LessonOverrideCreate, *, commit: bool = T
         obj.replacement_room = data.replacement_room
         obj.status = data.status
         obj.reason = data.reason
-        action = "update"
     else:
         obj = LessonOverride(
             class_id=data.class_id,
@@ -224,10 +218,7 @@ def create_override(db: Session, data: LessonOverrideCreate, *, commit: bool = T
             reason=data.reason,
         )
         db.add(obj)
-        before = None
-        action = "create"
     db.flush()
-    audit(db, action, "lesson_override", obj.id, before=before, after=entity_dict(obj))
     if commit:
         db.commit()
     return obj
@@ -237,9 +228,7 @@ def remove_override(db: Session, override_id: str) -> dict:
     obj = db.get(LessonOverride, override_id)
     if not obj:
         raise not_found("课程覆盖", override_id)
-    before = entity_dict(obj)
     db.delete(obj)
-    audit(db, "remove", "lesson_override", override_id, before=before, after=None)
     db.commit()
     return {"removed_id": override_id, "restored_to_base": True}
 

@@ -18,7 +18,7 @@ ClassClaw 使用 SQLite + SQLAlchemy，核心业务库有 33 张应用数据表�
 | 分区 | 表 | 关系与用途 |
 |---|---|---|
 | 账户与权限 | `users`, `user_sessions` | 一个管理员；班主任用户名唯一。班主任通过 `classes.owner_user_id` 最多绑定一个班级。Session 只保存 Token 哈希。 |
-| 班级与智能体 | `classes`, `class_subjects`, `class_agent_bindings`, `system_settings` | 班级是业务根。每班最多一条智能体绑定；微信 account 可为空。科目按班级唯一。`system_settings` 仅保存当前班级等运行数据，部署配置改由启动 TOML 承载。 |
+| 班级与智能体 | `classes`, `class_subjects`, `class_agent_bindings`, `system_settings` | 班级是业务根。每班最多一条智能体绑定；微信 account 可为空。科目按班级唯一。`system_settings` 兼容保留 `current_class_id`；网页按账号绑定选择班级，部署配置来自启动 TOML。 |
 | 学生主数据 | `students` | `(class_id, student_no)` 唯一。删除为软删除，历史考勤、事件、成绩仍可追溯。 |
 | 座位 | `seating_snapshots` | 每次修改新增完整命名版本，不覆盖历史；版本可选择、重命名和单独删除。 |
 | 值日 | `duty_rules`, `duty_schedules`, `duty_assignments`, `duty_score_items`, `duty_evaluations`, `duty_evaluation_details` | 规则可增删改查；任务直接使用 0–5 分，评分即完成，过往未评分任务次日补 5 分。 |
@@ -32,7 +32,7 @@ ClassClaw 使用 SQLite + SQLAlchemy，核心业务库有 33 张应用数据表�
 | 分析缓存 | `analysis_cache` | 确定性分析（考试统计等）按数据指纹缓存结果；条数超过 `runtime.analysis_cache_max_entries` 时清理最旧条目，数据变化自动失效，删除考试时同步清理。 |
 | 对话写入 | `interaction_analyses`, `write_proposals` | 分析记录只保留结构化结果和 proposal 关联，不保存聊天原文；proposal 保存归一化 payload、预览、版本、状态与执行结果。 |
 | 网页建班 | `class_onboarding_sessions` | 保存网页建班草稿、版本和状态；最终确认时原子创建班级、学生、科目、节次、课表和智能体绑定记录。 |
-| 轻量审计 | `audit_logs` | 只记录少量关键动作，不保存整份业务消息或前后快照。 |
+| 轻量审计 | `audit_logs` | 记录账户、班级归属、Agent、关键删除及设备配置等变更；不保存整份业务消息或前后快照。 |
 | 删除日志 | `deletion_operations` | 班级/账号删除的持久化清理记录：目标、资源清单、阶段、错误码和结果，不保存凭据或消息内容；未完成记录可重试。 |
 | AI 使用量（独立 `usage.db`） | `ai_usage_records` | 保存 OpenClaw 报告的 Token 数、模型和调用类型，不保存 prompt 或回复正文；独立会话与写锁，不参与业务事务。 |
 
@@ -155,11 +155,11 @@ ClassClaw 使用 SQLite + SQLAlchemy，核心业务库有 33 张应用数据表�
 
 - 账户：登录、退出、改密码；管理员新增/停用班主任、重置密码、分配班级。
 - 建班：onboarding 草稿、文件解析、最终网页复核、智能体创建、可选微信绑定。
-- 班级：修改基本信息、设为当前班级、停用班级、彻底删除班级及关联业务数据。
+- 班级：修改基本信息、停用班级、彻底删除班级及关联业务数据。
 - 学生：网页直接新增/修改、软删除。
 - 座位：直接保存、交换、从历史快照恢复。
 - 值日：静态规则校验与保存、整批排班预览确认、替班、完成、评分及统计。
-- 作业：网页直接创建和更新状态、查询未交、把未交状态同步为学生事件。
+- 作业：网页直接创建作业、查看和修改已登记的收缴状态；REST 可显式查询未交或同步为学生事件。
 - 学生事件：网页直接登记、批量登记、查询和软撤销。
 - 考勤：网页直接登记/更正和统计。
 - 考试成绩：网页查询考试列表（含科目）、直接建考试、批量成绩和统计。

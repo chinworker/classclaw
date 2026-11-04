@@ -53,3 +53,12 @@ qr_poll_ms = 3000
 qr_retry_ms = 5000
 gateway_start_timeout_seconds = 30
 gateway_wait_timeout_seconds = 15
+
+[classroom]
+# Optional on-site audio/video forwarding; see docs/classroom-media-deployment.md.
+media_provider = "none"
+# media_base_url = "http://127.0.0.1:8889"
+# media_api_url = "http://127.0.0.1:9997"
+# media_rtsp_url = "rtsp://127.0.0.1:8554"
+# media_ffmpeg_path = "ffmpeg"
+# media_ice_servers = []

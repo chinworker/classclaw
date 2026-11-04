@@ -8,7 +8,7 @@ from app.core.errors import AppError
 from app.core.responses import ok
 from app.core.security import principal_from_request, require_class_available, require_owned_class
 from app.database import get_db
-from app.models.entities import ClassOnboardingSession, ClassSubject, WriteProposal
+from app.models.entities import ClassOnboardingSession, WriteProposal
 from app.schemas.domain import (
     ClassOnboardingCreate,
     ClassOnboardingUpdate,
@@ -64,7 +64,7 @@ async def openclaw_status(request: Request, refresh: bool = False):
 
 @router.post("/write-proposals", status_code=201)
 def write_proposal_create(request: Request, body: WriteProposalCreate, db: Session = Depends(get_db)):
-    proposal = service.create_proposal(db, body)
+    proposal = service.create_proposal(db, body, bound_class_id=body.bound_class_id)
     try:
         _require_proposal_access(request, db, proposal)
     except AppError:
@@ -76,8 +76,8 @@ def write_proposal_create(request: Request, body: WriteProposalCreate, db: Sessi
 
 
 @router.get("/write-proposals/{proposal_id}")
-def write_proposal_get(request: Request, proposal_id: str, db: Session = Depends(get_db)):
-    proposal = service.get_proposal(db, proposal_id)
+def write_proposal_get(request: Request, proposal_id: str, bound_class_id: str | None = None, db: Session = Depends(get_db)):
+    proposal = service.get_proposal(db, proposal_id, bound_class_id=bound_class_id)
     _require_proposal_access(request, db, proposal)
     return ok(request, proposal)
 
@@ -112,10 +112,13 @@ def write_proposal_confirm(request: Request, proposal_id: str, body: WritePropos
 
 
 @router.post("/write-proposals/{proposal_id}/cancel")
-def write_proposal_cancel(request: Request, proposal_id: str, cancelled_by: str | None = Body(default=None, embed=True), db: Session = Depends(get_db)):
-    proposal = service.get_proposal(db, proposal_id)
+def write_proposal_cancel(
+    request: Request, proposal_id: str, bound_class_id: str | None = Body(default=None, embed=True),
+    db: Session = Depends(get_db),
+):
+    proposal = service.get_proposal(db, proposal_id, bound_class_id=bound_class_id)
     _require_proposal_access(request, db, proposal)
-    return ok(request, service.cancel_proposal(db, proposal_id, cancelled_by), "写入预览已取消")
+    return ok(request, service.cancel_proposal(db, proposal), "写入预览已取消")
 
 
 @router.post("/class-onboarding/sessions", status_code=201)
@@ -266,9 +269,3 @@ async def class_agent_binding_verify(request: Request, class_id: str, body: Wech
     return ok(request, await openclaw_provisioning.wait_wechat_binding(
         db, class_id, login_id=body.login_id, challenge_id=body.challenge_id, code=body.code,
     ), "微信验证状态已刷新")
-
-
-@router.get("/classes/{class_id}/subjects")
-def class_subjects(request: Request, class_id: str, db: Session = Depends(get_db)):
-    require_owned_class(request, class_id)
-    return ok(request, list(db.scalars(select(ClassSubject).where(ClassSubject.class_id == class_id).order_by(ClassSubject.name))))

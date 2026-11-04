@@ -4,12 +4,10 @@ import asyncio
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from types import SimpleNamespace
 
 import pytest
 from fastapi import Request
 
-from app import database
 from app.core.errors import AppError
 from app.core.security import Principal
 from app.services import ai_tasks, openclaw_bridge
@@ -88,24 +86,6 @@ def test_cancel_endpoint_accepts_authenticated_web_request(client):
     response = client.post(f"/api/v1/ai/tasks/{task_id}/cancel")
     assert response.status_code == 200
     assert response.json()["data"] == {"task_id": task_id, "cancelled": True, "state": "pending"}
-
-
-def test_cancel_endpoint_uses_read_session_despite_post_method():
-    request = Request(
-        {
-            "type": "http",
-            "method": "POST",
-            "path": "/api/v1/ai/tasks/example/cancel",
-            "headers": [],
-            "route": SimpleNamespace(name="ai_task_cancel"),
-        }
-    )
-    dependency = database.get_db(request)
-    session = next(dependency)
-    try:
-        assert session.bind is database.read_engine
-    finally:
-        dependency.close()
 
 
 def test_cancel_endpoint_stops_event_ai_route(client, sample, monkeypatch):

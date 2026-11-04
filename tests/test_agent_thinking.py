@@ -10,23 +10,17 @@ from app.config import settings
 from app.core.errors import AppError
 from app.models.entities import ClassAgentBinding
 from app.services import agent_thinking, openclaw_bridge, openclaw_provisioning
-from tests.helpers import teacher_for_class
+from tests.helpers import FakeGateway, teacher_for_class
 
 
 @pytest.fixture
 def thinking_gateway(monkeypatch):
     agent = {"id": "class-agent", "model": {"primary": "kimi/kimi-for-coding"},
              "thinkingLevels": [{"id": "off", "label": "off"}, {"id": "low", "label": "on"}], "thinkingDefault": "off"}
-    calls = []
-
-    async def rpc(method, params=None):
-        calls.append((method, params))
-        assert method == "agents.list"
-        return {"agents": [{"id": "foreign-agent", "workspace": "private-path"}, agent]}
-
-    monkeypatch.setattr(openclaw_provisioning, "admin_rpc", rpc)
+    gateway = FakeGateway({"agents.list": {"agents": [{"id": "foreign-agent", "workspace": "private-path"}, agent]}})
+    monkeypatch.setattr(openclaw_provisioning, "admin_rpc", gateway)
     monkeypatch.setattr(agent_thinking, "settings", replace(settings, openclaw_class_agent_thinking="off"))
-    return agent, calls
+    return agent, gateway.calls
 
 
 def test_thinking_options_expose_only_bound_model_capabilities(client, db, sample, tmp_path, thinking_gateway):
@@ -153,31 +147,31 @@ def class_thinking_runtime(db, sample, monkeypatch, tmp_path):
     agent = {"id": "class-agent", "model": "provider/model", "thinkingDefault": "off"}
     other = {"id": "other-agent", "thinkingDefault": "high"}
     config = {"agents": {"list": [agent, other]}, "bindings": [{"agentId": "class-agent", "match": {"accountId": "wechat-a"}}]}
-    calls = []
 
-    async def rpc(method, params=None):
-        calls.append((method, params))
-        if method == "config.get":
-            return {"hash": "current-hash", "config": config}
-        if method == "agents.list":
-            return {"agents": [{**config["agents"]["list"][0], "thinkingLevels": [
-                {"id": "off", "label": "off"}, {"id": "low", "label": "on"},
-            ]}]}
-        if method == "models.list":
-            return {"models": [{"id": "model", "provider": "provider", "input": ["text", "image"]},
-                               {"id": "new", "provider": "provider", "input": ["text"]}]}
-        if method == "models.authStatus":
-            return {"providers": []}
-        if method == "config.patch":
-            assert params["baseHash"] == "current-hash"
-            patch = json.loads(params["raw"])
-            assert set(patch) <= {"agents", "plugins"}
-            config["agents"]["list"] = patch["agents"]["list"]
-            return {}
-        pytest.fail(method)
+    def capabilities(_params):
+        return {"agents": [{**config["agents"]["list"][0], "thinkingLevels": [
+            {"id": "off", "label": "off"}, {"id": "low", "label": "on"},
+        ]}]}
 
-    monkeypatch.setattr(openclaw_provisioning, "admin_rpc", rpc)
-    return binding, config, calls
+    def patch_config(params):
+        assert params["baseHash"] == "current-hash"
+        patch = json.loads(params["raw"])
+        assert set(patch) <= {"agents", "plugins"}
+        config["agents"]["list"] = patch["agents"]["list"]
+        return {}
+
+    gateway = FakeGateway({
+        "config.get": {"hash": "current-hash", "config": config},
+        "agents.list": capabilities,
+        "models.list": {"models": [
+            {"id": "model", "provider": "provider", "input": ["text", "image"]},
+            {"id": "new", "provider": "provider", "input": ["text"]},
+        ]},
+        "models.authStatus": {"providers": []},
+        "config.patch": patch_config,
+    })
+    monkeypatch.setattr(openclaw_provisioning, "admin_rpc", gateway)
+    return binding, config, gateway.calls
 
 
 def test_class_default_save_reset_and_other_agents_are_preserved(client, db, sample, class_thinking_runtime):
@@ -218,19 +212,43 @@ def test_class_thinking_revalidates_capabilities_and_rejects_cross_class_write(c
     assert client.patch(path, json={"thinking_default": "low"}, headers={"Authorization": ""}).status_code == 401
 
 
-def test_failed_gateway_save_keeps_the_persisted_class_default(client, sample, class_thinking_runtime, monkeypatch):
+@pytest.mark.parametrize(("endpoint", "body", "gateway_details"), [
+    ("thinking", {"thinking_default": "low"}, {"gateway_status": 409}),
+    ("models", {"thinking_default": "low", "image_model": "provider/model"}, {"gateway_error": {"message": "stale baseHash"}}),
+])
+def test_gateway_conflict_keeps_all_local_settings(client, sample, class_thinking_runtime, monkeypatch, endpoint, body, gateway_details):
     binding, _, _ = class_thinking_runtime
     original = openclaw_provisioning.admin_rpc
 
     async def fail_patch(method, params=None):
         if method == "config.patch":
-            raise AppError("CONFIG_CONFLICT", "配置已变更", 409)
+            raise AppError("OPENCLAW_ADMIN_UNAVAILABLE", "Gateway 拒绝更新", 503, gateway_details)
         return await original(method, params)
 
     monkeypatch.setattr(openclaw_provisioning, "admin_rpc", fail_patch)
-    result = client.patch(f"/api/v1/classes/{sample[0].id}/agent-chat/thinking", json={"thinking_default": "low"})
+    result = client.patch(f"/api/v1/classes/{sample[0].id}/agent-chat/{endpoint}", json=body)
     assert result.status_code == 409
-    assert binding.thinking_default is None
+    assert result.json()["error"]["code"] == "CONFIG_CONFLICT"
+    assert binding.thinking_default is None and binding.image_model is None
+
+
+def test_changed_agent_config_requires_a_gateway_version(client, sample, class_thinking_runtime, monkeypatch):
+    binding, _, calls = class_thinking_runtime
+    original = openclaw_provisioning.admin_rpc
+
+    async def unversioned_snapshot(method, params=None):
+        result = await original(method, params)
+        return {"config": result["config"]} if method == "config.get" else result
+
+    monkeypatch.setattr(openclaw_provisioning, "admin_rpc", unversioned_snapshot)
+    path = f"/api/v1/classes/{sample[0].id}/agent-chat/thinking"
+    no_change = client.patch(path, json={"thinking_default": "off"})
+    assert no_change.status_code == 200, no_change.text
+    assert no_change.json()["data"]["restart_requested"] is False
+    changed = client.patch(path, json={"thinking_default": "low"})
+    assert changed.status_code == 503
+    assert binding.thinking_default == "off"
+    assert not any(method == "config.patch" for method, _ in calls)
 
 
 def test_class_default_and_session_override_have_separate_priorities(thinking_gateway):
@@ -295,7 +313,9 @@ def test_model_settings_save_default_thinking_and_image_choice_together(client, 
     assert config["agents"]["list"][0]["thinkingDefault"] == "low"
     assert config["agents"]["list"][0]["model"] == "provider/model"
     assert config["agents"]["list"][1] == {"id": "other-agent", "thinkingDefault": "high"}
-    assert sum(method == "config.patch" for method, _ in calls) == 1
+    assert sum(method == "config.get" for method, _ in calls) == 1
+    patch, = (params for method, params in calls if method == "config.patch")
+    assert patch["replacePaths"] == ["agents.list"]
     current = client.get(path).json()["data"]
     assert current["configured"]["thinking_default"] == "low"
 
@@ -322,3 +342,8 @@ def test_model_settings_require_new_model_capabilities_before_explicit_thinking_
     assert saved.status_code == 200, saved.text
     assert config["agents"]["list"][0]["model"] == "provider/new"
     assert binding.main_model == "provider/new" and binding.thinking_default is None
+
+    reset = client.patch(path, json={"main_model": None})
+    assert reset.status_code == 200, reset.text
+    assert binding.main_model is None
+    assert config["agents"]["list"][0] == {"id": "class-agent", "thinkingDefault": "off"}

@@ -45,6 +45,27 @@ def test_homework_event_idempotency_and_attendance_rate(db, sample):
     assert summary["attendance_rate"] <= 1
 
 
+def test_homework_editor_reads_saved_status_and_preserves_untouched_rows(client, db, sample):
+    cls, _, students = sample
+    hw = academic.create_homework(db, HomeworkCreate(class_id=cls.id, title="数学", subject="数学", assigned_date=date(2026, 9, 1)))
+    academic.batch_homework_status(db, hw.id, HomeworkBatchStatus(items=[
+        HomeworkStatusItem(student_id=students[0].id, status="submitted", score=90, comment="已核对"),
+        HomeworkStatusItem(student_id=students[1].id, status="missing"),
+    ]))
+    path = f"/api/v1/homework/{hw.id}/students"
+    result = client.get(path)
+    assert result.status_code == 200, result.text
+    assert result.json()["data"] == [
+        {"student_id": students[0].id, "status": "submitted", "score": 90, "comment": "已核对"},
+        {"student_id": students[1].id, "status": "missing", "score": None, "comment": None},
+    ]
+    saved = client.put(path, json={"items": [{"student_id": students[1].id, "status": "late"}]})
+    assert saved.status_code == 200, saved.text
+    rows = client.get(path).json()["data"]
+    assert rows[0] == result.json()["data"][0]
+    assert rows[1]["status"] == "late"
+
+
 def test_score_batch_invalid_rolls_back(db, sample):
     cls, _, students = sample
     exam = academic.create_exam(db, ExamCreate(class_id=cls.id, name="月考", exam_date=date(2026, 9, 2), subjects=[ExamSubjectInput(subject="数学", full_score=100)]))

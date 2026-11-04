@@ -1,4 +1,4 @@
-"""Shared test helpers for creating bound head-teacher accounts and class agents."""
+"""Shared test helpers for accounts, class agents, Gateway calls, and terminals."""
 from __future__ import annotations
 
 import asyncio
@@ -21,6 +21,20 @@ TERMINAL_INVENTORY = {
     "microphones": [{"name": "内置麦克风", "identifier": "mic-1"}],
     "speakers": [{"name": "教室音箱", "identifier": "spk-1"}],
 }
+
+
+class FakeGateway:
+    """Record admin RPC calls and reject methods the test did not arrange."""
+
+    def __init__(self, replies: dict[str, Any]):
+        self.replies = replies
+        self.calls: list[tuple[str, dict | None]] = []
+
+    async def __call__(self, method: str, params: dict | None = None) -> Any:
+        self.calls.append((method, params))
+        assert method in self.replies, f"Unexpected Gateway RPC: {method}"
+        reply = self.replies[method]
+        return reply(params) if callable(reply) else reply
 
 
 def teacher_for_class(client: Any, cls: Any, db: Session, username: str, admin_headers: dict | None = None) -> dict:
@@ -71,16 +85,10 @@ def online_terminal(db: Session, device_id: str, class_id: str) -> Any:
     device = db.get(ClassroomDevice, device_id)
     device.last_seen_at = now()
     db.commit()
-    sent: list[dict] = []
-
-    async def send(message: dict) -> None:
-        sent.append(message)
-
-    connection = TerminalConnection(device_id=device_id, class_id=class_id, send=send,
-                                    loop=asyncio.new_event_loop())
+    connection = TerminalConnection(device_id=device_id, class_id=class_id, loop=asyncio.new_event_loop())
     register(connection)
     try:
-        yield sent
+        yield
     finally:
         unregister(device_id, connection)
         connection.loop.close()

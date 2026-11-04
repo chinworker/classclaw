@@ -14,19 +14,6 @@ _CONTROL_TABLE[ord("\n")] = " "
 _CONTROL_TABLE[ord("\t")] = " "
 _CONTROL_TRANSLATION = str.maketrans(_CONTROL_TABLE)
 
-CommandKind = Literal[
-    "broadcast.show",
-    "broadcast.stop",
-    "broadcast.clear",
-    "volume.set",
-    "device.test_display",
-    "device.test_speak",
-    "device.configure",
-    "camera.start",
-    "camera.stop",
-]
-
-
 def clean_text(value: str) -> str:
     """广播文本只用于显示和播报：去掉控制字符，保留老师写的原文。"""
     return value.translate(_CONTROL_TRANSLATION).strip()
@@ -56,10 +43,6 @@ class BroadcastShowPayload(_Strict):
     gap_seconds: int = Field(ge=0, le=60)
     volume: int | None = Field(default=None, ge=0, le=100)
     target_screen: str | None = Field(default=None, max_length=200)
-
-
-class EmptyPayload(_Strict):
-    pass
 
 
 class BroadcastControlPayload(_Strict):

@@ -465,7 +465,7 @@ export async function render(mount, ctx, helpers) {
 
     function showEditor(nextPeriods, nextItems) {
       periods = nextPeriods;
-      editor = timetableGridEditor({ periods, items: nextItems, editable: true, defaultRoom: classInfo?.room || null });
+      editor = timetableGridEditor({ periods, items: nextItems, defaultRoom: classInfo?.room || null });
       editorHost.replaceChildren(editor.el);
       saveBtn.disabled = false;
     }

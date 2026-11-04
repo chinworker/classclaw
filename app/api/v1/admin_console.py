@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.core.errors import AppError
 from app.core.responses import ok
-from app.core.security import principal_from_request, require_admin
+from app.core.security import principal_from_request, require_admin, require_admin_read
 from app.database import get_db
 from app.schemas.admin import (
     AdminClassOwnerUpdate,
@@ -23,6 +23,7 @@ from app.schemas.admin import (
 from app.services import admin_console, config_document, openclaw_bridge
 
 router = APIRouter(prefix="/admin", tags=["管理员控制台"], dependencies=[Depends(require_admin)])
+session_cleanup_router = APIRouter(prefix="/admin", tags=["管理员控制台"], dependencies=[Depends(require_admin_read)])
 
 
 @router.get("/overview")
@@ -42,14 +43,14 @@ async def usage_agents(request: Request, days: int = Query(30, ge=1, le=365), db
     return ok(request, await admin_console.openclaw_agent_usage(db, days))
 
 
-@router.get("/settings")
+@router.get("/settings", deprecated=True)
 def settings_list(request: Request):
     response = ok(request, admin_console.list_settings())
     response.headers["Cache-Control"] = "no-store"
     return response
 
 
-@router.get("/settings/catalog")
+@router.get("/settings/catalog", deprecated=True)
 def settings_catalog(request: Request):
     response = ok(request, admin_console.settings_catalog())
     response.headers["Cache-Control"] = "no-store"
@@ -105,12 +106,12 @@ def class_owner_update(request: Request, class_id: str, body: AdminClassOwnerUpd
     return ok(request, admin_console.update_class_owner(db, class_id, body.owner_user_id), "班级负责人已更新")
 
 
-@router.get("/openclaw/config")
+@router.get("/openclaw/config", deprecated=True)
 async def openclaw_config(request: Request):
     return ok(request, await admin_console.openclaw_config())
 
 
-@router.patch("/openclaw/config")
+@router.patch("/openclaw/config", deprecated=True)
 async def openclaw_config_update(request: Request, body: OpenClawGlobalUpdate, db: Annotated[Session, Depends(get_db)]):
     return ok(request, await admin_console.update_openclaw_config(db, principal_from_request(request), body), "OpenClaw 配置已提交")
 
@@ -146,7 +147,7 @@ def openclaw_sessions_cleanup_status(request: Request):
     return ok(request, openclaw_bridge.session_cleanup_status())
 
 
-@router.post("/openclaw/sessions/cleanup")
+@session_cleanup_router.post("/openclaw/sessions/cleanup")
 async def openclaw_sessions_cleanup(request: Request, enforce: bool = Query(True)):
     result = await openclaw_bridge.run_session_cleanup(enforce=enforce)
     return ok(request, result, "Session 清理已执行" if result["ok"] else "Session 清理未完全成功，详见 output")

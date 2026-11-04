@@ -183,7 +183,7 @@ def delete_teacher(db: Session, user_id: str, *, operator_id: str | None = None,
     db.query(UserSession).filter(UserSession.user_id == user.id, UserSession.revoked_at.is_(None)).update({"revoked_at": now()})
     for cls in db.scalars(select(ClassRoom).where(ClassRoom.owner_user_id == user.id)):
         cls.owner_user_id = None
-    audit(db, "delete", "user", user.id, operator_type="admin", operator_id=operator_id, before={"username": username, "class_ids": class_ids})
+    audit(db, "delete", "user", user.id, operator_type="admin", operator_id=operator_id)
     db.delete(user)
     if commit:
         db.commit()

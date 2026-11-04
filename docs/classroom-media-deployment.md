@@ -1,6 +1,6 @@
 # 教室音视频服务部署与联调
 
-服务端、网页播放器和 ClassClaw Channels 的按需现场概况已经实现。Windows 程序由下一位智能体按 [Windows 交接提示词](windows-client-agent-prompt.md) 编写。部署时另装同机 MediaMTX 二进制和 FFmpeg；不引入 Docker、Redis 或任务队列。默认 `media_provider="none"` 保持只显示设备状态，只有完成下述配置后才启用播放。
+服务端、网页播放器和 ClassClaw Channels 的按需现场概况已经实现。[Windows 终端](../classroom-mate/README.md) 已实现，真实教室硬件仍需现场验收。部署时另装同机 MediaMTX 二进制和 FFmpeg；不引入 Docker、Redis 或任务队列。默认 `media_provider="none"` 保持只显示设备状态，只有完成下述配置后才启用播放。
 
 ## 1. 组件和边界
 
@@ -28,7 +28,7 @@ sudo install -m 0644 deploy/systemd/classclaw-media.conf /etc/systemd/system/cla
 ```
 
 4. 编辑 `/etc/classclaw/mediamtx.yml` 的 `webrtcAdditionalHosts`，填服务器实际公网 IP 或 DNS；如 FastAPI 不是 8000 端口，同步修改 `authHTTPAddress`。保留回环监听和 HTTP 鉴权，不要改成匿名读取。
-5. 在现有 `config/classclaw.toml` 的 `[classroom]` 中设置（不要重复创建同名表）：
+5. 在 `config/classclaw.toml` 中编辑 `[classroom]`；旧模板如果没有此段，新增一次：
 
 ```toml
 media_provider = "mediamtx"

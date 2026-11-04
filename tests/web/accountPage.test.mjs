@@ -1,6 +1,6 @@
 import test, { beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { installDom, tick, response } from "./dom.mjs";
+import { findButton, installDom, tick, response } from "./dom.mjs";
 
 installDom();
 const page = await import("../../web/js/pages/account.js");
@@ -42,7 +42,6 @@ async function mountPage() {
   await page.render(mount);
   return mount;
 }
-function button(mount, text) { return mount.querySelectorAll("button").find((node) => node.textContent === text); }
 
 test("teacher with a pending account alias can see and generate QR in account settings", async () => {
   const mount = await mountPage();
@@ -54,9 +53,9 @@ test("teacher with a pending account alias can see and generate QR in account se
   assert.ok(mount.querySelector(".account-channels").querySelector(".qr-panel"));
   assert.equal(mount.querySelector(".account-agent-settings").querySelector(".qr-panel"), null);
   assert.ok(mount.querySelector("form"));
-  assert.ok(button(mount, "模型设置"));
+  assert.ok(findButton(mount, "模型设置"));
   assert.equal(calls.some(({ path }) => path.endsWith("/start")), false);
-  button(mount, "绑定微信 / 重新生成二维码").click(); await tick();
+  findButton(mount, "绑定微信 / 重新生成二维码").click(); await tick();
   assert.equal(mount.querySelector("img").src, qr);
   assert.equal(mount.querySelector("img").classList.contains("hidden"), false);
   assert.equal(JSON.parse(calls.at(-1).options.body).force, true);
@@ -67,7 +66,7 @@ test("linked teachers retain an explicit rebind action without automatically sta
   binding.status = "linked";
   const mount = await mountPage();
   assert.ok(mount.textContent.includes("微信已绑定"));
-  assert.ok(button(mount, "绑定微信 / 重新生成二维码"));
+  assert.ok(findButton(mount, "绑定微信 / 重新生成二维码"));
   assert.equal(calls.length, 1);
 });
 
@@ -94,7 +93,7 @@ test("provisioning occurs in account settings and only reloads the Agent section
   const mount = await mountPage();
   const password = mount.querySelector("input");
   password.value = "unsaved-password-input";
-  button(mount, "创建班级 Agent").click(); await tick();
+  findButton(mount, "创建班级 Agent").click(); await tick();
   assert.ok(mount.querySelector(".qr-panel"));
   assert.equal(mount.querySelector("input"), password);
   assert.equal(password.value, "unsaved-password-input");
@@ -120,7 +119,7 @@ test("leaving during QR setup aborts only the binding request and ignores its la
     return fallback(path, options);
   };
   const mount = await mountPage();
-  button(mount, "绑定微信 / 重新生成二维码").click();
+  findButton(mount, "绑定微信 / 重新生成二维码").click();
   page.dispose(); mount.remove();
   assert.equal(signal.aborted, true);
   const text = mount.textContent;
@@ -132,7 +131,7 @@ test("leaving during QR setup aborts only the binding request and ignores its la
 
 test("model settings are scoped to the class and the dialog closes on page disposal", async () => {
   const mount = await mountPage();
-  button(mount, "模型设置").click(); await tick();
+  findButton(mount, "模型设置").click(); await tick();
   assert.ok(document.body.querySelector(".modal-overlay"));
   assert.ok(calls.some(({ path }) => path === "/api/v1/classes/class-a/agent-chat/models"));
   page.dispose();
@@ -152,13 +151,13 @@ test("default thinking is saved with model settings using the Gateway binary lev
   };
   const mount = await mountPage();
   assert.equal(mount.querySelector(".account-agent-settings").textContent.includes("null"), false);
-  button(mount, "模型设置").click(); await tick();
+  findButton(mount, "模型设置").click(); await tick();
   const modal = document.body.querySelector(".modal");
   const thinking = modal.querySelector(".class-thinking-select");
   assert.deepEqual(thinking.querySelectorAll("option").map((option) => option.value), ["", "off", "low"]);
   assert.equal(thinking.querySelectorAll("option")[2].textContent, "开启");
   thinking.value = "low";
-  button(modal, "保存模型设置").click(); await tick();
+  findButton(modal, "保存模型设置").click(); await tick();
   assert.deepEqual(submitted, { thinking_default: "low" });
   assert.equal(document.body.querySelector(".modal"), null);
 });
@@ -172,13 +171,13 @@ test("changing the main model defers thinking choices until its actual capabilit
     if (path.endsWith("/agent-chat/models") && options.method === "PATCH") { submitted = JSON.parse(options.body); return response({ restart_requested: true }); }
     return fallback(path, options);
   };
-  const mount = await mountPage(); button(mount, "模型设置").click(); await tick();
+  const mount = await mountPage(); findButton(mount, "模型设置").click(); await tick();
   const modal = document.body.querySelector(".modal");
   const main = modal.querySelectorAll("select")[0];
   main.value = "provider/new"; main.dispatchEvent(new Event("change"));
   assert.equal(modal.querySelector(".class-thinking-select").disabled, true);
   assert.ok(modal.textContent.includes("请先保存新的主模型"));
-  button(modal, "保存模型设置").click(); await tick();
+  findButton(modal, "保存模型设置").click(); await tick();
   assert.deepEqual(submitted, { main_model: "provider/new" });
 });
 
@@ -188,7 +187,7 @@ test("late model settings cannot open over another account or page", async () =>
   globalThis.fetch = (path, options) => path.endsWith("/agent-chat/models")
     ? new Promise((resolve) => { finish = resolve; }) : fallback(path, options);
   const mount = await mountPage();
-  button(mount, "模型设置").click();
+  findButton(mount, "模型设置").click();
   page.dispose(); mount.remove();
   state.user = { id: "teacher-b", username: "another", role: "head_teacher" };
   state.classId = "class-b";

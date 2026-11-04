@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from sqlalchemy import inspect
@@ -7,15 +8,20 @@ from sqlalchemy.orm import Session
 
 from app.models.entities import AuditLog
 
+logger = logging.getLogger(__name__)
+
 AUDITED_ACTIONS = {
     ("config_update", "configuration"),
     ("config_rollback", "configuration"),
     ("gateway_config_patch", "configuration"),
     ("create", "class"),
+    ("update", "class"),
+    ("assign_owner", "class"),
     ("hard_delete", "class"),
     ("soft_delete", "student"),
     ("revoke", "student_event"),
     ("delete", "exam"),
+    ("delete", "attachment"),
     ("create", "user"),
     ("delete", "user"),
     ("complete", "deletion"),
@@ -26,6 +32,13 @@ AUDITED_ACTIONS = {
     ("provision", "class_agent_binding"),
     ("bind_channel", "class_agent_binding"),
     ("update_agent_models", "class_agent_binding"),
+    ("update_agent_thinking", "class_agent_binding"),
+    ("update_openclaw_agent", "class_agent_binding"),
+    ("update_openclaw_agent", "openclaw_agent"),
+    ("update_workspace_file", "class_agent_binding"),
+    ("reset_workspace_file", "class_agent_binding"),
+    ("update_workspace_file", "openclaw_agent"),
+    ("reset_workspace_file", "openclaw_agent"),
     ("pair_issue", "classroom_device"),
     ("pair_cancel", "classroom_device"),
     ("pair", "classroom_device"),
@@ -47,14 +60,13 @@ def audit(
     action: str,
     entity_type: str,
     entity_id: str,
-    before: dict | None = None,
-    after: dict | None = None,
     *,
+    after: dict | None = None,
     operator_type: str = "user",
     operator_id: str | None = None,
-    source_message_id: str | None = None,
 ) -> AuditLog | None:
     if (action, entity_type) not in AUDITED_ACTIONS:
+        logger.debug("Audit action outside the allowlist: %s / %s", action, entity_type)
         return None
     log = AuditLog(
         operator_type=operator_type,

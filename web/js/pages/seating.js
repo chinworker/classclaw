@@ -52,7 +52,7 @@ export async function render(mount) {
     const fileAnalysisEnabled = featureEnabled("file_analysis");
     const importBtn = el("button", { class: "secondary", type: "button", disabled: !fileAnalysisEnabled }, fileAnalysisEnabled ? "从文件生成" : "文件解析已关闭");
     function showEditor({ rows, cols, layout }) {
-      editor = seatMapEditor({ students, rows, cols, layout, editable: true });
+      editor = seatMapEditor({ students, rows, cols, layout });
       editorBox.replaceChildren(editor.el);
     }
     showEditor({ rows: snapshot?.rows || 5, cols: snapshot?.cols || 6, layout: snapshot?.layout_json || null });

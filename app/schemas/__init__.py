@@ -1,2 +1,1 @@
-from app.schemas.domain import *
-
+"""Request and response schemas grouped by domain."""

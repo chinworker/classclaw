@@ -288,15 +288,15 @@ export async function render(mount) {
       const students = await refreshStudents().catch(() => []);
       const byId = new Map(students.map((s) => [s.id, s]));
       clear(host);
-      const rows = stats.students || stats.items || [];
+      const rows = stats.students;
       host.append(el("div", { class: "card" },
         el("h3", {}, `值日统计（${start} 至 ${todayStr()}）`),
         rows.length ? dataTable({
           columns: [
             { key: "student", label: "学生", render: (r) => byId.get(r.student_id)?.name || r.student_id },
-            { key: "total", label: "值日次数", render: (r) => r.total ?? r.count ?? "—" },
-            { key: "completed", label: "完成", render: (r) => r.completed ?? "—" },
-            { key: "average_score", label: "平均得分", render: (r) => r.average_score ?? r.avg_score ?? "—" },
+            { key: "total", label: "值日次数" },
+            { key: "completed", label: "完成" },
+            { key: "average_score", label: "平均得分" },
           ],
           rows,
         }) : el("p", { class: "muted" }, "范围内没有值日数据")));

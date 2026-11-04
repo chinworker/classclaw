@@ -61,60 +61,82 @@ export async function render(mount) {
   async function openDetail(homework) {
     const body = el("div", {}, skeleton(5));
     openDrawer({ title: `${homework.title} · ${homework.subject}`, body, wide: true });
+    await loadDetail(body, homework);
+  }
+
+  async function loadDetail(body, homework) {
     try {
-      const [summary, students] = await Promise.all([api(`/homework/${homework.id}/summary`), refreshStudents()]);
+      const [summary, students, statuses] = await Promise.all([
+        api(`/homework/${homework.id}/summary`), refreshStudents(), api(`/homework/${homework.id}/students`),
+      ]);
       clear(body);
-      const counts = summary.status_counts || summary.counts || {};
+      const counts = summary.status_counts;
       body.append(el("div", { class: "metric-grid" },
         ...Object.entries(counts).map(([status, count]) => el("div", { class: "metric-card" },
           el("span", { class: "metric-value" }, String(count)),
           el("span", { class: "metric-label" }, (STATUS_OPTIONS.find(([v]) => v === status) || [])[1] || status)))));
       body.append(el("p", { class: "muted" },
         `布置：${fmtDate(homework.assigned_date)} · 截止：${fmtDateTime(homework.due_at)} · 完成率：${summary.completion_rate !== null && summary.completion_rate !== undefined ? `${Math.round(summary.completion_rate * 100)}%` : "—"}`));
-      renderStatusEditor(body, homework, students);
+      renderStatusEditor(body, homework, students, statuses);
     } catch (error) {
       clear(body);
-      body.append(errorPanel(error));
+      body.append(errorPanel(error, { onRetry: () => loadDetail(body, homework) }));
     }
   }
 
-  // 批量收缴状态编辑：提交按钮附近显示数量与范围
-  function renderStatusEditor(body, homework, students) {
-    const selects = new Map();
+  function renderStatusEditor(body, homework, students, statuses) {
+    const editors = [];
     const table = el("table", { class: "data-table" },
       el("thead", {}, el("tr", {}, el("th", {}, "学生"), el("th", {}, "状态"), el("th", {}, "分数"), el("th", {}, "备注"))));
     const tbody = el("tbody");
-    const existing = new Map((homework._statuses || []).map((s) => [s.student_id, s]));
+    const existing = new Map(statuses.map((row) => [row.student_id, row]));
     for (const s of students) {
+      const initial = existing.get(s.id);
       const sel = el("select", {}, STATUS_OPTIONS.map(([v, l]) => el("option", { value: v }, l)));
-      sel.value = existing.get(s.id)?.status || "pending";
-      selects.set(s.id, sel);
-      const scoreInput = el("input", { type: "number", min: "0", style: { width: "80px" }, value: existing.get(s.id)?.score ?? "" });
-      const commentInput = el("input", { type: "text", value: existing.get(s.id)?.comment ?? "" });
+      sel.value = initial?.status ?? "pending";
+      const scoreInput = el("input", { type: "number", min: "0", step: "any", style: { width: "80px" }, value: initial?.score ?? "" });
+      const commentInput = el("input", { type: "text", value: initial?.comment ?? "" });
+      editors.push({ studentId: s.id, initial, sel, scoreInput, commentInput });
       tbody.append(el("tr", {},
         el("td", {}, `${s.name}（${s.student_no}）`),
         el("td", {}, sel), el("td", {}, scoreInput), el("td", {}, commentInput)));
-      sel._score = scoreInput; sel._comment = commentInput;
     }
     table.append(tbody);
-    const saveInfo = el("p", { class: "muted" }, `将批量保存 ${students.length} 名学生的「${homework.subject}」作业状态`);
-    const saveBtn = el("button", { class: "primary", type: "button" }, `保存 ${students.length} 名学生的作业状态`);
+    const saveBtn = el("button", { class: "primary", type: "button", disabled: true }, "保存修改");
+    const changedItems = () => editors.flatMap(({ studentId, initial, sel, scoreInput, commentInput }) => {
+      const item = { student_id: studentId, status: sel.value };
+      const score = scoreInput.value === "" ? null : Number(scoreInput.value);
+      const comment = commentInput.value.trim() || null;
+      if (score !== (initial?.score ?? null)) item.score = score;
+      if (comment !== (initial?.comment?.trim() || null)) item.comment = comment;
+      return item.status !== (initial?.status ?? "pending") || "score" in item || "comment" in item ? [item] : [];
+    });
+    let saving = false;
+    const updateSave = () => { saveBtn.disabled = saving || !changedItems().length; };
+    for (const { sel, scoreInput, commentInput } of editors) {
+      sel.addEventListener("change", updateSave);
+      scoreInput.addEventListener("input", updateSave);
+      commentInput.addEventListener("input", updateSave);
+    }
     saveBtn.addEventListener("click", async () => {
-      saveBtn.disabled = true;
-      const items = students.map((s) => {
-        const sel = selects.get(s.id);
-        const item = { student_id: s.id, status: sel.value };
-        if (sel._score.value !== "") item.score = Number(sel._score.value);
-        if (sel._comment.value.trim()) item.comment = sel._comment.value.trim();
-        return item;
-      });
+      const items = changedItems();
+      if (saving || !items.length) return;
+      if (editors.some(({ scoreInput }) => !scoreInput.reportValidity())) return;
+      saving = true;
+      updateSave();
+      for (const { sel, scoreInput, commentInput } of editors) sel.disabled = scoreInput.disabled = commentInput.disabled = true;
       try {
         await api(`/homework/${homework.id}/students`, { method: "PUT", body: { items } });
         toast("作业状态已批量更新", "success");
+        await loadDetail(body, homework);
       } catch (error) { toast(error.message, "error"); }
-      finally { saveBtn.disabled = false; }
+      finally {
+        saving = false;
+        for (const { sel, scoreInput, commentInput } of editors) sel.disabled = scoreInput.disabled = commentInput.disabled = false;
+        updateSave();
+      }
     });
-    body.append(el("h3", {}, "收缴状态"), el("div", { class: "table-wrap" }, table), saveInfo, saveBtn);
+    body.append(el("h3", {}, "收缴状态"), el("div", { class: "table-wrap" }, table), saveBtn);
   }
 
   function openCreateModal() {

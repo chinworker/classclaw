@@ -203,7 +203,8 @@ def test_admin_initialize_factory_resets_everything_and_recreates_defaults(clien
     assert db.get(User, user["id"]) is None
     assert not (test_settings.attachment_dir / "old.txt").exists()
     assert "old log marker" not in test_settings.log_file.read_text(encoding="utf-8")
-    assert "ClassClaw 输入清洗规范" in (test_settings.openclaw_class_workspace_root / "_extractor" / "AGENTS.md").read_text(encoding="utf-8")
+    extractor_agents = test_settings.openclaw_class_workspace_root / "_extractor" / "AGENTS.md"
+    assert extractor_agents.read_text(encoding="utf-8") == openclaw_bridge.extractor_workspace_defaults()["AGENTS.md"]
     for agent_id in (test_settings.openclaw_agent_id, test_settings.openclaw_extractor_agent_id):
         assert not (test_settings.openclaw_state_dir / "agents" / agent_id / "sessions").exists()
     assert not class_agent_root.exists()
@@ -355,7 +356,7 @@ def test_agent_studio_runtime_workspace_usage_and_logs(client, db, monkeypatch, 
     assert extractor_update.status_code == 200
     extractor_reset = client.post("/api/v1/admin/openclaw/agents/extractor/workspace/AGENTS.md/reset", headers=_admin_header(), json={})
     assert extractor_reset.status_code == 200
-    assert "ClassClaw 输入清洗规范" in extractor_reset.json()["data"]["content"]
+    assert extractor_reset.json()["data"]["content"] == openclaw_bridge.extractor_workspace_defaults()["AGENTS.md"]
 
     settings_response = client.get(f"/api/v1/admin/openclaw/agents/{cls.id}/settings", headers=_admin_header())
     assert settings_response.status_code == 200

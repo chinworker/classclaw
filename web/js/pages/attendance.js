@@ -191,15 +191,15 @@ export async function render(mount) {
       clear(box);
       const students = await refreshStudents().catch(() => []);
       const byId = new Map(students.map((s) => [s.id, s]));
-      const rows = data.students || data.items || [];
+      const rows = data.students;
       box.append(el("p", { class: "muted", style: { fontSize: "13px" } }, "说明：每名学生每天计算一次，无记录默认出勤；迟到计为出勤，缺勤和请假不计为出勤。"));
       box.append(dataTable({
         columns: [
           { key: "student", label: "学生", render: (r) => { const s = byId.get(r.student_id); return s ? `${s.name}（${s.student_no}）` : r.student_id; } },
           { key: "attendance_rate", label: "出勤率", render: (r) => pct(r.attendance_rate) },
-          { key: "late", label: "迟到", render: (r) => r.late ?? r.late_count ?? 0 },
-          { key: "absent", label: "缺勤", render: (r) => r.absent ?? r.absent_count ?? 0 },
-          { key: "leave", label: "请假", render: (r) => r.leave ?? r.leave_count ?? 0 },
+          { key: "late", label: "迟到" },
+          { key: "absent", label: "缺勤" },
+          { key: "leave", label: "请假" },
         ],
         rows,
         empty: { title: "范围内没有考勤记录", hint: "先在“录入”页签登记考勤。" },

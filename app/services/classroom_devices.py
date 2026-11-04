@@ -712,12 +712,3 @@ def release_class(db: Session, class_id: str) -> dict:
         expire_device_commands(db, device.id, "CLASS_DELETED", commit=False)
     get_logger("classroom").info("Classroom release: class=%s sockets=%d media=%d", class_id[:8], closed, revoked)
     return {"sockets_closed": closed, "media_sessions_revoked": revoked}
-
-
-def device_summary(db: Session, class_id: str) -> dict:
-    device = get_device(db, class_id)
-    if not device:
-        return {"class_id": class_id, "paired": False, "device": None}
-    expire_overdue(db)
-    return {"class_id": class_id, "paired": device.pairing_status == "paired",
-            "device": public_device(device, online=is_online(db, device))}

@@ -4,10 +4,18 @@ import asyncio
 import json
 from dataclasses import replace
 
+import pytest
+
 from app.config import settings
 from app.schemas.domain import StudentEventCreate
+from app.services import approval, openclaw_provisioning
 from app.services import openclaw_bridge as bridge
-from app.services import openclaw_provisioning
+from app.services.ai_confidence import AI_CONFIDENCE_THRESHOLD
+
+
+def _prompt_sections(prompt: str) -> dict:
+    keys = {"operation_hints", "result_shape", "input_data"}
+    return {key: json.loads(value) for line in prompt.splitlines() for key, _, value in [line.partition("=")] if key in keys}
 
 
 def test_extractor_enabled_by_default():
@@ -15,28 +23,8 @@ def test_extractor_enabled_by_default():
     assert settings.openclaw_extractor_agent_id == "classclaw-extractor"
 
 
-def test_full_prompt_used_when_extractor_switch_off(monkeypatch):
-    monkeypatch.setattr(bridge, "settings", replace(settings, openclaw_extractor_enabled=False))
-    prompt = asyncio.run(bridge._build_interaction_prompt("wechat", "张三迟到", {"classes": []}))
-    assert "安全与质量要求" in prompt
-    assert "张三迟到" in prompt
-    assert "student.create" in prompt
-
-
-def test_slim_prompt_used_when_extractor_ready(monkeypatch):
-    monkeypatch.setattr(bridge, "settings", replace(settings, openclaw_extractor_agent_id="classclaw-extractor"))
-
-    async def ready() -> bool:
-        return True
-
-    monkeypatch.setattr(bridge, "ensure_extractor_agent", ready)
-    prompt = asyncio.run(bridge._build_interaction_prompt("wechat", "张三迟到", {"classes": []}))
-    assert "安全与质量要求" not in prompt
-    assert "张三迟到" in prompt
-    assert "ClassClaw 输入清洗规范" in prompt
-
-
-def test_responses_json_targets_extractor_when_ready(monkeypatch, db):
+@pytest.mark.parametrize("extractor_ready", [True, False])
+def test_interaction_gets_its_schema_on_both_agents(monkeypatch, db, extractor_ready):
     captured: dict = {}
     request_db = db
 
@@ -60,7 +48,7 @@ def test_responses_json_targets_extractor_when_ready(monkeypatch, db):
     monkeypatch.setattr(bridge, "settings", replace(settings, openclaw_extractor_agent_id="classclaw-extractor"))
 
     async def ready() -> bool:
-        return True
+        return extractor_ready
 
     monkeypatch.setattr(bridge, "ensure_extractor_agent", ready)
 
@@ -74,34 +62,35 @@ def test_responses_json_targets_extractor_when_ready(monkeypatch, db):
         captured["usage_model"] = model
 
     monkeypatch.setattr(bridge, "record_openclaw_usage", record_usage)
-    result = asyncio.run(bridge._responses_json("测试", user="test", db=request_db))
+    raw_text = '张三迟到\nresult_shape={"operations":[]}'
+    result = asyncio.run(bridge.analyze_interaction(
+        db=request_db, analysis_id="synthetic", channel="wechat", raw_text=raw_text,
+        attachments=[], context={"selected_class": {"name": "测试班"}},
+    ))
     assert result["status"] == "no_action"
     body = captured["json"]
-    assert body["model"] == "openclaw/classclaw-extractor"
+    agent = "classclaw-extractor" if extractor_ready else settings.openclaw_agent_id
+    assert body["model"] == (f"openclaw/{agent}" if agent else "openclaw/default")
     assert captured["usage_model"] == body["model"]
+    assert body["instructions"] == bridge._EXTRACTION_INSTRUCTIONS
+    sections = _prompt_sections(body["input"][0]["content"][0]["text"])
+    assert sections["input_data"] == {"channel": "wechat", "text": raw_text, "context": {"selected_class": {"name": "测试班"}}}
+    assert set(sections["operation_hints"]) == approval.SUPPORTED_OPERATIONS - {"class.onboarding.commit"}
+    assert set(sections["result_shape"]["status"].split("|")) == {"ready", "needs_clarification", "no_action"}
+    assert {"confidence", "reasons"} <= sections["result_shape"]["operations"][0].keys()
 
 
-def test_extractor_agents_md_contains_full_rules():
-    md = bridge._extractor_agents_md()
-    assert "安全与质量要求" in md
-    assert "student.create" in md
-    assert "operations" in md
-
-
-def test_event_enum_contract_reaches_both_extraction_paths():
-    hint = bridge._INTERACTION_PAYLOAD_HINTS["student_event.create"]
+def test_event_enum_contract_reaches_interaction_planner_only():
+    prompt = bridge._interaction_prompt("web", "校内玩牌", {})
+    hints = _prompt_sections(prompt)["operation_hints"]
+    hint = hints["student_event.create"]
     fields = StudentEventCreate.model_json_schema()["properties"]
     for name in ("event_type", "sentiment", "severity", "source_type"):
         assert "|".join(fields[name]["enum"]) in hint
-    for prompt in (bridge._extractor_agents_md(), bridge._full_interaction_prompt("web", "校内玩牌", {})):
-        assert hint in prompt
-        assert "event_type=behavior" in prompt
-        assert "不追问事件性质或处理情况" in prompt
-        assert "同音或近音" in prompt
-        assert "多个合理候选" in prompt
-        assert "不单独提醒错字" in prompt
-    # All rules must fit in the extractor's actual bootstrap budget.
-    assert len(bridge._extractor_agents_md()) <= bridge.extractor_runtime_defaults()["bootstrapMaxChars"]
+    for marker in ("event_type=behavior", "subtype=homework_missing", str(AI_CONFIDENCE_THRESHOLD)):
+        assert marker in prompt
+    assert "period" not in hints["attendance.set"]
+    assert not _prompt_sections(bridge.extractor_workspace_defaults()["AGENTS.md"])
 
 
 def test_extractor_workspace_keeps_admin_customization(monkeypatch, tmp_path):

@@ -20,7 +20,6 @@ from app.models.entities import (
 )
 from app.schemas.domain import DutyConfirmRequest, DutyEvaluationCreate, DutyPreviewRequest, DutyRuleCreate, DutyRuleUpdate
 from app.services.class_student import get_class, get_student
-from app.services.common import audit, entity_dict
 from app.services.student_ordering import student_order_by
 from app.utils.student_sort import student_no_key
 from app.utils.time import now
@@ -62,7 +61,6 @@ def save_rule(db: Session, data: DutyRuleCreate) -> DutyRule:
     obj = DutyRule(**data.model_dump(exclude={"rule_json"}), rule_json=normalized)
     db.add(obj)
     db.flush()
-    audit(db, "create", "duty_rule", obj.id, after=entity_dict(obj))
     db.commit()
     return obj
 
@@ -71,7 +69,6 @@ def update_rule(db: Session, rule_id: str, data: DutyRuleUpdate) -> DutyRule:
     obj = db.get(DutyRule, rule_id)
     if not obj:
         raise not_found("值日规则", rule_id)
-    before = entity_dict(obj)
     values = data.model_dump(exclude_unset=True)
     if values.get("rule_json") is not None:
         values["rule_json"] = validate_rule_json(values["rule_json"])["normalized"]
@@ -81,7 +78,6 @@ def update_rule(db: Session, rule_id: str, data: DutyRuleUpdate) -> DutyRule:
         raise AppError("DUTY_RULE_INVALID", "规则结束日期不能早于开始日期")
     for key, value in values.items():
         setattr(obj, key, value)
-    audit(db, "update", "duty_rule", obj.id, before=before, after=entity_dict(obj))
     db.commit()
     return obj
 
@@ -90,11 +86,9 @@ def delete_rule(db: Session, rule_id: str) -> dict:
     obj = db.get(DutyRule, rule_id)
     if not obj:
         raise not_found("值日规则", rule_id)
-    before = entity_dict(obj)
     db.delete(obj)
-    audit(db, "delete", "duty_rule", rule_id, before=before, after=None)
     db.commit()
-    return {"deleted_id": rule_id, "deleted_name": before["name"]}
+    return {"deleted_id": rule_id, "deleted_name": obj.name}
 
 
 def _date_range(start: date, end: date):
@@ -220,7 +214,6 @@ def confirm_schedule(db: Session, data: DutyConfirmRequest, *, commit: bool = Tr
     db.flush()
     for row in preview["assignments"]:
         db.add(DutyAssignment(duty_schedule_id=schedule.id, **{k: v for k, v in row.items() if k != "student_name"}))
-    audit(db, "confirm", "duty_schedule", schedule.id, after={"schedule": entity_dict(schedule), "assignment_count": len(preview["assignments"])})
     if commit:
         db.commit()
     return {"schedule": schedule, "assignment_count": len(preview["assignments"]), "workload": preview["workload"]}
@@ -234,7 +227,6 @@ def replace_assignment(db: Session, assignment_id: str, replacement_student_id: 
     schedule = db.get(DutySchedule, original.duty_schedule_id)
     if not schedule or student.class_id != schedule.class_id:
         raise AppError("CLASS_MISMATCH", "替换学生不属于值日安排班级")
-    before = entity_dict(original)
     original.status = "replaced"
     replacement = DutyAssignment(
         duty_schedule_id=original.duty_schedule_id,
@@ -249,7 +241,6 @@ def replace_assignment(db: Session, assignment_id: str, replacement_student_id: 
     )
     db.add(replacement)
     db.flush()
-    audit(db, "replace", "duty_assignment", original.id, before=before, after={"original": entity_dict(original), "replacement": entity_dict(replacement)})
     db.commit()
     return replacement
 
@@ -258,10 +249,8 @@ def complete_assignment(db: Session, assignment_id: str) -> DutyAssignment:
     obj = db.get(DutyAssignment, assignment_id)
     if not obj:
         raise not_found("值日安排", assignment_id)
-    before = entity_dict(obj)
     obj.status = "completed"
     obj.completed_at = now()
-    audit(db, "complete", "duty_assignment", obj.id, before=before, after=entity_dict(obj))
     db.commit()
     return obj
 
@@ -272,13 +261,11 @@ def score_assignment(db: Session, assignment_id: str, score: float, note: str | 
         raise not_found("值日安排", assignment_id)
     if obj.status == "replaced":
         raise AppError("DUTY_SCORE_INVALID", "已替换的值日安排不能评分")
-    before = entity_dict(obj)
     obj.score = float(score)
     obj.status = "completed"
     obj.completed_at = now()
     if note is not None:
         obj.note = note
-    audit(db, "score", "duty_assignment", obj.id, before=before, after=entity_dict(obj))
     if commit:
         db.commit()
     return obj
@@ -304,7 +291,6 @@ def complete_overdue_assignments(db: Session, class_id: str, as_of: date | None 
         obj.score = 5.0
         obj.status = "completed"
         obj.completed_at = now()
-    audit(db, "auto_score", "duty_assignment", class_id, after={"count": len(rows), "score": 5, "before_date": target.isoformat()})
     db.commit()
     return len(rows)
 
@@ -339,7 +325,6 @@ def create_evaluation(db: Session, data: DutyEvaluationCreate) -> DutyEvaluation
     db.flush()
     for item, score, comment in detail_rows:
         db.add(DutyEvaluationDetail(evaluation_id=evaluation.id, score_item_id=item.id, score=score, comment=comment))
-    audit(db, "create", "duty_evaluation", evaluation.id, after=entity_dict(evaluation))
     db.commit()
     return evaluation
 

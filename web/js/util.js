@@ -54,7 +54,7 @@ export function fmtDateTime(value) {
 }
 
 // 本地（用户浏览器在中国使用场景下即 Asia/Shanghai）的 YYYY-MM-DD，请求参数用。
-export function dateStr(date = new Date()) {
+function dateStr(date = new Date()) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
 
@@ -67,7 +67,7 @@ export function dateStrSH(value) {
 
 export function todayStr() { return dateStrSH(new Date()); }
 
-export function addDays(date, days) {
+function addDays(date, days) {
   const next = new Date(date.getTime());
   next.setDate(next.getDate() + days);
   return next;

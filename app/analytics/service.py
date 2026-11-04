@@ -462,6 +462,17 @@ def morning_briefing(db: Session, class_id: str, briefing_date: date | None = No
             .where(DutySchedule.class_id == class_id, DutyEvaluation.duty_date == day - timedelta(days=1))
         )
     )
+    yesterday_assignment_scores = list(
+        db.scalars(
+            select(DutyAssignment)
+            .join(DutySchedule, DutySchedule.id == DutyAssignment.duty_schedule_id)
+            .where(
+                DutySchedule.class_id == class_id, DutyAssignment.duty_date == day - timedelta(days=1),
+                DutyAssignment.status != "replaced", DutyAssignment.score.is_not(None),
+            )
+            .order_by(DutyAssignment.item_name, DutyAssignment.id)
+        )
+    )
     start_dt = datetime.combine(day, time.min)
     end_dt = datetime.combine(day + timedelta(days=3), time.max)
     arrangements = list(
@@ -515,6 +526,7 @@ def morning_briefing(db: Session, class_id: str, briefing_date: date | None = No
         "duty_assignments": duties,
         "duty_vacancies": sorted(expected_items - assigned_items),
         "yesterday_duty_scores": yesterday_scores,
+        "yesterday_duty_assignment_scores": yesterday_assignment_scores,
         "today_reminders": [
             {
                 "arrangement_id": item.id,

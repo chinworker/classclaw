@@ -52,7 +52,7 @@ dotnet build src/ClassroomMate.Windows -c Release
 python scripts/package.py
 ```
 
-`package.py` 下载官方 Python 嵌入式运行时及哈希锁定的 Windows wheels，再执行 `dotnet publish --self-contained true -r win-x64`。支持 `--dotnet <路径>`、`--offline`（已缓存媒体依赖）、`--nuget-source <源地址或本地包目录>`。NuGet 首次还原需要网络；使用本地源时跳过在线漏洞审计，不代表已经完成依赖安全审计。输出目录与 ZIP 均位于 `dist/`，含逐文件 `SHA256SUMS.json`、依赖许可和安装脚本。缓存和发布二进制不提交 Git。
+`package.py` 下载官方 Python 嵌入式运行时及哈希锁定的 Windows wheels，再执行 `dotnet publish --self-contained true -r win-x64`。Python 运行时整包下载，校验 SHA-256 后才写入缓存；校验通过的缓存会直接复用。支持 `--dotnet <路径>`、`--offline`（已缓存媒体依赖）、`--nuget-source <源地址或本地包目录>`。NuGet 首次还原需要网络；使用本地源时跳过在线漏洞审计，不代表已经完成依赖安全审计。输出目录与 ZIP 均位于 `dist/`，含逐文件 `SHA256SUMS.json`、依赖许可和安装脚本。缓存和发布二进制不提交 Git。
 
 媒体逻辑测试与可选真实联调：
 
@@ -66,6 +66,8 @@ python media/test_live.py --mediamtx /path/to/mediamtx
 协议/状态机测试使用可替换硬件接口，另有真实 Kestrel/WebSocket 集成测试。媒体联调只替换采集来源为合成画面和静音，真实执行 JSON SDP、MediaMTX 鉴权、音视频接收解码和关闭。
 
 ## 升级、卸载与验收
+
+各平台的历史验证记录和待办见 [VALIDATION.md](VALIDATION.md)。
 
 先从托盘正常退出，再运行新版 `install.ps1`。升级保留加密凭据、输出配置和去重账本。运行 `uninstall.ps1` 删除登录启动项、快捷方式和安装目录；默认保留设备数据，显式 `-RemoveDeviceData` 才删除。删掉数据或凭据无法解密时，先在网页撤销旧设备再重新配对。不要在运行中手动清除账本。
 

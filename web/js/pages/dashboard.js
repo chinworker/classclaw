@@ -2,7 +2,7 @@
 
 import { el, clear, todayStr, fmtDateTime, WEEKDAY_NAMES, weekdayOf, periodLabel } from "../util.js";
 import { api } from "../api.js";
-import { state } from "../state.js";
+import { state, refreshStudents } from "../state.js";
 import { navigate } from "../router.js";
 import { metricCard, statusBadge, skeleton, errorPanel } from "../components.js";
 
@@ -57,7 +57,7 @@ export async function render(mount, ctx, helpers) {
   if (dutyToday.__error) dutyCard.append(errorPanel(dutyToday.__error));
   else if (!dutyCount) dutyCard.append(el("p", { class: "muted" }, "今天没有值日任务"));
   else {
-    const byId = new Map((await import("../state.js").then((m) => m.refreshStudents()).catch(() => [])).map((s) => [s.id, s]));
+    const byId = new Map((await refreshStudents().catch(() => [])).map((s) => [s.id, s]));
     dutyCard.append(...dutyToday.map((a) => el("div", { class: "row-gap", style: { justifyContent: "space-between", padding: "4px 0" } },
       el("span", {}, el("b", {}, a.item_name), el("span", { class: "muted" }, ` ${byId.get(a.student_id)?.name || a.student_id}`)),
       statusBadge(a.status))));

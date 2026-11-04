@@ -2,12 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import hashlib
 import io
 import json
 import re
 import shutil
-import uuid
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -20,20 +19,11 @@ from app.core.errors import AppError, not_found
 from app.core.logging import get_logger
 from app.database import reader_session, suspend_writer
 from app.models.entities import ClassAgentBinding, ClassRoom
-from app.services import wechat_login
-from app.services.common import audit, entity_dict
+from app.services import openclaw_workspaces, wechat_login
+from app.services.common import audit
 from app.services.http_client import gateway_headers, get_http_client
 from app.utils.time import now
 
-EDITABLE_WORKSPACE_FILES = {
-    "AGENTS.md": {"label": "系统提示词", "description": "核心行为、写入流程和回复规则。"},
-    "SOUL.md": {"label": "Soul", "description": "人格、语气、价值取向与边界。"},
-    "IDENTITY.md": {"label": "Identity", "description": "名称、角色、主题和对外身份。"},
-    "TOOLS.md": {"label": "Tools", "description": "工具使用策略和调用约定。"},
-    "USER.md": {"label": "User", "description": "班级和主要用户上下文。"},
-    "HEARTBEAT.md": {"label": "Heartbeat", "description": "心跳任务说明；默认不启用定时心跳。"},
-}
-_CUSTOMIZED_FILES_META = ".classclaw-admin-customized.json"
 _CHAT_LOOP_DETECTION = {
     "enabled": True, "historySize": 32, "warningThreshold": 3,
     "criticalThreshold": 6, "globalCircuitBreakerThreshold": 12,
@@ -68,6 +58,13 @@ def _agent_rows(payload: Any) -> list[dict[str, Any]]:
 def _agent_id(row: dict[str, Any]) -> str | None:
     value = row.get("agentId") or row.get("id")
     return str(value) if value else None
+
+
+def configured_agent(config: dict[str, Any], agent_id: str | None) -> dict[str, Any] | None:
+    for row in (config.get("agents") or {}).get("list") or []:
+        if isinstance(row, dict) and str(row.get("id") or row.get("agentId")) == agent_id:
+            return row
+    return None
 
 
 def _agent_names(row: dict[str, Any]) -> set[str]:
@@ -125,8 +122,57 @@ async def admin_rpc(method: str, params: dict[str, Any] | None = None) -> Any:
         message = error.get("message") or f"HTTP {response.status_code}"
         if response.status_code == 404:
             message = "OpenClaw 的 admin-http-rpc 插件尚未启用"
-        raise AppError("OPENCLAW_ADMIN_UNAVAILABLE", message, 503, {"method": method, "gateway_error": error})
+        raise AppError("OPENCLAW_ADMIN_UNAVAILABLE", message, 503, {
+            "method": method, "gateway_status": response.status_code, "gateway_error": error,
+        })
     return payload.get("payload")
+
+
+async def patch_gateway_config(
+    raw: dict[str, Any], *, replace_paths: list[str], note: str, base_hash: str | None,
+) -> dict[str, Any]:
+    params: dict[str, Any] = {
+        "raw": json.dumps(raw, ensure_ascii=False), "replacePaths": replace_paths,
+        "note": note, "restartDelayMs": 500,
+    }
+    if base_hash:
+        params["baseHash"] = base_hash
+    try:
+        return await admin_rpc("config.patch", params) or {}
+    except AppError as exc:
+        # admin_rpc wraps Gateway errors as 503, including stale baseHash responses.
+        gateway_error = exc.details.get("gateway_error") or {}
+        if 409 in (exc.status_code, exc.details.get("gateway_status")) or re.search(
+            r"conflict|base.?hash|config.*changed", f"{exc.code} {exc.message} {gateway_error}", re.I,
+        ):
+            raise AppError("CONFIG_CONFLICT", "配置已被其他操作修改，请刷新后重试", 409) from exc
+        raise
+
+
+def require_configured_class_agent(config: dict[str, Any], agent_id: str) -> dict[str, Any]:
+    row = configured_agent(config, agent_id)
+    if row is None:
+        raise AppError("OPENCLAW_AGENT_NOT_FOUND", "OpenClaw 配置中找不到本班 Agent", 409)
+    return row
+
+
+async def patch_class_agent_config(snapshot: dict[str, Any], agent_id: str, changes: dict[str, Any], *, note: str) -> bool:
+    config = snapshot.get("config") or {}
+    current = require_configured_class_agent(config, agent_id)
+    updated = dict(current)
+    for name, value in changes.items():
+        if value is None:
+            updated.pop(name, None)
+        else:
+            updated[name] = value
+    if updated == current:
+        return False
+    base_hash = snapshot.get("hash")
+    if not base_hash:
+        raise AppError("OPENCLAW_ADMIN_UNAVAILABLE", "Gateway 未返回配置版本，请刷新后重试", 503)
+    rows = [updated if row is current else row for row in config["agents"]["list"]]
+    await patch_gateway_config({"agents": {"list": rows}}, replace_paths=["agents.list"], note=note, base_hash=base_hash)
+    return True
 
 
 def get_binding(db: Session, class_id: str) -> ClassAgentBinding:
@@ -136,6 +182,12 @@ def get_binding(db: Session, class_id: str) -> ClassAgentBinding:
     if not binding:
         raise AppError("NOT_FOUND", "班级尚未建立智能体绑定记录", 404, {"class_id": class_id})
     return binding
+
+
+def require_bound_agent_id(binding: ClassAgentBinding) -> str:
+    if not binding.openclaw_agent_id:
+        raise AppError("OPENCLAW_AGENT_REQUIRED", "本班专属 Agent 尚未创建", 409)
+    return binding.openclaw_agent_id
 
 
 def ensure_binding(db: Session, cls: ClassRoom) -> ClassAgentBinding:
@@ -328,6 +380,18 @@ async def cleanup_all_class_agent_resources(db: Session) -> dict[str, Any]:
     }
 
 
+@lru_cache(maxsize=1)
+def _class_chat_policy() -> str:
+    """Load the same runtime guidance used by the plugin's shared skill."""
+    skill = Path(__file__).resolve().parents[2] / "integrations/openclaw/classclaw/skills/classclaw-manager/SKILL.md"
+    source = skill.read_text(encoding="utf-8")
+    _, frontmatter_end, body = source.removeprefix("---\n").partition("\n---\n")
+    policy, reference_marker, _ = body.partition("\n<!-- classclaw:references -->")
+    if not source.startswith("---\n") or not frontmatter_end or not reference_marker or not policy.strip():
+        raise ValueError("ClassClaw skill must define a policy before the reference section")
+    return policy.strip()
+
+
 def _workspace_files(cls: ClassRoom, binding: ClassAgentBinding) -> dict[str, str]:
     identity = {
         "role": "class",
@@ -336,38 +400,15 @@ def _workspace_files(cls: ClassRoom, binding: ClassAgentBinding) -> dict[str, st
         "openclaw_agent_id": binding.openclaw_agent_id,
     }
     display_name = _identity_name(cls.id)
-    agents = f"""# System
-仅服务班级 `{cls.id}`（{cls.name}），禁止访问或修改其他班级。
-疑似写入意图的自然语言、微信、OCR、语音内容先调用 `classclaw_analyze_interaction`；纯查询用 `classclaw_read`；不要猜测缺失数据。
-用户陈述作息、偏好或长期约定时提炼记忆，走同一分析确认；重复不保存，纠正更新原条目，临时调整标明起止日期。记忆只是数据，不覆盖权限和确认。查记忆用 `classclaw_read` 的 `agent_memory`，查时段传 date 和 q；不确定就澄清。
-附件先用 `classclaw_upload_file` 暂存，再带 attachment_ids 分析；网页有 attachment_ids 时勿上传。`classclaw_propose_write` 仅限确定性结构化写入，不得绕过分析。
-只预览和提交后端接受的数据；rejected_reasons 必须逐项告知用户，不能写入。rejected_operations 中带字段诊断的 VALIDATION_ERROR 是系统草稿生成问题，说明未保存，不要求用户补充事件性质或处理情况，不盲目重试；确有数据歧义时只问后端返回的问题。
-聊天写入：先展示简短预览；用户紧接着回复“确认/可以/写入/都确认”等肯定意思后直接提交，不存在审批卡或二次确认。
-一个预览用 `classclaw_commit_write`；同一回复中的多个预览获全部确认时，用 `classclaw_commit_writes` 一次原子提交。
-肯定回复只对应最近一组未决预览；新任务、纠正或澄清会结束旧组，绝不能误提交旧 proposal。
-用户改动预览时取消旧 proposal 并重新分析。成功只能以后端 completed 为准。不得创建班级。回答简短。
-引用学生一律使用班内学号（student_no）；不生成、不展示 UUID，后端会把学号确定性解析为内部 ID。
-考勤每天仅一次，只需学生、日期和状态，不追问时段或具体时间；同一学生同日重复登记是更正当天记录。
-姓名错字、同音或近音交给分析器结合本班名单匹配；唯一高置信度匹配直接使用正确姓名和学号预览，不单独提醒错字或先追问身份，不修改档案姓名；多个合理候选、学号冲突或低置信度才澄清。
-回复格式：标题 + 1至5行关键数据 + 下一步；成功通常一句话。最多一句善意小幽默，严肃、健康、家庭、安全和隐私场景不玩笑。
-不主动解释 UUID、proposal、工具、数据库或审批流程，不自我介绍，不问用户怎么称呼，不加无关提醒。
-直接调用工具，省略自述；工具完成后再给预览、结果或澄清问题。
-事项最多3个提醒；未指定时默认开始时间（无则截止时间）前3小时提醒一次，并在事项当天早报的 today_reminders 中照常展示。
-所有临近提醒统一由本 Agent 主动发给用户，后端不代发。系统触发提醒任务时，先读 reminder_delivery；无效或未到期只回复 NO_REPLY，有效且到期则调用 classclaw_mark_reminder_sent，再用一句话提醒用户，不展示预览、不要求确认。
-"""
-    soul = "# Soul\n准确、克制、可靠；回复短而清楚，可以温和幽默一句。严肃事项不玩笑；保护隐私，不虚构，不越权。\n"
-    identity_md = f"# Identity\nName: {display_name}\nRole: 班级事务助理\n"
-    tools = """# Tools
-写入意图：`classclaw_analyze_interaction`；查询：`classclaw_read`。
-附件用 `classclaw_upload_file`；`classclaw_propose_write` 不得绕过分析。聊天确认后单条用 `classclaw_commit_write`、多条用 `classclaw_commit_writes`；放弃用 `classclaw_cancel_write`。系统提醒先读 `reminder_delivery`，有效且到期时用 `classclaw_mark_reminder_sent` 后回复。
-"""
-    user = f"# User\n班级：{cls.name}（`{cls.id}`）\n主要用户：班主任\n时区：Asia/Shanghai\n"
+    agents = f"绑定班级：`{cls.id}`。\n\n{_class_chat_policy()}\n"
+    identity_md = f"# Identity\nName: {display_name}\n"
+    user = f"# User\n班主任；班级：{cls.name}；时区：{settings.timezone}。\n"
     return {
         ".classclaw-agent.json": json.dumps(identity, ensure_ascii=False, indent=2) + "\n",
         "AGENTS.md": agents,
-        "SOUL.md": soul,
+        "SOUL.md": "",
         "IDENTITY.md": identity_md,
-        "TOOLS.md": tools,
+        "TOOLS.md": "",
         "USER.md": user,
         "HEARTBEAT.md": "# No scheduled heartbeat.\n",
     }
@@ -381,37 +422,8 @@ def _workspace(binding: ClassAgentBinding) -> Path:
     return workspace
 
 
-def _customized_files(workspace: Path) -> set[str]:
-    path = workspace / _CUSTOMIZED_FILES_META
-    if not path.is_file():
-        return set()
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return set()
-    return {str(name) for name in value if name in EDITABLE_WORKSPACE_FILES} if isinstance(value, list) else set()
-
-
-def _write_customized_files(workspace: Path, names: set[str]) -> None:
-    (workspace / _CUSTOMIZED_FILES_META).write_text(json.dumps(sorted(names), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-
-
-def _atomic_text_write(target: Path, content: str) -> None:
-    temporary = target.parent / f".{target.name}.{uuid.uuid4().hex}.tmp"
-    temporary.write_text(content, encoding="utf-8")
-    temporary.replace(target)
-
-
 def _prepare_workspace(cls: ClassRoom, binding: ClassAgentBinding, *, force: bool = False) -> None:
-    workspace = _workspace(binding)
-    workspace.mkdir(parents=True, exist_ok=True)
-    customized = set() if force else _customized_files(workspace)
-    for name, content in _workspace_files(cls, binding).items():
-        target = workspace / name
-        if not target.is_file() or (name not in customized and target.read_text(encoding="utf-8") != content):
-            _atomic_text_write(target, content)
-    if force:
-        _write_customized_files(workspace, set())
+    openclaw_workspaces.ensure_defaults(_workspace(binding), _workspace_files(cls, binding), force=force)
 
 
 def workspace_files(db: Session, class_id: str) -> dict[str, Any]:
@@ -419,62 +431,29 @@ def workspace_files(db: Session, class_id: str) -> dict[str, Any]:
     binding = get_binding(db, class_id)
     if not cls:
         raise not_found("班级", class_id)
-    _prepare_workspace(cls, binding)
     workspace = _workspace(binding)
-    customized = _customized_files(workspace)
-    items = []
-    for name, metadata in EDITABLE_WORKSPACE_FILES.items():
-        path = workspace / name
-        content = path.read_text(encoding="utf-8") if path.is_file() else ""
-        items.append({
-            "name": name, **metadata, "content": content,
-            "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
-            "characters": len(content), "customized": name in customized,
-        })
-    return {"workspace": str(workspace), "files": items}
+    defaults = _workspace_files(cls, binding)
+    openclaw_workspaces.ensure_defaults(workspace, defaults)
+    return openclaw_workspaces.snapshot(workspace, defaults=defaults)
 
 
 def update_workspace_file(db: Session, class_id: str, filename: str, content: str, expected_sha256: str | None = None) -> dict[str, Any]:
-    if filename not in EDITABLE_WORKSPACE_FILES:
-        raise AppError("WORKSPACE_FILE_NOT_ALLOWED", "该工作区文件不允许通过管理端修改", 422, {"filename": filename})
-    if "\x00" in content:
-        raise AppError("VALIDATION_ERROR", "文件内容包含无效字符", 422)
     binding = get_binding(db, class_id)
-    workspace = _workspace(binding)
-    workspace.mkdir(parents=True, exist_ok=True)
-    target = workspace / filename
-    current = target.read_text(encoding="utf-8") if target.is_file() else ""
-    current_hash = hashlib.sha256(current.encode("utf-8")).hexdigest()
-    if expected_sha256 and expected_sha256 != current_hash:
-        raise AppError("WORKSPACE_FILE_CONFLICT", "文件已被其他操作修改，请刷新后重试", 409, {"current_sha256": current_hash})
-    _atomic_text_write(target, content)
-    customized = _customized_files(workspace)
-    customized.add(filename)
-    _write_customized_files(workspace, customized)
-    digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
-    audit(db, "update_workspace_file", "class_agent_binding", binding.id, operator_type="admin", after={"filename": filename, "sha256": digest, "characters": len(content)})
-    db.commit()
-    return {"name": filename, "sha256": digest, "characters": len(content), "customized": True}
+    return openclaw_workspaces.update_file(
+        db, agent_id=binding.id, workspace_path=_workspace(binding), filename=filename, content=content,
+        expected_sha256=expected_sha256, entity_type="class_agent_binding",
+    )
 
 
 def reset_workspace_file(db: Session, class_id: str, filename: str) -> dict[str, Any]:
-    if filename not in EDITABLE_WORKSPACE_FILES:
-        raise AppError("WORKSPACE_FILE_NOT_ALLOWED", "该工作区文件不允许通过管理端修改", 422, {"filename": filename})
     cls = db.get(ClassRoom, class_id)
     binding = get_binding(db, class_id)
     if not cls:
         raise not_found("班级", class_id)
-    workspace = _workspace(binding)
-    workspace.mkdir(parents=True, exist_ok=True)
-    content = _workspace_files(cls, binding)[filename]
-    _atomic_text_write(workspace / filename, content)
-    customized = _customized_files(workspace)
-    customized.discard(filename)
-    _write_customized_files(workspace, customized)
-    digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
-    audit(db, "reset_workspace_file", "class_agent_binding", binding.id, operator_type="admin", after={"filename": filename, "sha256": digest})
-    db.commit()
-    return {"name": filename, "content": content, "sha256": digest, "characters": len(content), "customized": False}
+    return openclaw_workspaces.reset_file(
+        db, agent_id=binding.id, workspace_path=_workspace(binding), filename=filename,
+        defaults=_workspace_files(cls, binding), entity_type="class_agent_binding",
+    )
 
 
 def _adopt_existing_agent(db: Session, cls: ClassRoom, binding: ClassAgentBinding, row: dict[str, Any]) -> None:
@@ -495,17 +474,16 @@ def _adopt_existing_agent(db: Session, cls: ClassRoom, binding: ClassAgentBindin
                 409,
                 {"agent_id": agent_id, "claimed_class_id": claimed.class_id, "current_class_id": cls.id},
             )
-        claimed_before = entity_dict(claimed)
         claimed.openclaw_agent_id = None
         claimed.status = "pending_agent"
         claimed.last_error = f"OpenClaw agent {agent_id} 的实际 workspace 属于班级 {cls.id}，旧映射已重置"
-        audit(db, "repair_agent_claim", "class_agent_binding", claimed.id, before=claimed_before, after=entity_dict(claimed))
+        audit(db, "repair_agent_claim", "class_agent_binding", claimed.id)
         db.flush()
     binding.openclaw_agent_id = agent_id
     binding.status = "agent_created"
     binding.last_error = None
     _prepare_workspace(cls, binding)
-    audit(db, "recover_provision", "class_agent_binding", binding.id, after=entity_dict(binding))
+    audit(db, "recover_provision", "class_agent_binding", binding.id)
     db.commit()
 
 
@@ -550,7 +528,7 @@ async def _ensure_agent(db: Session, cls: ClassRoom, binding: ClassAgentBinding)
         binding.status = "agent_created"
         binding.last_error = None
         await _configure_agent_identity(cls, binding)
-        audit(db, "provision", "class_agent_binding", binding.id, after=entity_dict(binding))
+        audit(db, "provision", "class_agent_binding", binding.id)
         db.commit()
     except Exception as exc:
         try:
@@ -683,8 +661,7 @@ def class_agent_thinking_default(binding: ClassAgentBinding) -> str:
 
 
 def _runtime_is_configured(config: dict[str, Any], binding: ClassAgentBinding) -> bool:
-    agents = (config.get("agents") or {}).get("list") or []
-    agent = next((item for item in agents if isinstance(item, dict) and str(item.get("id") or item.get("agentId")) == binding.openclaw_agent_id), None)
+    agent = configured_agent(config, binding.openclaw_agent_id)
     plugin = ((config.get("plugins") or {}).get("entries") or {}).get("classclaw") or {}
     agent_classes = (plugin.get("config") or {}).get("agentClasses") or {}
     model_value = agent.get("model") if agent else None
@@ -808,14 +785,22 @@ async def _ensure_runtime(binding: ClassAgentBinding) -> None:
 async def sync_class_agent_thinking_defaults() -> None:
     """One startup patch for existing class agents, including non-web ingress.
 
-    Update the agent default and loop safety; explicit session overrides are kept.
+    Refresh managed prompts and runtime defaults; keep customized files and session overrides.
     Do not hold a business connection across the Gateway request.
     """
     def bound_agents() -> dict[str, str]:
         with reader_session() as db:
-            return {row.openclaw_agent_id: class_agent_thinking_default(row) for row in db.scalars(
-                select(ClassAgentBinding).where(ClassAgentBinding.openclaw_agent_id.is_not(None))
-            )}
+            rows = db.execute(select(ClassRoom, ClassAgentBinding).join(ClassAgentBinding).where(
+                ClassRoom.deleted_at.is_(None), ClassAgentBinding.openclaw_agent_id.is_not(None),
+            ))
+            defaults = {}
+            for cls, binding in rows:
+                defaults[binding.openclaw_agent_id] = class_agent_thinking_default(binding)
+                try:
+                    _prepare_workspace(cls, binding)
+                except (OSError, ValueError, AppError) as exc:
+                    get_logger("openclaw").warning("Class Agent prompt refresh failed: %s", type(exc).__name__)
+            return defaults
 
     ids = await asyncio.to_thread(bound_agents)
     if not ids:
@@ -933,7 +918,7 @@ async def _bind_route(db: Session, binding: ClassAgentBinding, snapshot: dict[st
     binding.status = "linked"
     binding.linked_at = now()
     binding.last_error = None
-    audit(db, "bind_channel", "class_agent_binding", binding.id, after=entity_dict(binding))
+    audit(db, "bind_channel", "class_agent_binding", binding.id)
     db.commit()
 
 

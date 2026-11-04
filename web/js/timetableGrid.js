@@ -10,7 +10,7 @@ function subjectTone(subject) {
   return SUBJECT_HUES.get(subject);
 }
 
-export function timetableGridEditor({ periods = [], items = [], editable = true, onChange = null, defaultRoom = null }) {
+export function timetableGridEditor({ periods = [], items = [], onChange = null, defaultRoom = null }) {
   const sortedPeriods = [...periods].sort((a, b) => (a.sort_order - b.sort_order) || (a.period_no - b.period_no));
   // cell key: `${weekday}:${period_no}`
   const cells = new Map();
@@ -19,9 +19,8 @@ export function timetableGridEditor({ periods = [], items = [], editable = true,
     cells.set(`${item.weekday}:${item.period_no}`, { subject: item.subject, teacher: item.teacher || "", room: item.room || "" });
   }
 
-  let container = null;
-  let tableBox = null;
-  let weekendBox = null;
+  const tableBox = el("div", { class: "tt-scroll" });
+  const weekendContent = el("div", { class: "weekend-content" });
   let editingCell = null;
 
   function emit() {
@@ -54,7 +53,7 @@ export function timetableGridEditor({ periods = [], items = [], editable = true,
   function cellContent(weekday, periodNo) {
     const cell = cells.get(`${weekday}:${periodNo}`);
     if (!cell || !cell.subject.trim()) {
-      return el("span", { class: "cell-empty muted" }, editable ? "＋ 添加" : "—");
+      return el("span", { class: "cell-empty muted" }, "＋ 添加");
     }
     const hue = subjectTone(cell.subject.trim());
     return el("span", { class: "cell-lesson", style: { borderLeftColor: `hsl(${hue} 35% 45%)` } },
@@ -64,7 +63,6 @@ export function timetableGridEditor({ periods = [], items = [], editable = true,
   }
 
   function openCellEditor(weekday, periodNo, anchor) {
-    if (!editable) return;
     closeCellEditor();
     const key = `${weekday}:${periodNo}`;
     const cell = cells.get(key) || { subject: "", teacher: "", room: "" };
@@ -108,7 +106,7 @@ export function timetableGridEditor({ periods = [], items = [], editable = true,
     if (target) target.focus();
   }
 
-  function buildTable(weekdays, host, weekend = false) {
+  function buildTable(weekdays, host) {
     const table = el("table", { class: "tt-grid" });
     table.append(el("thead", {}, el("tr", {},
       el("th", { scope: "col", class: "tt-period-col" }, "节次"),
@@ -120,29 +118,27 @@ export function timetableGridEditor({ periods = [], items = [], editable = true,
       for (const weekday of weekdays) {
         const td = el("td", {
           class: "tt-cell",
-          tabindex: editable ? "0" : null,
+          tabindex: "0",
           dataset: { cell: `${weekday}:${period.period_no}` },
-          role: editable ? "button" : null,
+          role: "button",
           "aria-label": `${WEEKDAY_NAMES[weekday]}${periodLabel(period)}`,
         }, cellContent(weekday, period.period_no));
-        if (editable) {
-          td.addEventListener("click", () => openCellEditor(weekday, period.period_no, td));
-          td.addEventListener("keydown", (e) => {
-            const rowIndex = sortedPeriods.indexOf(period);
-            const colIndex = weekdays.indexOf(weekday);
-            if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openCellEditor(weekday, period.period_no, td); }
-            if (e.key === "ArrowDown" && rowIndex < sortedPeriods.length - 1) { e.preventDefault(); focusCell(weekday, sortedPeriods[rowIndex + 1].period_no); }
-            if (e.key === "ArrowUp" && rowIndex > 0) { e.preventDefault(); focusCell(weekday, sortedPeriods[rowIndex - 1].period_no); }
-            if (e.key === "ArrowRight" && colIndex < weekdays.length - 1) { e.preventDefault(); focusCell(weekdays[colIndex + 1], period.period_no); }
-            if (e.key === "ArrowLeft" && colIndex > 0) { e.preventDefault(); focusCell(weekdays[colIndex - 1], period.period_no); }
-            // 复制上一格（上一节同 weekday）
-            if (e.key === "c" && (e.ctrlKey || e.metaKey) === false && e.altKey) {
-              const prev = sortedPeriods[rowIndex - 1];
-              const source = prev && cells.get(`${weekday}:${prev.period_no}`);
-              if (source) { cells.set(`${weekday}:${period.period_no}`, { ...source }); emit(); toast("已复制上一格"); }
-            }
-          });
-        }
+        td.addEventListener("click", () => openCellEditor(weekday, period.period_no, td));
+        td.addEventListener("keydown", (e) => {
+          const rowIndex = sortedPeriods.indexOf(period);
+          const colIndex = weekdays.indexOf(weekday);
+          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openCellEditor(weekday, period.period_no, td); }
+          if (e.key === "ArrowDown" && rowIndex < sortedPeriods.length - 1) { e.preventDefault(); focusCell(weekday, sortedPeriods[rowIndex + 1].period_no); }
+          if (e.key === "ArrowUp" && rowIndex > 0) { e.preventDefault(); focusCell(weekday, sortedPeriods[rowIndex - 1].period_no); }
+          if (e.key === "ArrowRight" && colIndex < weekdays.length - 1) { e.preventDefault(); focusCell(weekdays[colIndex + 1], period.period_no); }
+          if (e.key === "ArrowLeft" && colIndex > 0) { e.preventDefault(); focusCell(weekdays[colIndex - 1], period.period_no); }
+          // 复制上一格（上一节同 weekday）
+          if (e.key === "c" && (e.ctrlKey || e.metaKey) === false && e.altKey) {
+            const prev = sortedPeriods[rowIndex - 1];
+            const source = prev && cells.get(`${weekday}:${prev.period_no}`);
+            if (source) { cells.set(`${weekday}:${period.period_no}`, { ...source }); emit(); toast("已复制上一格"); }
+          }
+        });
         tr.append(td);
       }
       tbody.append(tr);
@@ -156,37 +152,14 @@ export function timetableGridEditor({ periods = [], items = [], editable = true,
     closeCellEditor();
     buildTable([1, 2, 3, 4, 5], tableBox);
     const hasWeekend = [...cells.keys()].some((key) => Number(key.split(":")[0]) >= 6);
-    if (hasWeekend || editable) {
-      weekendBox.classList.remove("hidden");
-      const content = weekendBox.querySelector(".weekend-content");
-      buildTable([6, 7], content, true);
-      if (!hasWeekend) content.append(el("p", { class: "muted" }, "周末暂无课程，可在此添加"));
-    } else {
-      weekendBox.classList.add("hidden");
-    }
+    buildTable([6, 7], weekendContent);
+    if (!hasWeekend) weekendContent.append(el("p", { class: "muted" }, "周末暂无课程，可在此添加"));
   }
 
-  const weekendContent = el("div", { class: "weekend-content" });
-  weekendBox = el("details", { class: "weekend-box hidden" },
+  const weekendBox = el("details", { class: "weekend-box" },
     el("summary", {}, "周末（周六 / 周日）"), weekendContent);
-  tableBox = el("div", { class: "tt-scroll" });
-  container = el("div", { class: "tt-editor" }, tableBox, weekendBox);
+  const container = el("div", { class: "tt-editor" }, tableBox, weekendBox);
   renderAll();
 
-  return {
-    el: container,
-    getItems,
-    setItems(nextItems) {
-      cells.clear();
-      for (const item of nextItems) {
-        if (item.subject) cells.set(`${item.weekday}:${item.period_no}`, { subject: item.subject, teacher: item.teacher || "", room: item.room || "" });
-      }
-      renderAll();
-    },
-    setPeriods(nextPeriods) {
-      sortedPeriods.length = 0;
-      sortedPeriods.push(...[...nextPeriods].sort((a, b) => (a.sort_order - b.sort_order) || (a.period_no - b.period_no)));
-      renderAll();
-    },
-  };
+  return { el: container, getItems };
 }

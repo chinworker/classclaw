@@ -1,2 +1,1 @@
-from app.analytics.service import *
-
+"""Analytics derived from ClassClaw records."""

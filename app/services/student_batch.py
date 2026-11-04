@@ -11,7 +11,6 @@ from app.core.errors import AppError
 from app.models.entities import Student
 from app.schemas.student_batch import StudentBatchUpdate
 from app.services.class_student import _student_integrity_error, get_class
-from app.services.common import audit
 
 
 def _students(db: Session, data: StudentBatchUpdate) -> list[Student]:
@@ -52,7 +51,6 @@ def execute(db: Session, payload: dict[str, Any]) -> dict[str, Any]:
     for row in rows:
         for key, value in changes.items():
             setattr(row, key, value)
-        audit(db, "update", "student", row.id, before=expected[row.id], after=jsonable_encoder(changes))
     try:
         db.flush()
     except IntegrityError as exc:

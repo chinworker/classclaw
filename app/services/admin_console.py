@@ -20,7 +20,7 @@ from app import usage_database
 from app.config import settings
 from app.core.errors import AppError
 from app.core.security import Principal
-from app.database import Base
+from app.database import Base, suspend_writer
 from app.models.entities import (
     Attachment,
     AuditLog,
@@ -50,33 +50,6 @@ from app.services import (
 )
 from app.services.common import audit
 from app.utils.time import now
-
-SETTING_DEFINITIONS: dict[str, dict[str, Any]] = {
-    "feature.file_analysis": {
-        "group": "features", "label": "文件智能解析", "description": "课表、座位表和 onboarding 文件上传后交由 OpenClaw 解析。",
-        "type": "boolean", "config_path": "features.file_analysis",
-    },
-    "feature.event_ai": {
-        "group": "features", "label": "学生事件智能分类", "description": "网页登记学生事件时自动判断子类、倾向和严重程度。",
-        "type": "boolean", "config_path": "features.event_ai",
-    },
-    "feature.wechat_binding": {
-        "group": "features", "label": "微信绑定", "description": "允许班级智能体生成微信二维码和绑定路由。",
-        "type": "boolean", "config_path": "features.wechat_binding",
-    },
-    "feature.reminders": {
-        "group": "features", "label": "主动提醒", "description": "允许智能体查询和发送到期提醒；关闭后已有提醒保留。",
-        "type": "boolean", "config_path": "features.reminders",
-    },
-    "admin.usage_window_days": {
-        "group": "constants", "label": "默认统计窗口（天）", "description": "管理员使用量页面首次加载的统计天数。",
-        "type": "integer", "config_path": "web.usage_window_days", "minimum": 7, "maximum": 365,
-    },
-    "admin.database_page_size": {
-        "group": "constants", "label": "数据库默认分页行数", "description": "数据库调试页面每次默认读取的行数。",
-        "type": "integer", "config_path": "web.database_page_size", "minimum": 10, "maximum": 200,
-    },
-}
 
 _agent_usage_cache: dict[int, tuple[float, list[dict[str, Any]]]] = {}
 
@@ -116,6 +89,23 @@ async def openclaw_config_raw() -> dict:
             "fields": GATEWAY_FIELDS}
 
 
+async def _save_gateway_config(raw: dict[str, Any], paths: list[str], *, base_hash: str | None, note: str) -> str | None:
+    try:
+        result = await openclaw_provisioning.patch_gateway_config(raw, replace_paths=paths, base_hash=base_hash, note=note)
+    except AppError as exc:
+        if exc.code == "CONFIG_CONFLICT":
+            raise
+        raise AppError("OPENCLAW_ADMIN_UNAVAILABLE", "Gateway 配置未能提交，请检查连接后重试", 502) from exc
+    if result.get("hash"):
+        return result["hash"]
+    try:
+        updated = await asyncio.wait_for(openclaw_provisioning.admin_rpc("config.get"), timeout=2)
+        return updated.get("hash")
+    except (AppError, TimeoutError):
+        # A restarting Gateway must not turn a committed patch into a failed save.
+        return None
+
+
 async def update_openclaw_config_raw(db: Session, principal: Principal, body: GatewayRawUpdate) -> dict:
     raw: dict[str, Any] = {}
     for path, value in body.patch.items():
@@ -131,41 +121,29 @@ async def update_openclaw_config_raw(db: Session, principal: Principal, body: Ga
         for part in parts[:-1]:
             group = group.setdefault(part, {})
         group[parts[-1]] = value
-    try:
-        snapshot = await openclaw_provisioning.admin_rpc("config.get")
+    paths = sorted(body.patch)
+    async with suspend_writer(db):
+        try:
+            snapshot = await openclaw_provisioning.admin_rpc("config.get")
+        except AppError as exc:
+            raise AppError("OPENCLAW_ADMIN_UNAVAILABLE", "Gateway 配置未能提交，请检查连接后重试", 502) from exc
         if not snapshot.get("hash") or snapshot["hash"] != body.base_hash:
             raise AppError("CONFIG_CONFLICT", "配置已被其他操作修改，请刷新后重试", 409)
-        result = await openclaw_provisioning.admin_rpc("config.patch", {
-            "raw": json.dumps(raw, ensure_ascii=False), "replacePaths": sorted(body.patch), "baseHash": body.base_hash,
-            "note": "Update Gateway settings from ClassClaw admin console", "restartDelayMs": 500,
-        })
-    except AppError as exc:
-        if exc.status_code == 409 or re.search(r"conflict|base.?hash|config.*changed", f"{exc.code} {exc.message} {exc.details}", re.IGNORECASE):
-            raise AppError("CONFIG_CONFLICT", "配置已被其他操作修改，请刷新后重试", 409) from exc
-        raise AppError("OPENCLAW_ADMIN_UNAVAILABLE", "Gateway 配置未能提交，请检查连接后重试", 502) from exc
-    new_hash = (result or {}).get("hash")
-    if not new_hash:
-        try:
-            updated = await asyncio.wait_for(openclaw_provisioning.admin_rpc("config.get"), timeout=2)
-            new_hash = updated.get("hash")
-        except (AppError, TimeoutError):
-            # The patch is already committed; a restarting Gateway must not turn it into a failed save.
-            new_hash = None
+        new_hash = await _save_gateway_config(
+            raw, paths, base_hash=body.base_hash, note="Update Gateway settings from ClassClaw admin console",
+        )
     audit(db, "gateway_config_patch", "configuration", "openclaw", after={
-        "paths": sorted(body.patch), "old_config_hash": body.base_hash, "new_config_hash": new_hash,
+        "paths": paths, "old_config_hash": body.base_hash, "new_config_hash": new_hash,
     }, operator_id=principal.user_id, operator_type="service" if principal.is_service else "user")
     db.commit()
-    return {"applied": sorted(body.patch), "new_config_hash": new_hash, "restart_requested": True, "restart_after_ms": 1600}
+    return {"applied": paths, "new_config_hash": new_hash, "restart_requested": True, "restart_after_ms": 1600}
 
 
 def setting_value(key: str) -> Any:
-    definition = SETTING_DEFINITIONS.get(key)
-    if not definition:
+    path = configuration_catalog.LEGACY_SETTING_PATHS.get(key)
+    if not path:
         raise AppError("SETTING_NOT_FOUND", "该静态配置项不存在", 404, {"key": key})
-    target: Any = settings
-    for part in definition["config_path"].split("."):
-        target = getattr(target, part)
-    return target
+    return configuration_catalog.setting_value(settings, path)
 
 
 def feature_enabled(key: str) -> bool:
@@ -382,13 +360,6 @@ def _safe_models(payload: Any) -> list[dict[str, Any]]:
     return result
 
 
-def _agent_runtime_row(config: dict[str, Any], agent_id: str) -> dict[str, Any] | None:
-    for row in (config.get("agents") or {}).get("list") or []:
-        if isinstance(row, dict) and str(row.get("id") or row.get("agentId")) == agent_id:
-            return row
-    return None
-
-
 def _model_fields(value: Any) -> tuple[str | None, list[str]]:
     if isinstance(value, str):
         return value, []
@@ -407,7 +378,7 @@ def _runtime_workspace(row: dict[str, Any] | None) -> str | None:
 
 
 def _agent_model_summary(config: dict[str, Any], agent_id: str | None, binding: ClassAgentBinding | None = None) -> dict[str, Any]:
-    row = _agent_runtime_row(config, agent_id) if agent_id else None
+    row = openclaw_provisioning.configured_agent(config, agent_id) if agent_id else None
     primary, _ = _model_fields((row or {}).get("model"))
     default, _ = _model_fields(((config.get("agents") or {}).get("defaults") or {}).get("model"))
     return {
@@ -422,8 +393,8 @@ def _system_agent_descriptors(config: dict[str, Any]) -> list[dict[str, Any]]:
     defaults = (config.get("agents") or {}).get("defaults") or {}
     main_id = settings.openclaw_agent_id
     extractor_id = settings.openclaw_extractor_agent_id
-    main_row = _agent_runtime_row(config, main_id)
-    extractor_row = _agent_runtime_row(config, extractor_id) if extractor_id else None
+    main_row = openclaw_provisioning.configured_agent(config, main_id)
+    extractor_row = openclaw_provisioning.configured_agent(config, extractor_id) if extractor_id else None
     main_workspace = _runtime_workspace(main_row) or defaults.get("workspace")
     extractor_workspace = _runtime_workspace(extractor_row) or str((settings.openclaw_class_workspace_root / "_extractor").resolve())
     return [
@@ -472,12 +443,12 @@ def _class_agent_descriptors(db: Session, config: dict[str, Any]) -> list[dict[s
             "description": "班级专属智能体，拥有独立提示词、工具和可选 ClassClaw Channels 连接。",
             "agent_id": binding.openclaw_agent_id if binding else None,
             "workspace_path": binding.workspace_path if binding else None,
-            "present": bool(binding and binding.openclaw_agent_id and _agent_runtime_row(config, binding.openclaw_agent_id)),
+            "present": bool(binding and binding.openclaw_agent_id and openclaw_provisioning.configured_agent(config, binding.openclaw_agent_id)),
             "enabled": True,
             "resettable": True,
             "status": (
                 "pending_agent" if not binding else
-                "unavailable" if binding.openclaw_agent_id and not _agent_runtime_row(config, binding.openclaw_agent_id) else binding.status
+                "unavailable" if binding.openclaw_agent_id and not openclaw_provisioning.configured_agent(config, binding.openclaw_agent_id) else binding.status
             ),
             "class": {"id": cls.id, "name": cls.name, "status": cls.status},
             "owner": accounts.public_user(owner, cls.id) if owner else None,
@@ -538,7 +509,7 @@ async def openclaw_agent_settings(db: Session, identifier: str) -> dict[str, Any
     )
     config = snapshot.get("config") or {}
     descriptor = _resolve_agent(db, identifier, config)
-    row = _agent_runtime_row(config, descriptor["agent_id"])
+    row = openclaw_provisioning.configured_agent(config, descriptor["agent_id"])
     if not row:
         raise AppError("OPENCLAW_AGENT_NOT_FOUND", "OpenClaw 配置中找不到该智能体", 409)
     primary, fallbacks = _model_fields(row.get("model"))
@@ -578,8 +549,8 @@ async def openclaw_agent_settings(db: Session, identifier: str) -> dict[str, Any
 async def update_openclaw_config(db: Session, principal: Principal, data: OpenClawGlobalUpdate) -> dict[str, Any]:
     changes = data.model_dump(exclude_unset=True)
     if not changes:
-        return await openclaw_config()
-    snapshot = await openclaw_provisioning.admin_rpc("config.get")
+        async with suspend_writer(db):
+            return await openclaw_config()
     raw: dict[str, Any] = {}
     paths: list[str] = []
     if "responses_enabled" in changes:
@@ -591,26 +562,11 @@ async def update_openclaw_config(db: Session, principal: Principal, data: OpenCl
     if "classclaw_plugin_enabled" in changes:
         raw.setdefault("plugins", {}).setdefault("entries", {})["classclaw"] = {"enabled": changes["classclaw_plugin_enabled"]}
         paths.append("plugins.entries.classclaw.enabled")
-    params: dict[str, Any] = {
-        "raw": json.dumps(raw, ensure_ascii=False), "replacePaths": paths,
-        "note": "Update ClassClaw global settings from admin console", "restartDelayMs": 500,
-    }
-    if snapshot.get("hash"):
-        params["baseHash"] = snapshot["hash"]
-    try:
-        result = await openclaw_provisioning.admin_rpc("config.patch", params)
-    except AppError as exc:
-        if exc.status_code == 409 or re.search(r"conflict|base.?hash|config.*changed", f"{exc.code} {exc.message} {exc.details}", re.IGNORECASE):
-            raise AppError("CONFIG_CONFLICT", "配置已被其他操作修改，请刷新后重试", 409) from exc
-        raise AppError("OPENCLAW_ADMIN_UNAVAILABLE", "Gateway 配置未能提交，请检查连接后重试", 502) from exc
-    new_hash = (result or {}).get("hash")
-    if not new_hash:
-        try:
-            updated = await asyncio.wait_for(openclaw_provisioning.admin_rpc("config.get"), timeout=2)
-            new_hash = updated.get("hash")
-        except (AppError, TimeoutError):
-            # The patch is already committed; a restarting Gateway must not turn it into a failed save.
-            new_hash = None
+    async with suspend_writer(db):
+        snapshot = await openclaw_provisioning.admin_rpc("config.get")
+        new_hash = await _save_gateway_config(
+            raw, paths, base_hash=snapshot.get("hash"), note="Update ClassClaw global settings from admin console",
+        )
     audit(db, "gateway_config_patch", "configuration", "openclaw", after={
         "paths": paths, "old_config_hash": snapshot.get("hash"), "new_config_hash": new_hash,
     }, operator_id=principal.user_id, operator_type="service" if principal.is_service else "user")
@@ -699,7 +655,7 @@ async def update_openclaw_agent(db: Session, identifier: str, data: OpenClawAgen
     if binding and "model" in changes:
         binding.main_model = data.model.strip() if data.model and data.model.strip() else None
     target_id = binding.id if binding else agent_id
-    audit(db, "update_openclaw_agent", target_type, target_id, operator_type="admin", after=changes)
+    audit(db, "update_openclaw_agent", target_type, target_id, operator_type="admin")
     db.commit()
     return {"agent": descriptor, "binding": descriptor.get("binding"), "updated": changes, "restart_requested": bool(runtime_fields)}
 
@@ -823,9 +779,8 @@ def update_class_owner(db: Session, class_id: str, owner_user_id: str | None) ->
         existing = accounts.user_class_id(db, owner_user_id)
         if existing and existing != class_id:
             raise AppError("CLASS_LIMIT_REACHED", "该班主任账号已有班级", 409, {"class_id": existing})
-    before = cls.owner_user_id
     cls.owner_user_id = owner_user_id
-    audit(db, "assign_owner", "class", cls.id, operator_type="admin", before={"owner_user_id": before}, after={"owner_user_id": owner_user_id})
+    audit(db, "assign_owner", "class", cls.id, operator_type="admin")
     db.commit()
     return cls
 

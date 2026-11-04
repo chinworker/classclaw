@@ -74,3 +74,15 @@ def test_seating_snapshot_swap_restore_and_validation(db, sample):
         else:
             raise AssertionError("无效座位表应被拒绝")
 
+def test_class_partial_update_checks_the_saved_semester_and_audits_valid_changes(client, db, sample):
+    cls = sample[0]
+    path = f"/api/v1/classes/{cls.id}"
+    result = client.patch(path, json={"semester_start": "2026-09-01", "semester_end": "2027-01-20"})
+    assert result.status_code == 200, result.text
+    rejected = client.patch(path, json={"semester_end": "2026-08-31"})
+    assert rejected.status_code == 422
+    assert rejected.json()["error"]["code"] == "VALIDATION_ERROR"
+    assert client.get(path).json()["data"]["semester_end"] == "2027-01-20"
+    logs = list(db.scalars(select(AuditLog).where(AuditLog.entity_id == cls.id, AuditLog.action == "update")))
+    assert len(logs) == 1
+    assert logs[0].before_json is None and logs[0].after_json is None

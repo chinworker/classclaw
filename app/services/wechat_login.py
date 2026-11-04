@@ -83,6 +83,11 @@ async def call(class_id: str, action: str, **params: Any) -> dict[str, Any]:
             "WECHAT_CHALLENGE_STALE": "验证码提示已更新，请刷新绑定状态后重新输入",
             "WECHAT_CODE_INVALID": "请输入手机显示的数字验证码",
             "WECHAT_ACCOUNT_CONFLICT": "该微信账号已用于其他绑定，不能覆盖其消息路由",
+            "WECHAT_CLASS_UNMAPPED": "本班 Agent 的微信绑定配置已变更，请刷新设置后重新生成二维码",
+            "WECHAT_CREDENTIAL_SAVE_FAILED": "微信凭据未能保存，请管理员检查 Gateway 状态后重新扫码",
+            "WECHAT_LOGIN_BUSY": "扫码会话过多，请稍后重新生成二维码",
+            "WECHAT_REQUEST_INVALID": "当前微信登录请求已失效，请刷新设置后重试",
+            "WECHAT_RESPONSE_INVALID": "微信返回了无效的登录状态，请重新生成二维码",
             "WECHAT_QR_UNAVAILABLE": "微信未返回可用二维码，请重新生成",
         }
         raise AppError(code if code in known else "WECHAT_LOGIN_UNAVAILABLE", known.get(code, "微信登录暂不可用，请稍后重试"),
