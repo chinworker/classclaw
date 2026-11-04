@@ -3,11 +3,14 @@
 import { el, clear, toast, todayStr, fmtDate, fmtDateTime, pct } from "../util.js";
 import { api } from "../api.js";
 import { state, refreshStudents } from "../state.js";
+import { featureEnabled } from "../config.js";
+import { openExamImport } from "../examImport.js";
 import { pageHeader, dataTable, openModal, field, fieldError, errorPanel, skeleton, emptyState, statusBadge, metricCard, confirmDanger } from "../components.js";
 
 let activeView = null;
 export function dispose() {
   activeView?.controller.abort();
+  activeView?.closeImport?.();
   activeView = null;
 }
 
@@ -23,7 +26,11 @@ export async function render(mount) {
   const createButton = el("button", { class: "primary", type: "button", disabled: true, onclick: openCreateExam }, "创建考试");
   mount.append(
     pageHeader("成绩与考试", "创建考试，录入成绩。",
-      createButton), subjectStatus, host);
+      el("div", { class: "row-gap" },
+        el("button", { class: "secondary", type: "button", disabled: !featureEnabled("file_analysis"),
+          onclick: () => { view.closeImport = openExamImport(classId, load); } },
+        featureEnabled("file_analysis") ? "从文件导入" : "文件解析已关闭"),
+        createButton)), subjectStatus, host);
 
   async function read(path) {
     try {
@@ -182,7 +189,11 @@ export async function render(mount) {
           const existing = byKey.get(`${student.id}:${subj.subject}`);
           const input = el("input", { type: "number", min: "0", max: String(subj.full_score), step: "0.5", value: existing?.score ?? "", style: { width: "76px" } });
           inputs.push({ student, subject: subj, input });
-          tr.append(el("td", {}, input));
+          const sourceRank = [
+            existing?.imported_class_rank != null ? `班级第 ${existing.imported_class_rank}` : "",
+            existing?.imported_grade_rank != null ? `年级第 ${existing.imported_grade_rank}` : "",
+          ].filter(Boolean).join(" · ");
+          tr.append(el("td", {}, input, sourceRank ? el("small", { class: "muted" }, `原表：${sourceRank}`) : null));
         }
         tbody.append(tr);
       }
@@ -296,12 +307,18 @@ export async function render(mount) {
       }
 
       body.append(chartSectionTitle("总分排名"));
+      const sourceColumns = [
+        { key: "imported_total_score", label: "原表总分" },
+        { key: "imported_class_rank", label: "原表班级排名" },
+        { key: "imported_grade_rank", label: "原表年级排名" },
+      ].filter(({ key }) => totals.some((row) => row[key] != null));
       body.append(dataTable({
         columns: [
           { key: "rank", label: "名次", width: "64px" },
           { key: "student_name", label: "学生", render: (r) => `${r.student_name ?? "—"}（${r.student_no ?? "—"}）` },
-          { key: "total_score", label: "总分 / 满分", render: (r) => `${r.total_score} / ${r.total_full}` },
+          { key: "total_score", label: "总分 / 满分", render: (r) => r.total_score == null ? "—" : `${r.total_score} / ${r.total_full}` },
           { key: "rate", label: "得分率", render: (r) => pct(r.rate) },
+          ...sourceColumns,
           { key: "subjects", label: "各科成绩", render: (r) => Object.entries(r.subjects || {}).map(([k, v]) => `${k} ${v}`).join("、") || "—" },
         ],
         rows: totals,

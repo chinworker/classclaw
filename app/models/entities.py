@@ -356,7 +356,20 @@ class Score(Base, IdMixin, TimestampMixin):
     score: Mapped[float] = mapped_column(Float)
     full_score: Mapped[float] = mapped_column(Float)
     class_rank: Mapped[int | None] = mapped_column(Integer)
+    imported_class_rank: Mapped[int | None] = mapped_column(Integer)
+    imported_grade_rank: Mapped[int | None] = mapped_column(Integer)
     note: Mapped[str | None] = mapped_column(Text)
+
+
+class ExamImportedTotal(Base, IdMixin):
+    __tablename__ = "exam_imported_totals"
+    __table_args__ = (UniqueConstraint("exam_id", "student_id", name="uq_exam_imported_total_student"),)
+
+    exam_id: Mapped[str] = mapped_column(ForeignKey("exams.id", ondelete="CASCADE"), index=True)
+    student_id: Mapped[str] = mapped_column(ForeignKey("students.id", ondelete="CASCADE"), index=True)
+    score: Mapped[float | None] = mapped_column(Float)
+    class_rank: Mapped[int | None] = mapped_column(Integer)
+    grade_rank: Mapped[int | None] = mapped_column(Integer)
 
 
 class ClassPeriod(Base, IdMixin):

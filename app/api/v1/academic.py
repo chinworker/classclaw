@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 from datetime import date
+from typing import Annotated
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, File, Request, UploadFile
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.errors import AppError
 from app.core.responses import ok
-from app.core.security import require_owned_class, require_owned_record, require_owned_student, scoped_class_id
+from app.core.security import principal_from_request, require_owned_class, require_owned_record, require_owned_student, scoped_class_id
 from app.database import get_db
 from app.models.entities import AttendanceRecord, Exam, Homework, HomeworkStudentStatus, Score, Student, StudentEvent
 from app.schemas.domain import (
@@ -19,8 +21,10 @@ from app.schemas.domain import (
     StudentEventAnalyzeRequest,
     StudentEventCreate,
 )
+from app.schemas.exam_import import ExamImportApply
 from app.services import academic as service
-from app.services import admin_console, ai_tasks, openclaw_bridge
+from app.services import admin_console, ai_tasks, exam_import, openclaw_bridge
+from app.services.exam_import_tables import MAX_FILES
 from app.services.student_ordering import student_order_by
 
 router = APIRouter(tags=["作业、表现、考勤与成绩"])
@@ -194,6 +198,35 @@ def exam_list(
 def exam_delete(request: Request, exam_id: str, db: Session = Depends(get_db)):
     require_owned_record(request, db, Exam, exam_id)
     return ok(request, service.delete_exam(db, exam_id), "考试已删除")
+
+
+def _exam_import_owner(request: Request, class_id: str) -> str:
+    require_owned_class(request, class_id)
+    principal = principal_from_request(request)
+    if not principal.user_id or principal.role != "head_teacher":
+        raise AppError("EXAM_IMPORT_TEACHER_REQUIRED", "请使用该班的班主任账号导入考试成绩", 403)
+    return principal.user_id
+
+
+@router.post("/classes/{class_id}/exams/import-preview")
+async def exam_import_preview(
+    request: Request, class_id: str, files: Annotated[list[UploadFile], File()], db: Annotated[Session, Depends(get_db)],
+):
+    owner = _exam_import_owner(request, class_id)
+    admin_console.require_feature("feature.file_analysis")
+    if not 1 <= len(files) <= MAX_FILES:
+        raise AppError("VALIDATION_ERROR", f"每次请上传 1 至 {MAX_FILES} 个成绩文件", 422)
+    async with ai_tasks.track(request, class_id=class_id) as cancelled:
+        data = await exam_import.analyze(db, class_id, owner, files, cancelled=cancelled)
+    response = ok(request, data, "请核对成绩预览并选择要导入的数据")
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@router.post("/classes/{class_id}/exams/import-apply", status_code=201)
+def exam_import_apply(request: Request, class_id: str, body: ExamImportApply, db: Annotated[Session, Depends(get_db)]):
+    owner = _exam_import_owner(request, class_id)
+    return ok(request, exam_import.apply(db, class_id, owner, body), "考试及成绩已导入", 201)
 
 
 @router.post("/exams/{exam_id}/scores", status_code=201)

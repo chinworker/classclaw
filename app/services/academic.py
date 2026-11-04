@@ -16,6 +16,7 @@ from app.models.entities import (
     AnalysisCache,
     AttendanceRecord,
     Exam,
+    ExamImportedTotal,
     ExamSubject,
     Homework,
     HomeworkStudentStatus,
@@ -428,7 +429,7 @@ def _exam_statistics_fingerprint(db: Session, exam_id: str) -> str:
         ensure_ascii=False,
         sort_keys=True,
     )
-    return hashlib.sha256(f"exam_statistics:natural-student-order-v1:{exam_id}:{raw}".encode()).hexdigest()
+    return hashlib.sha256(f"exam_statistics:source-rank-v2:{exam_id}:{raw}".encode()).hexdigest()
 
 
 def _statistics_cache_put(db: Session, kind: str, key: str, payload: dict) -> None:
@@ -491,18 +492,20 @@ def _compute_exam_statistics(db: Session, exam: Exam, subject: str | None = None
     by_student: dict[str, list[Score]] = defaultdict(list)
     for score in scores:
         by_student[score.student_id].append(score)
+    source_totals = {} if subject else {row.student_id: row for row in db.scalars(
+        select(ExamImportedTotal).where(ExamImportedTotal.exam_id == exam.id))}
     students = {
         s.id: s
-        for s in db.scalars(select(Student).where(Student.id.in_(list(by_student))))
+        for s in db.scalars(select(Student).where(Student.id.in_(set(by_student) | set(source_totals))))
         if s.deleted_at is None
     }
     totals = []
-    for student_id, rows in by_student.items():
-        student = students.get(student_id)
-        if not student:
-            continue
-        total_score = round(sum(r.score for r in rows), 2)
+    for student_id, student in students.items():
+        rows = by_student.get(student_id, [])
+        total_score = round(sum(r.score for r in rows), 2) if rows else None
         total_full = round(sum(subjects_meta[r.subject].full_score for r in rows if r.subject in subjects_meta), 2)
+        source = source_totals.get(student_id)
+        single = rows[0] if rows and (len(subjects_meta) == 1 or subject) else None
         totals.append(
             {
                 "student_id": student_id,
@@ -510,14 +513,20 @@ def _compute_exam_statistics(db: Session, exam: Exam, subject: str | None = None
                 "student_no": student.student_no,
                 "total_score": total_score,
                 "total_full": total_full,
-                "rate": round(total_score / total_full, 4) if total_full else None,
+                "rate": round(total_score / total_full, 4) if total_full and total_score is not None else None,
                 "subjects": {r.subject: r.score for r in sorted(rows, key=lambda r: r.subject)},
+                "imported_total_score": source.score if source else None,
+                "imported_class_rank": source.class_rank if source else (single.imported_class_rank if single else None),
+                "imported_grade_rank": source.grade_rank if source else (single.imported_grade_rank if single else None),
             }
         )
-    totals.sort(key=lambda t: (-t["total_score"], student_no_key(t["student_no"])))
+    totals.sort(key=lambda t: (t["total_score"] is None, -(t["total_score"] or 0), student_no_key(t["student_no"])))
     rank = 0
     previous = None
     for index, item in enumerate(totals, 1):
+        if item["total_score"] is None:
+            item["rank"] = None
+            continue
         if previous is None or item["total_score"] < previous:
             rank = index
             previous = item["total_score"]
