@@ -28,7 +28,7 @@ export async function render(mount) {
     pageHeader("成绩与考试", "创建考试，录入成绩。",
       el("div", { class: "row-gap" },
         el("button", { class: "secondary", type: "button", disabled: !featureEnabled("file_analysis"),
-          onclick: () => { view.closeImport = openExamImport(classId, load); } },
+          onclick: () => { view.closeImport = openExamImport(classId, load, () => classSubjects); } },
         featureEnabled("file_analysis") ? "从文件导入" : "文件解析已关闭"),
         createButton)), subjectStatus, host);
 
@@ -155,8 +155,8 @@ export async function render(mount) {
         `将永久删除考试「${exam.name}」及其全部科目、成绩与统计缓存。`,
         "删除后无法恢复，如需保留成绩请先导出。",
       ],
-      requireText: exam.name,
       confirmLabel: "确认删除",
+      signal: view.controller.signal,
     });
     if (!confirmed) return;
     try {

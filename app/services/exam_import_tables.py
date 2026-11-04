@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import io
+import math
 import unicodedata
 import zipfile
 from dataclasses import dataclass, field
@@ -63,6 +64,27 @@ class Table:
     headers: list[str]
     titles: list[str]
     rows: list[tuple[int, tuple]] = field(default_factory=list)
+    simple_scores: bool = False
+
+
+def _simple_score_table(source: str, rows: list[tuple[int, tuple]]) -> Table | None:
+    if not rows:
+        return None
+    first_no, first = rows[0]
+    def numeric(value) -> bool:
+        try:
+            return math.isfinite(float(clean(value)))
+        except ValueError:
+            return False
+
+    title = clean(first[1]) if not clean(first[0]) and isinstance(first[1], str) and not numeric(first[1]) else ""
+    data = rows[1:] if title else rows
+    if not data or any(not isinstance(row[0], str) or not clean(row[0]) for _, row in data):
+        return None
+    numbers = sum(numeric(row[1]) for _, row in data)
+    if not numbers or numbers * 2 < len(data):
+        return None
+    return Table(source[:260], first_no if title else 0, ["姓名", title[:120] or "第 2 列"], [], data, simple_scores=True)
 
 
 def read_uploads(files: list) -> list[Table]:
@@ -96,6 +118,8 @@ def read_uploads(files: list) -> list[Table]:
                 source = f"{filename} / {sheet}" if sheet else filename
                 table = None
                 merged_subheader = False
+                simple_rows: list[tuple[int, tuple]] = []
+                simple_possible = True
                 titles: list[str] = [sheet[:100]] if sheet else []
                 for row_no, values in enumerate(rows, 1):
                     cells += len(values)
@@ -103,6 +127,12 @@ def read_uploads(files: list) -> list[Table]:
                         raise invalid("表格行列或单元格过多，请删除空白区域，或按考试拆分文件。")
                     if not any(clean(v) for v in values):
                         continue
+                    if table is None and simple_possible:
+                        if len(values) <= 2:
+                            simple_rows.append((row_no, (values[0], values[1] if len(values) == 2 else None)))
+                        else:
+                            simple_possible = False
+                            simple_rows.clear()
                     keys = {header_key(v) for v in values}
                     if keys & (NAME_HEADERS | NUMBER_HEADERS) and len(keys - {""}) >= 2:
                         table = Table(source[:260], row_no, [clean(v)[:120] for v in values], titles[:4])
@@ -122,6 +152,10 @@ def read_uploads(files: list) -> list[Table]:
                                 merged_subheader = True
                                 continue
                         table.rows.append((row_no, tuple(values)))
+                if table is None and simple_possible and (simple := _simple_score_table(source, simple_rows)):
+                    tables.append(simple)
+                    if len(tables) > MAX_TABLES:
+                        raise invalid("识别到的数据组超过 24 组，请分批上传。")
         except (ValueError, OSError, KeyError, OverflowError, SyntaxError, csv.Error, zipfile.BadZipFile, InvalidFileException) as exc:
             raise invalid("无法读取成绩文件，请在表格软件中重新另存为 .xlsx 或 UTF-8 CSV，取消文件保护后重试。") from exc
         finally:

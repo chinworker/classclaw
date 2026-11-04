@@ -46,7 +46,16 @@ def _prune() -> None:
 async def analyze(db: Session, class_id: str, owner: str, files: list, *, cancelled) -> dict:
     async with suspend_writer(db):
         tables = await asyncio.to_thread(read_uploads, files)
-    metadata = [{"table": i, "titles": t.titles, "headers": t.headers} for i, t in enumerate(tables, 1)]
+    metadata = [{"table": i, "titles": t.titles, "headers": t.headers}
+                for i, t in enumerate(tables, 1) if not t.simple_scores]
+    layouts = [ExamLayout(table=i, name_column=1, subjects=[{"score": 2}])
+               for i, t in enumerate(tables, 1) if t.simple_scores]
+    if metadata:
+        layouts.extend(await _extract_layouts(db, metadata, cancelled=cancelled))
+    return await _build_preview(db, class_id, owner, tables, layouts, cancelled=cancelled)
+
+
+async def _extract_layouts(db: Session, metadata: list[dict], *, cancelled) -> list[ExamLayout]:
     encoded = json.dumps(metadata, ensure_ascii=False, separators=(",", ":"))
     if len(encoded.encode()) > 60_000:
         raise _error("表头信息过多，请删除无关列或按考试拆分文件后重新上传。")
@@ -60,7 +69,7 @@ async def analyze(db: Session, class_id: str, owner: str, files: list, *, cancel
 无法区分范围的名次不猜测。不要把排名、总评等级、折算率、考号当作成绩或班内学号。
 除非标题或列名明确写出考试名称、日期及满分，否则用 null。成绩数据由程序读取，不要转录或生成成绩。
 总分和总排名放到 total；只有总分没有分科成绩时，将总分作为名为“总分”的科目，total 留空。
-每个列号必须实际存在且不能重复使用。无法识别任何成绩列时输出空数组。
+每个列号必须实际存在且不能重复使用。成绩列明确但科目缺失或只写“成绩”“分数”时，保留列号，subject 填 null，交给用户选择。无法识别任何成绩列时输出空数组。
 """.strip()
     output = await openclaw_bridge._await_unless_cancelled(
         openclaw_bridge._responses_json(
@@ -73,9 +82,12 @@ async def analyze(db: Session, class_id: str, owner: str, files: list, *, cancel
         cancelled,
     )
     try:
-        layouts = ExamLayouts.model_validate(output).datasets
+        return ExamLayouts.model_validate(output).datasets
     except ValidationError as exc:
         raise _error("未能可靠识别表格列。请保留一行清晰表头，写明科目及排名范围，或按考试拆分文件后重试。") from exc
+
+
+async def _build_preview(db: Session, class_id: str, owner: str, tables: list[Table], layouts: list[ExamLayout], *, cancelled) -> dict:
     if await cancelled():
         raise _error("已取消成绩文件解析", "REQUEST_CANCELLED", 409)
     cls = get_class(db, class_id)
@@ -191,7 +203,8 @@ def _candidates(table: Table, layout: ExamLayout, class_name: str, roster: list[
     name_col = _identity_column(table.headers, layout.name_column, NAME_HEADERS)
     no_col = _identity_column(table.headers, layout.student_no_column, NUMBER_HEADERS)
     class_col = _identity_column(table.headers, layout.class_column, CLASS_HEADERS)
-    if not (name_col or no_col) or (not class_col and not (name_col and no_col)):
+    name_only = bool(name_col and not no_col and not class_col)
+    if not (name_col or no_col) or (not class_col and not name_col):
         raise _error("无法可靠区分班级。请添加班级列，或同时提供姓名和本班学号。")
     identity_indexes = [name_col, no_col, class_col, layout.exam_column, layout.date_column]
     metric_indexes = []
@@ -199,7 +212,7 @@ def _candidates(table: Table, layout: ExamLayout, class_name: str, roster: list[
         if mapping:
             metric_indexes.extend(i for i in (mapping.score, mapping.class_rank, mapping.grade_rank) if i is not None)
     used = [i for i in [*identity_indexes, *metric_indexes] if i is not None]
-    subjects = [clean(s.subject) for s in layout.subjects]
+    subjects = [clean(s.subject) or f"第 {s.score} 列成绩" for s in layout.subjects]
     if (len(used) != len(set(used)) or max(used) > len(table.headers)
             or len(set(subjects)) != len(subjects) or not all(subjects)):
         raise _error("识别出的列位置或科目有冲突。请把不同考试的列分到不同工作表，并给各科列写明名称。")
@@ -232,12 +245,15 @@ def _candidates(table: Table, layout: ExamLayout, class_name: str, roster: list[
                 "name": raw_name[:100] or layout.name or "",
                 "exam_date": _date(raw_date) or (layout.exam_date.isoformat() if layout.exam_date and not clean(raw_date) else None),
                 "source": table.source, "header_row": table.header_row,
+                "simple_scores": table.simple_scores,
                 "subjects": [{"subject": name, "full_score": item.full_score, "score_header": table.headers[item.score - 1],
+                              "requires_subject": not item.subject,
                               "class_rank_header": _cell(tuple(table.headers), item.class_rank),
                               "grade_rank_header": _cell(tuple(table.headers), item.grade_rank)}
                              for name, item in zip(subjects, layout.subjects, strict=True)],
                 "scores": [], "totals": [], "students": [], "warnings": [], "errors": [], "unmapped_columns": unmapped,
                 "excluded_rows": 0, "missing_cells": 0, "matched_without_class": 0, "seen": set(),
+                "requires_own_class_confirmation": name_only,
             }
         group = groups[group_key]
         if not has_identity:
@@ -248,9 +264,9 @@ def _candidates(table: Table, layout: ExamLayout, class_name: str, roster: list[
             continue
         named = by_name[name] if name else set()
         numbered = by_no[no] if no else set()
-        matches = (named & numbered) if name and no else ((named or numbered) if class_value else set())
+        matches = (named & numbered) if name and no else ((named or numbered) if class_value or name_only else set())
         if len(matches) != 1:
-            if class_value or named:
+            if class_value or named or name_only:
                 _issue(group, f"第 {row_no} 行学生无法唯一匹配，请核对姓名、班内学号及班级。")
             else:
                 group["excluded_rows"] += 1
@@ -296,7 +312,9 @@ def _candidates(table: Table, layout: ExamLayout, class_name: str, roster: list[
             _issue(group, "没有匹配到本班的有效成绩。请检查班级名称、班内学号、姓名和成绩列。")
         if group["missing_cells"]:
             group["warnings"].append(f'{group["missing_cells"]} 个成绩单元格为空或缺考，将留空，不记为零分。')
-        if group["matched_without_class"]:
+        if group["requires_own_class_confirmation"]:
+            group["warnings"].append("表格只有姓名可用于匹配；请核对名单，并确认原表只包含本班学生。")
+        elif group["matched_without_class"]:
             group["warnings"].append(
                 f'{group["matched_without_class"]} 行没有班级标记，按姓名和班内学号同时匹配。请确认这些记录确属本班。')
         if len(ids) < len(roster):
@@ -353,23 +371,32 @@ def apply(db: Session, class_id: str, owner: str, body: ExamImportApply) -> dict
         if key in existing:
             raise _error(f"「{selection.name}」同日已有考试或同时选中了多个版本。请选择一版，或为不同考试改名。", "EXAM_IMPORT_DUPLICATE", 409)
         existing.add(key)
+        if item["requires_own_class_confirmation"] and not selection.own_class_confirmed:
+            raise _error("这组数据只有姓名，请先确认原表只包含本班学生。")
         full = selection.full_scores
         if set(full) != {s["subject"] for s in item["subjects"]}:
             raise _error(f"请填写「{selection.name}」每个科目的满分。")
+        unresolved = {s["subject"] for s in item["subjects"] if s["requires_subject"]}
+        if set(selection.subject_names) != unresolved:
+            raise _error(f"请选择「{selection.name}」中尚未识别的科目。")
+        subject_map = {key: clean(selection.subject_names.get(key, key)) for key in full}
+        if len({header_key(name) for name in subject_map.values()}) != len(full) or not all(subject_map.values()):
+            raise _error(f"「{selection.name}」的科目不能重复或留空。")
         for score in item["scores"]:
             if score["score"] > full[score["subject"]]:
                 student = current[score["student_id"]][0]
                 raise _error(f'{student}的{score["subject"]}成绩 {score["score"]:g} 超过满分 {full[score["subject"]]:g}。请核对满分或原表。')
-        plans.append((selection, item))
+        plans.append((selection, item, subject_map))
     imported = []
     try:
-        for selection, item in plans:
+        for selection, item, subject_map in plans:
             exam = academic.create_exam(db, ExamCreate(
                 class_id=class_id, name=selection.name, exam_date=selection.exam_date,
-                subjects=[{"subject": name, "full_score": full} for name, full in selection.full_scores.items()],
+                subjects=[{"subject": subject_map[name], "full_score": full} for name, full in selection.full_scores.items()],
             ), commit=False)
-            rows = academic.save_scores(db, exam.id, ScoreBatch(scores=item["scores"]), commit=False)
-            source = {(s["student_id"], s["subject"]): s for s in item["scores"]}
+            mapped_scores = [{**s, "subject": subject_map[s["subject"]]} for s in item["scores"]]
+            rows = academic.save_scores(db, exam.id, ScoreBatch(scores=mapped_scores), commit=False)
+            source = {(s["student_id"], s["subject"]): s for s in mapped_scores}
             for row in rows:
                 score = source[row.student_id, row.subject]
                 row.imported_class_rank = score["class_rank"]

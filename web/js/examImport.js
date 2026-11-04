@@ -7,7 +7,7 @@ const rankText = (classRank, gradeRank) => [
   gradeRank != null ? `年级第 ${gradeRank}` : "",
 ].filter(Boolean).join(" · ");
 
-export function openExamImport(classId, onImported) {
+export function openExamImport(classId, onImported, getSubjects = () => []) {
   const host = el("div");
   const resultHost = el("div");
   const lifetime = new AbortController();
@@ -55,6 +55,7 @@ export function openExamImport(classId, onImported) {
     }
     const form = el("form", { novalidate: true });
     const validCount = datasets.filter((item) => !item.errors.length).length;
+    const subjectOptions = getSubjects().map(({ name }) => name);
     const choices = datasets.map((item, index) => {
       const blocked = item.errors.length > 0;
       const selected = el("input", { type: "checkbox", disabled: blocked, checked: !blocked && validCount === 1 });
@@ -62,6 +63,14 @@ export function openExamImport(classId, onImported) {
       const date = el("input", { type: "date", value: item.exam_date ?? "", disabled: blocked });
       const full = new Map(item.subjects.map((subject) => [subject.subject,
         el("input", { type: "number", min: "0.01", step: "any", value: subject.full_score ?? "", placeholder: "填写满分", disabled: blocked })]));
+      const missing = new Map(item.subjects.filter((subject) => subject.requires_subject).map(({ subject }) => [
+        subject, subjectOptions.length
+          ? el("select", { disabled: blocked }, el("option", { value: "" }, "请选择科目"),
+            ...subjectOptions.map((option) => el("option", { value: option }, option)))
+          : el("input", { type: "text", maxlength: "100", placeholder: "填写科目", disabled: blocked }),
+      ]));
+      for (const input of missing.values()) input.value = "";
+      const ownClass = item.requires_own_class_confirmation ? el("input", { type: "checkbox", disabled: blocked }) : null;
       const scores = new Map(item.scores.map((row) => [`${row.student_id}:${row.subject}`, row]));
       const totals = new Map(item.totals.map((row) => [row.student_id, row]));
       const display = (row) => row ? [row.score ?? "—", rankText(row.class_rank, row.grade_rank)].filter(Boolean).join(" · ") : "—";
@@ -70,21 +79,24 @@ export function openExamImport(classId, onImported) {
       if (totals.size) columns.push({ key: "total", label: "原表总分及排名", render: (student) => display(totals.get(student.id)) });
       const details = el("details", {}, el("summary", {}, "核对本班成绩与排名"),
         dataTable({ columns, rows: item.students }));
+      const sourceLabel = item.simple_scores ? "姓名＋分数简表" : `第 ${item.header_row} 行表头`;
       form.append(el("section", { class: "card import-panel" },
         el("label", { class: "row-gap" }, selected, el("b", {}, `数据组 ${index + 1}：${item.name || "待命名考试"}`)),
-        el("p", { class: "muted" }, `${item.source} · 第 ${item.header_row} 行表头 · 本班 ${item.students.length} 人 · ${item.scores.length} 条成绩 · 已排除 ${item.excluded_rows} 行非匹配记录`),
+        el("p", { class: "muted" }, `${item.source} · ${sourceLabel} · 本班 ${item.students.length} 人 · ${item.scores.length} 条成绩 · 已排除 ${item.excluded_rows} 行非匹配记录`),
         ...item.errors.map((error) => el("p", { class: "issue issue-error" }, error)),
         ...item.warnings.map((warning) => el("p", { class: "issue issue-warn" }, warning)),
         item.unmapped_columns.length ? el("details", {}, el("summary", {}, "查看未导入的列"),
           el("p", {}, item.unmapped_columns.join("、"))) : null,
         el("div", { class: "form-grid" }, field("考试名称", name), field("考试日期", date),
+          ...[...missing].map(([subject, input]) => field(`${subject}对应的科目`, input)),
           ...item.subjects.map(({ subject, score_header, class_rank_header, grade_rank_header }) => field(
             `${subject}满分`, full.get(subject), [
               `原表成绩列：${score_header}`, class_rank_header && `班级排名列：${class_rank_header}`,
               grade_rank_header && `年级排名列：${grade_rank_header}`,
             ].filter(Boolean).join(" · ")))),
-        details));
-      return { item, selected, name, date, full };
+        details,
+        ownClass ? el("label", { class: "row-gap" }, ownClass, "我已核对名单，确认原表只包含本班学生") : null));
+      return { item, selected, name, date, full, missing, ownClass };
     });
     resultHost.append(form);
     if (!result.preview_id) return;
@@ -100,9 +112,15 @@ export function openExamImport(classId, onImported) {
         errors.append(el("p", { class: "field-error" }, "请先选择要导入的数据组。"));
         return;
       }
-      const payload = chosen.map(({ item, name, date, full }) => ({
+      if (chosen.some(({ missing, ownClass }) => [...missing.values()].some((input) => !input.value.trim()) || (ownClass && !ownClass.checked))) {
+        errors.append(el("p", { class: "field-error" }, "请选择缺失的科目，并核对需要确认的本班名单。"));
+        return;
+      }
+      const payload = chosen.map(({ item, name, date, full, missing, ownClass }) => ({
         dataset_id: item.id, name: name.value.trim(), exam_date: date.value,
         full_scores: Object.fromEntries([...full].map(([subject, input]) => [subject, Number(input.value)])),
+        ...(missing.size ? { subject_names: Object.fromEntries([...missing].map(([key, input]) => [key, input.value.trim()])) } : {}),
+        ...(ownClass ? { own_class_confirmed: true } : {}),
       }));
       if (payload.some((row) => !row.name || !row.exam_date || Object.values(row.full_scores).some((v) => !(v > 0)))) {
         errors.append(el("p", { class: "field-error" }, "请为所选数据填写考试名称、日期，以及每科大于 0 的满分。"));

@@ -70,3 +70,33 @@ test("closing the import cancels the pending extraction and never commits", asyn
   assert.equal(document.body.querySelector(".modal"), null);
   assert.equal(calls.filter((path) => path.endsWith("import-apply")).length, 0);
 });
+
+test("a missing subject is selected from class subjects and confirmed with the roster", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const calls = [];
+  const subject = "第 2 列成绩";
+  const missing = {
+    ...candidate, requires_own_class_confirmation: true,
+    subjects: [{ subject, requires_subject: true, full_score: 100, score_header: "小测成绩" }],
+    scores: [{ ...candidate.scores[0], subject }],
+  };
+  globalThis.fetch = async (path, options) => {
+    calls.push({ path, options });
+    return path.endsWith("import-preview") ? response({ preview_id: "preview", datasets: [missing], warnings: [] })
+      : response({ exams: [{ id: "exam-a" }] }, 201);
+  };
+  close = openExamImport("class-a", () => {}, () => [{ name: "数学" }]);
+  startUpload(); await tick();
+  const form = document.body.querySelector("form");
+  const submit = () => form.dispatchEvent(new Event("submit", { cancelable: true }));
+  assert.ok(form.querySelector("select").textContent.includes("请选择科目"));
+  form.querySelector("select").value = "数学";
+  submit(); await tick();
+  assert.equal(calls.length, 1);
+  form.querySelectorAll("input").filter((input) => input.getAttribute("type") === "checkbox").at(-1).checked = true;
+  submit(); await tick();
+  assert.deepEqual(JSON.parse(calls[1].options.body).datasets[0], {
+    dataset_id: 1, name: "期中", exam_date: "2026-11-01", full_scores: { [subject]: 100 },
+    subject_names: { [subject]: "数学" }, own_class_confirmed: true,
+  });
+});

@@ -83,3 +83,23 @@ test("leaving cancels page reads and ignores late responses from a previous clas
   assert.equal(mount.textContent.includes(exam.name), false);
   assert.equal(button(mount, "创建考试").disabled, true);
 });
+
+test("deleting an exam only requires a confirmation click", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const deleted = [];
+  globalThis.fetch = async (path, options) => {
+    if (options.method === "DELETE") {
+      deleted.push(path);
+      return response({});
+    }
+    return response(path.endsWith("/subjects") ? [{ name: "数学" }] : [exam]);
+  };
+  const { mount, rendered } = mountPage(); await rendered;
+  button(mount, "删除").click();
+  const modal = document.body.querySelector(".modal");
+  assert.ok(modal.textContent.includes(exam.name));
+  assert.equal(modal.querySelector("input"), null);
+  assert.deepEqual(deleted, []);
+  button(modal, "确认删除").click(); await tick();
+  assert.deepEqual(deleted, [`/api/v1/exams/${exam.id}`]);
+});

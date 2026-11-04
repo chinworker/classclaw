@@ -223,3 +223,40 @@ def test_merged_excel_subheaders_keep_subject_rank_columns(client, teacher, monk
     item = response.json()["data"]["datasets"][0]
     assert item["scores"][0]["grade_rank"] == 20
     assert item["subjects"][0]["class_rank_header"] == "数学 班名次"
+
+
+def test_name_and_score_workbook_can_complete_missing_subject_in_preview(client, db, teacher):
+    cls, _, _, headers = teacher
+    wb = Workbook()
+    sheet = wb.active
+    sheet.append([None, "练习成绩"])
+    sheet.append(["张三", 88])
+    sheet.append(["李四", 93])
+    file = BytesIO()
+    wb.save(file)
+    response = client.post(f"/api/v1/classes/{cls.id}/exams/import-preview", headers=headers,
+                           files={"files": ("scores.xlsx", file.getvalue(), "application/octet-stream")})
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    item = data["datasets"][0]
+    assert item["requires_own_class_confirmation"]
+    assert item["subjects"][0]["requires_subject"]
+    assert len(item["scores"]) == 2
+    key = item["subjects"][0]["subject"]
+    base = {"dataset_id": item["id"], "name": "练习", "exam_date": "2026-11-04", "full_scores": {key: 100}}
+    assert apply(client, teacher, data, {**base, "subject_names": {key: "语文"}}).status_code == 422
+    assert apply(client, teacher, data, {**base, "own_class_confirmed": True}).status_code == 422
+    assert db.scalar(select(func.count(Exam.id))) == 0
+    confirmed = {**base, "own_class_confirmed": True, "subject_names": {key: "语文"}}
+    response = apply(client, teacher, data, confirmed)
+    assert response.status_code == 201, response.text
+    assert set(db.execute(select(Score.subject, Score.score))) == {("语文", 88), ("语文", 93)}
+
+
+def test_names_only_sheet_never_guesses_unmatched_names(client, teacher):
+    response = preview(client, teacher, ",小测\n张三,88\n外班生,93")
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["preview_id"] is None
+    assert "第 3 行" in data["datasets"][0]["errors"][0]
+    assert "外班生" not in response.text
