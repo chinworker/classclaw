@@ -294,6 +294,8 @@ def create_exam(db: Session, data: ExamCreate, *, commit: bool = True) -> Exam:
     db.flush()
     for subject in data.subjects:
         db.add(ExamSubject(exam_id=exam.id, **subject.model_dump()))
+    # Imports validate scores against these subjects before committing the transaction.
+    db.flush()
     audit(db, "create", "exam", exam.id, after={"exam": entity_dict(exam), "subjects": [s.model_dump() for s in data.subjects]})
     if commit:
         db.commit()

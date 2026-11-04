@@ -50,7 +50,6 @@ class ExamImportSelection(BaseModel):
     exam_date: date
     full_scores: dict[Label, FullScore] = Field(min_length=1, max_length=30)
     subject_names: dict[Label, Label] = Field(default_factory=dict, max_length=30)
-    own_class_confirmed: bool = False
 
 
 class ExamImportApply(BaseModel):

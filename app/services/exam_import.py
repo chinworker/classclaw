@@ -6,7 +6,7 @@ import math
 import re
 import time
 import uuid
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import date, datetime
 from threading import Lock
 
@@ -253,7 +253,7 @@ def _candidates(table: Table, layout: ExamLayout, class_name: str, roster: list[
                              for name, item in zip(subjects, layout.subjects, strict=True)],
                 "scores": [], "totals": [], "students": [], "warnings": [], "errors": [], "unmapped_columns": unmapped,
                 "excluded_rows": 0, "missing_cells": 0, "matched_without_class": 0, "seen": set(),
-                "requires_own_class_confirmation": name_only,
+                "name_only": name_only,
             }
         group = groups[group_key]
         if not has_identity:
@@ -312,8 +312,8 @@ def _candidates(table: Table, layout: ExamLayout, class_name: str, roster: list[
             _issue(group, "没有匹配到本班的有效成绩。请检查班级名称、班内学号、姓名和成绩列。")
         if group["missing_cells"]:
             group["warnings"].append(f'{group["missing_cells"]} 个成绩单元格为空或缺考，将留空，不记为零分。')
-        if group["requires_own_class_confirmation"]:
-            group["warnings"].append("表格只有姓名可用于匹配；请核对名单，并确认原表只包含本班学生。")
+        if name_only:
+            group["warnings"].append("原表没有班级和学号，已按姓名与本班名单匹配；重名或无法匹配的记录不能导入。")
         elif group["matched_without_class"]:
             group["warnings"].append(
                 f'{group["matched_without_class"]} 行没有班级标记，按姓名和班内学号同时匹配。请确认这些记录确属本班。')
@@ -355,6 +355,7 @@ def apply(db: Session, class_id: str, owner: str, body: ExamImportApply) -> dict
         raise _error("当前账号已不再管理这个班级", "CLASS_ACCESS_DENIED", 403)
     current = {s.id: (s.name, s.student_no) for s in db.scalars(
         select(Student).where(Student.class_id == class_id, Student.deleted_at.is_(None)))}
+    name_counts = Counter(clean(name) for name, _ in current.values())
     existing = {(header_key(name), exam_date) for name, exam_date in db.execute(
         select(Exam.name, Exam.exam_date).where(Exam.class_id == class_id))}
     datasets = {item["id"]: item for item in preview[3]}
@@ -365,14 +366,14 @@ def apply(db: Session, class_id: str, owner: str, body: ExamImportApply) -> dict
         if not item or item["errors"] or selection.dataset_id in seen:
             raise _error("请选择本次预览中可导入的数据组，每组只选一次。")
         seen.add(selection.dataset_id)
-        if any(current.get(s["id"]) != (s["name"], s["student_no"]) for s in item["students"]):
+        if any(current.get(s["id"]) != (s["name"], s["student_no"])
+               or (item["name_only"] and name_counts[clean(s["name"])] != 1)
+               for s in item["students"]):
             raise _error("班级名单已变更，请重新解析文件后核对。", "EXAM_IMPORT_STALE", 409)
         key = (header_key(selection.name), selection.exam_date)
         if key in existing:
             raise _error(f"「{selection.name}」同日已有考试或同时选中了多个版本。请选择一版，或为不同考试改名。", "EXAM_IMPORT_DUPLICATE", 409)
         existing.add(key)
-        if item["requires_own_class_confirmation"] and not selection.own_class_confirmed:
-            raise _error("这组数据只有姓名，请先确认原表只包含本班学生。")
         full = selection.full_scores
         if set(full) != {s["subject"] for s in item["subjects"]}:
             raise _error(f"请填写「{selection.name}」每个科目的满分。")
