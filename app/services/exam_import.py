@@ -10,6 +10,7 @@ from collections import Counter, defaultdict
 from datetime import date, datetime
 from threading import Lock
 
+from openpyxl.utils import get_column_letter
 from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -18,7 +19,7 @@ from app.core.errors import AppError
 from app.database import suspend_writer
 from app.models.entities import Exam, ExamImportedTotal, Student
 from app.schemas.domain import ExamCreate, ScoreBatch
-from app.schemas.exam_import import ExamImportApply, ExamLayout, ExamLayouts
+from app.schemas.exam_import import ExamImportApply, ExamLayout, ExamLayouts, RankColumns
 from app.services import academic, openclaw_bridge
 from app.services.class_student import get_class
 from app.services.exam_import_tables import CLASS_HEADERS, NAME_HEADERS, NUMBER_HEADERS, Table, clean, header_key, read_uploads
@@ -31,6 +32,7 @@ _MAX_SCORES = 12_000
 _previews: dict[str, tuple[float, str, str, list[dict]]] = {}
 _lock = Lock()
 _MISSING = {"", "-", "--", "—", "/", "缺考", "未考", "缺", "未录入", "免考"}
+_LETTER_GRADE = re.compile(r"[A-F][+-]?", re.IGNORECASE | re.ASCII)
 
 
 def _error(message: str, code: str = "EXAM_IMPORT_INVALID", status: int = 422) -> AppError:
@@ -184,6 +186,18 @@ def _number(value, *, rank: bool = False) -> float | int | None:
     return int(number) if rank else number
 
 
+def _letter_grade_column(table: Table, index: int) -> bool:
+    found_grade = False
+    for _, row in table.rows:
+        value = clean(_cell(row, index))
+        if value in _MISSING:
+            continue
+        if not _LETTER_GRADE.fullmatch(value):
+            return False
+        found_grade = True
+    return found_grade
+
+
 def _date(value) -> str | None:
     if isinstance(value, datetime):
         return value.date().isoformat()
@@ -217,6 +231,15 @@ def _candidates(table: Table, layout: ExamLayout, class_name: str, roster: list[
             or len(set(subjects)) != len(subjects) or not all(subjects)):
         raise _error("识别出的列位置或科目有冲突。请把不同考试的列分到不同工作表，并给各科列写明名称。")
     unmapped = [f"第 {i} 列 {name}" for i, name in enumerate(table.headers, 1) if name and i not in used]
+    numeric_subjects = []
+    letter_grade_headers = []
+    for subject, mapping in zip(subjects, layout.subjects, strict=True):
+        if _letter_grade_column(table, mapping.score):
+            letter_grade_headers.append(table.headers[mapping.score - 1] or subject)
+        else:
+            numeric_subjects.append((subject, mapping))
+    if not numeric_subjects:
+        raise _error("这组科目使用字母等级。考试成绩需要数字分数，请提供对应的分数列。")
     groups: dict = {}
     labels = _class_labels(class_name)
     by_name = defaultdict(set)
@@ -250,7 +273,7 @@ def _candidates(table: Table, layout: ExamLayout, class_name: str, roster: list[
                               "requires_subject": not item.subject,
                               "class_rank_header": _cell(tuple(table.headers), item.class_rank),
                               "grade_rank_header": _cell(tuple(table.headers), item.grade_rank)}
-                             for name, item in zip(subjects, layout.subjects, strict=True)],
+                             for name, item in numeric_subjects],
                 "scores": [], "totals": [], "students": [], "warnings": [], "errors": [], "unmapped_columns": unmapped,
                 "excluded_rows": 0, "missing_cells": 0, "matched_without_class": 0, "seen": set(),
                 "name_only": name_only,
@@ -262,8 +285,10 @@ def _candidates(table: Table, layout: ExamLayout, class_name: str, roster: list[
         if class_col and class_value and class_value not in labels:
             group["excluded_rows"] += 1
             continue
-        named = by_name[name] if name else set()
-        numbered = by_no[no] if no else set()
+        named = by_name.get(name, set())
+        numbered = by_no.get(no, set())
+        if named and not numbered and (prefixed := re.fullmatch(r"[男女]\s*([0-9]+)", no)):
+            numbered = by_no.get(_no(prefixed[1]), set())
         matches = (named & numbered) if name and no else ((named or numbered) if class_value or name_only else set())
         if len(matches) != 1:
             if class_value or named or name_only:
@@ -280,21 +305,21 @@ def _candidates(table: Table, layout: ExamLayout, class_name: str, roster: list[
             group["matched_without_class"] += 1
         try:
             entries = []
-            for subject, mapping in zip(subjects, layout.subjects, strict=True):
-                values = _read_metrics(row, mapping)
+            for subject, mapping in numeric_subjects:
+                values = _read_metrics(row, mapping, row_no)
                 if values["score"] is None:
                     if values["class_rank"] is not None or values["grade_rank"] is not None:
-                        raise ValueError("分科排名有值但缺少对应成绩")
+                        address = f"{get_column_letter(mapping.score)}{row_no}"
+                        raise ValueError(f"{address}（{subject}）缺少成绩，但对应的排名有值。请核对原表。")
                     group["missing_cells"] += 1
                     continue
                 entries.append({"student_id": student_id, "subject": subject, **values})
             if layout.total:
-                values = _read_metrics(row, layout.total)
+                values = _read_metrics(row, layout.total, row_no)
                 if any(v is not None for v in values.values()):
                     group["totals"].append({"student_id": student_id, **values})
-        except (ValueError, OverflowError) as exc:
-            detail = "分科排名有值但缺少对应成绩" if exc.args == ("分科排名有值但缺少对应成绩",) else "成绩不是有效非负数，或排名不是正整数"
-            _issue(group, f"第 {row_no} 行{detail}。请把成绩和排名分列，缺考成绩留空。")
+        except ValueError as exc:
+            _issue(group, f"第 {row_no} 行，{exc}")
             continue
         group["scores"].extend(entries)
 
@@ -304,12 +329,15 @@ def _candidates(table: Table, layout: ExamLayout, class_name: str, roster: list[
     if not relevant:
         raise _error("没有匹配到本班学生。请检查班级列是否与本班对应，以及姓名和学号是否与名单一致。")
     for group in relevant:
-        group.pop("seen")
+        matched_count = len(group.pop("seen"))
         ids = {s["student_id"] for s in group["scores"] + group["totals"]}
         group["students"] = [{"id": s.id, "name": s.name, "student_no": s.student_no}
                              for s in sorted((students[i] for i in ids), key=lambda s: student_no_key(s.student_no))]
         if not group["scores"]:
-            _issue(group, "没有匹配到本班的有效成绩。请检查班级名称、班内学号、姓名和成绩列。")
+            _issue(group, "没有可导入的本班成绩。请核对名单和成绩列。")
+        if letter_grade_headers:
+            names = "、".join(letter_grade_headers)
+            group["warnings"].append(f"{names}使用字母等级，这些列未导入。")
         if group["missing_cells"]:
             group["warnings"].append(f'{group["missing_cells"]} 个成绩单元格为空或缺考，将留空，不记为零分。')
         if name_only:
@@ -317,8 +345,8 @@ def _candidates(table: Table, layout: ExamLayout, class_name: str, roster: list[
         elif group["matched_without_class"]:
             group["warnings"].append(
                 f'{group["matched_without_class"]} 行没有班级标记，按姓名和班内学号同时匹配。请确认这些记录确属本班。')
-        if len(ids) < len(roster):
-            group["warnings"].append(f"本班有 {len(roster) - len(ids)} 名学生没有匹配到此组数据，请核对名单或确认确有缺考。")
+        if matched_count < len(roster):
+            group["warnings"].append(f"本班有 {len(roster) - matched_count} 名学生没有匹配到此组数据，请核对名单或确认确有缺考。")
         if group["unmapped_columns"]:
             group["warnings"].append("有未导入的列，请核对是否含需保留的成绩或排名。")
         highest: dict[str, float] = defaultdict(float)
@@ -337,12 +365,19 @@ def _issue(group: dict, issue: str) -> None:
         group["errors"].append(issue)
 
 
-def _read_metrics(row: tuple, mapping) -> dict:
-    return {
-        "score": _number(_cell(row, mapping.score)),
-        "class_rank": _number(_cell(row, mapping.class_rank), rank=True),
-        "grade_rank": _number(_cell(row, mapping.grade_rank), rank=True),
-    }
+def _read_metrics(row: tuple, mapping: RankColumns, row_no: int) -> dict:
+    values = {}
+    for field, index, label in (("score", mapping.score, "成绩"), ("class_rank", mapping.class_rank, "班级排名"),
+                                ("grade_rank", mapping.grade_rank, "年级排名")):
+        rank = field != "score"
+        try:
+            values[field] = _number(_cell(row, index), rank=rank) if index is not None else None
+        except (ValueError, OverflowError) as exc:
+            address = f"{get_column_letter(index)}{row_no}"
+            guidance = "请填写正整数排名或留空。" if rank else "请填写非负数字，缺考留空。"
+            issue = f"{label}不是正整数" if rank else "成绩不是有效非负数"
+            raise ValueError(f"{address} 的{issue}。{guidance}") from exc
+    return values
 
 
 def apply(db: Session, class_id: str, owner: str, body: ExamImportApply) -> dict:

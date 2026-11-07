@@ -139,9 +139,39 @@ def test_invalid_data_is_blocked_with_row_guidance(client, teacher, monkeypatch)
     result = preview(client, teacher, "\n".join(rows)).json()["data"]
     assert result["preview_id"] is None
     errors = " ".join(result["datasets"][0]["errors"])
-    assert "第 2 行" in errors and "排名不是正整数" in errors
+    assert "第 2 行" in errors and "G2 的班级排名不是正整数" in errors
     assert "第 3 行" in errors and "无法唯一匹配" in errors
     assert "第 4 行" in errors and "重复" in errors
+
+
+def test_import_numeric_scores_alongside_letter_grades(client, db, teacher, monkeypatch):
+    fake_layout(monkeypatch, {"table": 1, "subjects": [
+        {"subject": "数学", "score": 3}, {"subject": "英语", "score": 4}, {"subject": "体育", "score": 5},
+    ], "total": {"score": 6}})
+    response = preview(client, teacher, "学号,姓名,数学,英语,体育,总分\n男01,张三,89,91,A,180\n女2,李四,95,94,Ｂ,189")
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    item = data["datasets"][0]
+    assert not item["errors"]
+    assert len(item["students"]) == 2
+    assert {subject["subject"] for subject in item["subjects"]} == {"数学", "英语"}
+    assert any("体育使用字母等级" in warning for warning in item["warnings"])
+    assert any("本班有 1 名学生没有匹配" in warning for warning in item["warnings"])
+    written = apply(client, teacher, data, {"dataset_id": item["id"], "name": "期中", "exam_date": "2026-11-06",
+                                           "full_scores": {"数学": 100, "英语": 100}})
+    assert written.status_code == 201, written.text
+    assert set(db.execute(select(Score.subject, Score.score))) == {("数学", 89), ("数学", 95), ("英语", 91), ("英语", 94)}
+    assert set(db.scalars(select(ExamImportedTotal.score))) == {180, 189}
+
+
+def test_mixed_score_column_and_conflicting_prefixed_id_still_block_import(client, teacher, monkeypatch):
+    fake_layout(monkeypatch, {"table": 1, "subjects": [{"subject": "数学", "score": 3}]})
+    result = preview(client, teacher, "学号,姓名,数学\n1,张三,95\n2,李四,B\n女2,王五,91").json()["data"]
+    assert result["preview_id"] is None
+    item = result["datasets"][0]
+    assert any("C3 的成绩不是有效非负数" in error for error in item["errors"])
+    assert any("第 4 行学生无法唯一匹配" in error for error in item["errors"])
+    assert any("本班有 1 名学生没有匹配" in warning for warning in item["warnings"])
 
 
 def test_access_preview_owner_and_roster_revalidation(client, db, teacher, sample, monkeypatch):
