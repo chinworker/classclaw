@@ -130,7 +130,6 @@ export async function render(mount, ctx = {}) {
     const accepted = await confirmDanger({
       title: `删除用户「${user.username}」`,
       lines: ["该账号和全部登录会话将被删除。", user.class_id ? "现有班级和业务数据保留，但会变为未分配状态。" : "该账号当前没有班级。", "管理员账号不能删除。"],
-      requireText: user.username,
       confirmLabel: "删除用户",
     });
     if (!accepted) return;

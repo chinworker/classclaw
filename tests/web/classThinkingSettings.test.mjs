@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
-import { installDom, response, tick } from "./dom.mjs";
+import { findButton, installDom, response, tick } from "./dom.mjs";
 import { classThinkingSettings } from "../../web/js/classThinkingSettings.js";
 
 let panel;
@@ -61,5 +61,33 @@ test("class settings keeps class fields without duplicating Agent model settings
     assert.equal(mount.querySelector(".class-thinking-select"), null);
     assert.ok(mount.textContent.includes("保存班级资料"));
     assert.equal(calls.includes("/api/v1/classes/class-a/agent-chat/thinking"), false);
+  } finally { page.dispose(); }
+});
+
+test("a teacher can confirm deleting their class with a click", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  installDom();
+  const page = await import("../../web/js/pages/classSettings.js");
+  const { state, saveSession } = await import("../../web/js/state.js");
+  state.classId = "class-a"; saveSession("test-token");
+  const deleted = [];
+  globalThis.fetch = async (path, options) => {
+    if (options.method === "DELETE") { deleted.push(path); return response({}); }
+    if (path.includes("/students?")) return response({ total: 20 });
+    if (path.endsWith("/auth/me")) return response({ class_id: null });
+    return response({ id: "class-a", name: "测试班", grade: "高一", status: "active" });
+  };
+  globalThis.location = { hash: "#/class-settings" };
+  const mount = document.createElement("main"); document.body.append(mount);
+  try {
+    await page.render(mount, {}, { refreshShell() {} });
+    findButton(mount, "彻底删除班级").click(); await tick();
+    const modal = document.body.querySelector(".modal");
+    assert.ok(modal.textContent.includes("测试班"));
+    assert.equal(modal.querySelector("input"), null);
+    assert.deepEqual(deleted, []);
+    findButton(modal, "彻底删除").click(); await tick();
+    assert.deepEqual(deleted, ["/api/v1/classes/class-a"]);
+    assert.equal(location.hash, "#/welcome");
   } finally { page.dispose(); }
 });

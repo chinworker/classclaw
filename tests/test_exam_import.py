@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from io import BytesIO
 
 import pytest
@@ -144,18 +145,27 @@ def test_invalid_data_is_blocked_with_row_guidance(client, teacher, monkeypatch)
     assert "第 4 行" in errors and "重复" in errors
 
 
-def test_import_numeric_scores_alongside_letter_grades(client, db, teacher, monkeypatch):
-    fake_layout(monkeypatch, {"table": 1, "subjects": [
-        {"subject": "数学", "score": 3}, {"subject": "英语", "score": 4}, {"subject": "体育", "score": 5},
-    ], "total": {"score": 6}})
-    response = preview(client, teacher, "学号,姓名,数学,英语,体育,总分\n男01,张三,89,91,A,180\n女2,李四,95,94,Ｂ,189")
+def test_import_numeric_scores_alongside_nonnumeric_columns(client, db, teacher, monkeypatch):
+    async def extract(prompt, **kwargs):
+        assert kwargs["require_extractor"] is True
+        metadata, = json.loads(prompt.split("\n表头：", 1)[1])
+        assert metadata == {"table": 1, "titles": [], "headers": ["学号", "姓名", "数学", "英语", "体育", "班级排名", "总分"],
+                            "column_types": ["text", "text", "number", "number", "text", "text", "number"]}
+        # Exercise backend validation even if extraction maps nonnumeric columns to numeric fields.
+        return {"datasets": [{"table": 1, "subjects": [
+            {"subject": "数学", "score": 3, "class_rank": 6}, {"subject": "英语", "score": 4}, {"subject": "体育", "score": 5},
+        ], "total": {"score": 7}}]}
+
+    monkeypatch.setattr(openclaw_bridge, "_responses_json", extract)
+    response = preview(client, teacher, "学号,姓名,数学,英语,体育,班级排名,总分\n学籍-01,张三,89 分,91,A+,未公布,180\n2-R,李四,95,94,优秀,未公布,189")
     assert response.status_code == 200, response.text
     data = response.json()["data"]
     item = data["datasets"][0]
     assert not item["errors"]
     assert len(item["students"]) == 2
     assert {subject["subject"] for subject in item["subjects"]} == {"数学", "英语"}
-    assert any("体育使用字母等级" in warning for warning in item["warnings"])
+    assert any("已跳过：体育、班级排名" in warning for warning in item["warnings"])
+    assert all(row["class_rank"] is None for row in item["scores"])
     assert any("本班有 1 名学生没有匹配" in warning for warning in item["warnings"])
     written = apply(client, teacher, data, {"dataset_id": item["id"], "name": "期中", "exam_date": "2026-11-06",
                                            "full_scores": {"数学": 100, "英语": 100}})
@@ -164,14 +174,21 @@ def test_import_numeric_scores_alongside_letter_grades(client, db, teacher, monk
     assert set(db.scalars(select(ExamImportedTotal.score))) == {180, 189}
 
 
-def test_mixed_score_column_and_conflicting_prefixed_id_still_block_import(client, teacher, monkeypatch):
+def test_mixed_score_column_and_conflicting_decorated_id_still_block_import(client, teacher, monkeypatch):
     fake_layout(monkeypatch, {"table": 1, "subjects": [{"subject": "数学", "score": 3}]})
-    result = preview(client, teacher, "学号,姓名,数学\n1,张三,95\n2,李四,B\n女2,王五,91").json()["data"]
+    result = preview(client, teacher, "学号,姓名,数学\n1,张三,95\n2,李四,B\nR-2,王五,91").json()["data"]
     assert result["preview_id"] is None
     item = result["datasets"][0]
     assert any("C3 的成绩不是有效非负数" in error for error in item["errors"])
     assert any("第 4 行学生无法唯一匹配" in error for error in item["errors"])
     assert any("本班有 1 名学生没有匹配" in warning for warning in item["warnings"])
+
+
+def test_formula_errors_in_score_columns_are_not_silently_skipped(client, teacher, monkeypatch):
+    fake_layout(monkeypatch, {"table": 1, "subjects": [{"subject": "数学", "score": 3}, {"subject": "语文", "score": 4}]})
+    result = preview(client, teacher, "学号,姓名,数学,语文\n1,张三,95,#REF!\n2,李四,93,#DIV/0!").json()["data"]
+    assert result["preview_id"] is None
+    assert any("D2 的成绩不是有效非负数" in error for error in result["datasets"][0]["errors"])
 
 
 def test_access_preview_owner_and_roster_revalidation(client, db, teacher, sample, monkeypatch):

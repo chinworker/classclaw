@@ -110,6 +110,7 @@ beforeEach((t) => {
             pairing_expires_at: "2026-09-23T10:02:00+08:00", pairing_ttl_seconds: 120 }, 201);
     }
     if (path.endsWith("/classroom/device/output")) return response({ note: "已下发输出设备设置", command: {} });
+    if (path.endsWith("/classroom/device") && options.method === "DELETE") return response({});
     if (path.endsWith("/classroom/volume")) return response({ note: "已登记音量指令", command_id: "c-1", requested_volume: 55 });
     if (path.endsWith("/classroom/device/test")) return response({ text: "ClassClaw 教室终端显示测试", warnings: [], command: {} });
     if (path.endsWith("/classroom/camera")) return response({ ...CAMERA, replaced: false, old_connection_stopped: true, capture_started: true, revoked_media_sessions: 0 }, 201);
@@ -172,6 +173,19 @@ test("终端离线时音量与测试按钮禁用", async () => {
   assert.match(mount.textContent, /教室终端离线/);
   assert.equal(findButton(mount, "下发音量").disabled, true);
   assert.equal(findButton(mount, "显示测试").disabled, true);
+});
+
+test("解绑终端时展示设备名称，点击确认后提交", async () => {
+  statusPayload = status({ device: onlineDevice({ name: "高一一班讲台" }) });
+  const mount = await mountPage();
+  const deleted = () => calls.filter(({ options }) => options.method === "DELETE").map(({ path }) => path);
+  findButton(mount, "解绑终端").click();
+  const modal = document.body.querySelector(".modal");
+  assert.ok(modal.textContent.includes("高一一班讲台"));
+  assert.equal(modal.querySelector("input"), null);
+  assert.deepEqual(deleted(), []);
+  findButton(modal, "解绑终端").click(); await tick();
+  assert.deepEqual(deleted(), ["/api/v1/classes/class-a/classroom/device"]);
 });
 
 test("展示终端上报的设备清单与能力警告", async () => {

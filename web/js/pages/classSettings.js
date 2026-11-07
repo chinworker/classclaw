@@ -97,7 +97,6 @@ export async function render(mount, ctx, helpers) {
         "班级及全部相关记录会永久删除。",
         "删除后当前账号恢复为无班级状态，可重新创建班级。",
       ],
-      requireText: cls.name,
       confirmLabel: "彻底删除",
     });
     if (!ok) return;

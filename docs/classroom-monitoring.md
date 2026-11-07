@@ -200,6 +200,8 @@ GET 仍使用读会话；需要持久化到期状态时，Service 通过独立 `
 
 解绑终端（`DELETE /classes/{id}/classroom/device`）只删除终端记录，**不删除**班级 Agent、记忆或其他 Channels；摄像头对终端的外键置空。
 
+网页解绑弹窗显示终端名称和操作影响，点击「解绑终端」后提交。
+
 登出（`POST /auth/logout`）会撤销本人所有活跃观看租约。
 
 ## 9. 配置

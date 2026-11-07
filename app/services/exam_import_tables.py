@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import io
 import math
+import re
 import unicodedata
 import zipfile
 from dataclasses import dataclass, field
@@ -24,6 +25,9 @@ NUMBER_HEADERS = {"学号", "班内学号", "学生学号", "学生编号", "stu
 CLASS_HEADERS = {"班级", "行政班", "行政班级", "学生班级", "所在班级", "班号", "班级名称", "班", "class"}
 _SUBHEADERS = {"分", "分数", "成绩", "得分", "排名", "名次", "班排", "班名", "班序", "班排名", "班名次",
                "班级排名", "班级名次", "级排", "级名", "级序", "级排名", "级名次", "年级排名", "年级名次"}
+MISSING = {"", "-", "--", "—", "/", "缺考", "未考", "缺", "未录入", "免考"}
+_EXCEL_ERRORS = {"#N/A", "#VALUE!", "#REF!", "#DIV/0!", "#NAME?", "#NUM!", "#NULL!", "#SPILL!", "#CALC!"}
+_GROUPED_NUMBER = re.compile(r"[+-]?[0-9]{1,3}(?:,[0-9]{3})+(?:\.[0-9]+)?")
 
 
 def clean(value) -> str:
@@ -32,6 +36,11 @@ def clean(value) -> str:
 
 def header_key(value) -> str:
     return "".join(clean(value).lower().split())
+
+
+def number_text(text: str, *, rank: bool = False) -> str:
+    text = text.removeprefix("第").removesuffix("名").strip() if rank else text.removesuffix("分").strip()
+    return text.replace(",", "") if _GROUPED_NUMBER.fullmatch(text) else text
 
 
 def invalid(message: str) -> AppError:
@@ -65,6 +74,29 @@ class Table:
     titles: list[str]
     rows: list[tuple[int, tuple]] = field(default_factory=list)
     simple_scores: bool = False
+    column_types: list[str] = field(default_factory=list)
+
+
+def _column_types(table: Table) -> list[str]:
+    kinds = [set() for _ in table.headers]
+    for _, row in table.rows:
+        for index, value in enumerate(row[:len(kinds)]):
+            seen = kinds[index]
+            if value is None or len(seen) > 1:
+                continue
+            text = clean(value)
+            if text in MISSING:
+                continue
+            if text in _EXCEL_ERRORS:
+                seen.add("invalid")
+                continue
+            try:
+                float(number_text(text, rank=text.startswith("第") or text.endswith("名")))
+            except (ValueError, OverflowError):
+                seen.add("text")
+            else:
+                seen.add("number")
+    return ["mixed" if len(seen) > 1 else next(iter(seen), "empty") for seen in kinds]
 
 
 def _simple_score_table(source: str, rows: list[tuple[int, tuple]]) -> Table | None:
@@ -73,7 +105,7 @@ def _simple_score_table(source: str, rows: list[tuple[int, tuple]]) -> Table | N
     first_no, first = rows[0]
     def numeric(value) -> bool:
         try:
-            return math.isfinite(float(clean(value)))
+            return math.isfinite(float(number_text(clean(value))))
         except ValueError:
             return False
 
@@ -163,4 +195,6 @@ def read_uploads(files: list) -> list[Table]:
                 workbook.close()
     if not tables:
         raise invalid("找不到成绩表头。请把“班级、姓名、学号、科目成绩”写在同一行；年级成绩请保留班级列。")
+    for table in tables:
+        table.column_types = _column_types(table)
     return tables

@@ -332,13 +332,24 @@ def test_web_chat_allows_nested_agent_analysis_and_other_writes(managed_database
     asyncio.run(run())
 
 
-def test_file_analysis_rejects_draft_changed_during_model_call(managed_database, monkeypatch):
+def test_file_analysis_rejects_draft_changed_during_model_call(managed_database, monkeypatch, tmp_path):
     with database.request_writer_session() as db:
         draft = ClassOnboardingSession(status="draft", current_step="class_info", revision=1,
             draft_json={}, field_evidence_json={}, warnings_json=[])
         db.add(draft)
         db.commit()
         draft_id = draft.id
+
+    source = tmp_path / "class.csv"
+    source.write_text("班名,年级\n高一一班,高一", encoding="utf-8")
+    attachment = SimpleNamespace(id="test-file", original_name=source.name, mime_type="text/csv")
+    request_thread = threading.get_ident()
+    original_input_part = openclaw_bridge._input_part
+
+    def input_part(*args):
+        assert threading.get_ident() != request_thread
+        assert not database._write_lock.locked()
+        return original_input_part(*args)
 
     async def connected():
         return {"gateway_live": True, "plugin_ready": True}
@@ -347,7 +358,8 @@ def test_file_analysis_rejects_draft_changed_during_model_call(managed_database,
         return False
 
     class Gateway:
-        async def post(self, *_args, **_kwargs):
+        async def post(self, _url, *, json, **_kwargs):
+            assert json["input"][0]["content"][1]["source"]["filename"] == source.name
             with database.request_writer_session() as other:
                 changed = other.get(ClassOnboardingSession, draft_id)
                 changed.revision = 2
@@ -358,11 +370,13 @@ def test_file_analysis_rejects_draft_changed_during_model_call(managed_database,
     monkeypatch.setattr(openclaw_bridge, "connection_status", connected)
     monkeypatch.setattr(openclaw_bridge, "ensure_extractor_agent", extractor_off)
     monkeypatch.setattr(openclaw_bridge, "get_http_client", lambda: Gateway())
+    monkeypatch.setattr(openclaw_bridge, "_attachment_path", lambda _item: source)
+    monkeypatch.setattr(openclaw_bridge, "_input_part", input_part)
 
     async def run():
         with database.request_writer_session() as db:
             with pytest.raises(AppError) as caught:
-                await openclaw_bridge._analyze_onboarding(db, draft_id, "class_info", 1, raw_text="测试")
+                await openclaw_bridge.analyze_onboarding_files(db, draft_id, "class_info", [attachment], 1)
             assert caught.value.code == "PENDING_CONFIRMATION_REQUIRED"
             assert db.get(ClassOnboardingSession, draft_id).draft_json["class_info"]["name"] == "人工修改"
     asyncio.run(run())

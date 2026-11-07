@@ -85,31 +85,20 @@ export function openModal({ title, body, actions = [], wide = false, headClose =
   return { close: shell.close, setSubmitting, body: bodyBox, foot, modal };
 }
 
-// 危险操作二次确认：写明对象与影响，可要求输入特定文本。
-export function confirmDanger({ title, lines = [], requireText = null, confirmLabel = "确认执行", signal = null }) {
+// 危险操作二次确认，展示操作对象和影响。
+export function confirmDanger({ title, lines = [], confirmLabel = "确认执行", signal = null }) {
   return new Promise((resolve) => {
     if (signal?.aborted) { resolve(false); return; }
-    const body = el("div", {},
-      el("div", { class: "danger-lines" }, lines.map((line) => el("p", {}, line))),
-      requireText ? el("label", { class: "field" }, el("span", {}, `请输入「${requireText}」以确认`), el("input", { type: "text", autocomplete: "off", id: "danger-confirm-input" })) : null,
-    );
+    const body = el("div", { class: "danger-lines" }, lines.map((line) => el("p", {}, line)));
     let modal;
     const abort = () => modal?.close();
-    const run = () => {
-      if (requireText) {
-        const value = body.querySelector("#danger-confirm-input").value.trim();
-        if (value !== requireText) { toast(`请输入完整文本：${requireText}`, "error"); return false; }
-      }
-      resolve(true);
-      return undefined;
-    };
     modal = openModal({
       title,
       body,
       onClose: () => { signal?.removeEventListener("abort", abort); resolve(false); },
       actions: [
         { label: "取消", kind: "secondary" },
-        { label: confirmLabel, kind: "danger", onClick: run, closeOnDone: true },
+        { label: confirmLabel, kind: "danger", onClick: () => resolve(true), closeOnDone: true },
       ],
     });
     signal?.addEventListener("abort", abort, { once: true });

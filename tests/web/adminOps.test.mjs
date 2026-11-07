@@ -151,6 +151,32 @@ test("access combines accounts and expandable classes, independent of Gateway", 
   assert.ok(mount.textContent.includes("Gateway 离线"));
 });
 
+for (const [label, confirmLabel, name, target] of [
+  ["删除", "删除用户", "李老师", "/admin/users/teacher"],
+  ["彻底删除", "彻底删除", "一班", "/classes/class-a"],
+]) test(`admin can confirm deleting ${name} with a click`, async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  installDom();
+  const deleted = [];
+  globalThis.fetch = async (path, options) => {
+    if (options.method === "DELETE") { deleted.push(path); return response({}); }
+    if (path.endsWith("/admin/users")) return response([{ id: "teacher", username: "李老师", role: "head_teacher", is_active: true }]);
+    if (path.includes("/classes?")) return response({ items: [{ id: "class-a", name: "一班", grade: "高一", status: "active" }] });
+    return response([]);
+  };
+  const mount = document.createElement("main"); document.body.append(mount);
+  await access.render(mount);
+  findButton(mount, label).click();
+  const modal = document.body.querySelector(".modal");
+  assert.ok(modal.textContent.includes(name));
+  assert.equal(modal.querySelector("input"), null);
+  findButton(modal, "取消").click(); await tick();
+  assert.deepEqual(deleted, []);
+  findButton(mount, label).click();
+  findButton(document.body.querySelector(".modal"), confirmLabel).click(); await tick();
+  assert.deepEqual(deleted, [`/api/v1${target}`]);
+});
+
 test("four admin entries and all old routes retain their documented landing pages", () => {
   assert.equal(ADMIN_NAV.flatMap((group) => group.items).length, 4);
   assert.deepEqual(ADMIN_ALIASES["/admin/agents"], ["/admin/access", { focus: "agents" }]);
@@ -180,6 +206,29 @@ test("maintenance lists unfinished deletions and retries them in place", async (
   findButton(document.body, "重试清理").click();
   await tick(); await tick();
   assert.ok(calls.some(([url, method]) => url.endsWith("/admin/deletions/job-1/retry") && method === "POST"));
+});
+
+test("system initialization submits the API confirmation after a click", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  installDom();
+  const requests = [];
+  globalThis.fetch = async (path, options) => {
+    if (options.method === "POST") {
+      requests.push([path, JSON.parse(options.body)]);
+      return response({ status: "completed", database_rows_deleted: 1, deleted_classes: 1, errors: [], default_admin: { username: "admin" } });
+    }
+    if (path.endsWith("/admin/deletions")) return response([]);
+    return response({ enabled: false, interval_hours: 0 });
+  };
+  const mount = document.createElement("main"); document.body.append(mount);
+  await maintenance.render(mount);
+  findButton(mount, "完整初始化").click();
+  const modal = document.body.querySelector(".modal");
+  assert.equal(modal.querySelector("input"), null);
+  assert.deepEqual(requests, []);
+  findButton(modal, "执行初始化").click(); await tick();
+  assert.deepEqual(requests, [["/api/v1/admin/system/initialize", { confirmation: "INITIALIZE" }]]);
+  assert.ok(mount.textContent.includes("初始化状态"));
 });
 
 test("proposal review renders row-level student data, change details and preview students", () => {

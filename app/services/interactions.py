@@ -59,7 +59,6 @@ def _context(db: Session, class_id: str | None) -> dict[str, Any]:
         periods = list(db.scalars(select(ClassPeriod).where(ClassPeriod.class_id == class_id, ClassPeriod.enabled.is_(True)).order_by(ClassPeriod.period_no)))
         homework = list(db.scalars(select(Homework).where(Homework.class_id == class_id).order_by(Homework.assigned_date.desc()).limit(30)))
         exams = list(db.scalars(select(Exam).where(Exam.class_id == class_id).order_by(Exam.exam_date.desc()).limit(30)))
-        duty_schedules = list(db.scalars(select(DutySchedule).where(DutySchedule.class_id == class_id).order_by(DutySchedule.start_date.desc()).limit(20)))
         recent_duty = list(
             db.scalars(
                 select(DutyAssignment)
@@ -89,7 +88,6 @@ def _context(db: Session, class_id: str | None) -> dict[str, Any]:
         result["periods"] = [{"period_no": row.period_no, "name": row.name} for row in periods]
         result["homework"] = [{"id": row.id, "title": row.title, "subject": row.subject, "assigned_date": row.assigned_date.isoformat(), "status": row.status} for row in homework]
         result["exams"] = [{"id": row.id, "name": row.name, "exam_date": row.exam_date.isoformat(), "status": row.status} for row in exams]
-        result["duty_schedules"] = [{"id": row.id, "name": row.name, "start_date": row.start_date.isoformat(), "end_date": row.end_date.isoformat(), "status": row.status} for row in duty_schedules]
         result["recent_duty_assignments"] = [{"id": row.id, "date": row.duty_date.isoformat(), "item_name": row.item_name, "student_no": duty_student_nos.get(row.student_id), "status": row.status, "score": row.score} for row in recent_duty]
     else:
         classes = list(db.scalars(select(ClassRoom).where(ClassRoom.deleted_at.is_(None)).order_by(ClassRoom.name).limit(100)))

@@ -5,6 +5,7 @@ import json
 from dataclasses import replace
 
 import pytest
+from openpyxl import Workbook
 
 from app.config import settings
 from app.schemas.domain import StudentEventCreate
@@ -91,6 +92,22 @@ def test_event_enum_contract_reaches_interaction_planner_only():
         assert marker in prompt
     assert "period" not in hints["attendance.set"]
     assert not _prompt_sections(bridge.extractor_workspace_defaults()["AGENTS.md"])
+
+
+def test_xlsx_extraction_keeps_whole_rows_within_input_budget(tmp_path):
+    path = tmp_path / "scores.xlsx"
+    workbook = Workbook(write_only=True)
+    sheet = workbook.create_sheet("首表")
+    sheet.append(["姓名", None, "科目"])
+    for _ in range(150):
+        sheet.append(["a" * 500, None, "b" * 500])
+    workbook.save(path)
+
+    heading, header, *rows, warning = bridge._xlsx_text(path).splitlines()
+    assert heading == "### Sheet: 首表" and header == "姓名\t\t科目"
+    assert rows and all(row == f"{'a' * 500}\t\t{'b' * 500}" for row in rows)
+    assert len("\n".join([heading, header, *rows])) <= 60_000
+    assert "截断" in warning
 
 
 def test_extractor_workspace_keeps_admin_customization(monkeypatch, tmp_path):

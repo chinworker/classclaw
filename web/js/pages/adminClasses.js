@@ -112,7 +112,7 @@ export async function render(mount, ctx = {}) {
   }
 
   async function remove(cls) {
-    const accepted = await confirmDanger({ title: `彻底删除 ${cls.name}`, lines: ["将删除学生、课表、作业、考勤、附件关联等班级业务数据。", "将尝试移除 OpenClaw 智能体配置与工作目录。", "此操作不可恢复。"], requireText: cls.name, confirmLabel: "彻底删除" });
+    const accepted = await confirmDanger({ title: `彻底删除 ${cls.name}`, lines: ["将删除学生、课表、作业、考勤、附件关联等班级业务数据。", "将尝试移除 OpenClaw 智能体配置与工作目录。", "此操作不可恢复。"], confirmLabel: "彻底删除" });
     if (!accepted) return;
     try { await api(`/classes/${cls.id}`, { method: "DELETE" }); toast("班级及关联资源已删除", "success"); load(); } catch (error) { if (!view.active) return; toast(error.message, "error"); }
   }

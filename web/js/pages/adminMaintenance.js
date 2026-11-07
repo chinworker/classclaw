@@ -93,7 +93,7 @@ export async function render(mount, ctx = {}) {
         "全部班级智能体及 ClassClaw Channels 绑定将被删除；只保留 Main 和数据提取两个默认智能体。",
         "完成后只存在新建的默认管理员，当前登录会立即失效。",
       ],
-      requireText: "INITIALIZE", confirmLabel: "执行初始化",
+      confirmLabel: "执行初始化",
     });
     if (!accepted) return;
     clear(resultHost);

@@ -149,9 +149,9 @@ export async function render(mount, ctx, helpers) {
       const unbindButton = el("button", { class: "danger", type: "button" }, "解绑终端");
       unbindButton.addEventListener("click", async () => {
         const confirmed = await confirmDanger({
-          title: "解绑教室终端",
+          title: `解绑教室终端「${device.name}」`,
           lines: ["会删除本班终端记录并撤销观看会话；摄像头登记保留但不再关联该终端。", "点名记录会保留。", "班级 Agent、记忆与其他渠道不受影响。"],
-          requireText: device.name, confirmLabel: "解绑终端",
+          confirmLabel: "解绑终端",
         });
         if (confirmed) await act("device", "DELETE", "终端已解绑");
       });

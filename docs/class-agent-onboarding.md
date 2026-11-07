@@ -80,7 +80,7 @@ openclaw gateway restart
 
 默认启用独立提取智能体（TOML 的 `openclaw.extractor_enabled=true`，无需额外设置）。后端所有 JSON 提取（interaction 清洗、onboarding 导入、课表/座位文件和事件分类）走一个专用的无工具智能体，默认名 `classclaw-extractor`（可用 `openclaw.extractor_agent_id` 修改）。服务启动和首次使用时会自动创建并校正它的独立 OpenClaw runtime：显式固定当前默认模型作为独立模型、开启 fast mode、按 `openclaw.extractor_thinking` 设置思考档位（默认 `off`）、关闭 reasoning/verbose、技能和记忆，并用 `minimal + deny session_status` 保证向模型暴露零个工具。它不会再继承 Main 的 coding 工具集或思考级别；提高提取思考强度会在配置变化时触发一次 Gateway 重启。
 
-提取器工作区只声明提取角色。后端按请求传入需要的规则，例如识别成绩表头时不附带班级写入规则，只传标题、表头及列映射格式。创建和运行配置校正依赖 `admin-http-rpc`。提取器未启用或不可用时，一般提取使用主智能体和同一任务提示；考试表头识别必须使用专用提取器。
+提取器工作区只声明角色。后端统一提供 JSON 输出和输入边界，每种任务只附带所需字段、规则和上下文。识别成绩表布局时传入标题、表头和列类型。其他文件需要转换时，后端在释放数据库写锁后读取并转换附件。创建和运行配置校正依赖 `admin-http-rpc`。提取器未启用或不可用时，一般提取使用主智能体和同一任务提示。考试表布局识别必须使用专用提取器。
 
 ClassClaw 自动维护 `plugins.entries.classclaw.config.agentClasses` 和顶层 `bindings`，不要手工把多个班级指向同一个 agent 或微信 account。
 
