@@ -86,6 +86,7 @@ async def check(binary):
             if (
                 self.headers.get("Authorization") != "Bearer synthetic-test-credential"
                 or self.headers.get("X-ClassClaw-Device-ID") != "test-device"
+                or self.headers.get("User-Agent") != "ClassroomMate/0.3.4.12"
             ):
                 self.send_response(401)
                 self.end_headers()
@@ -163,6 +164,7 @@ paths:
                                 "key": f"test-camera:1:{track}",
                                 "server": f"http://127.0.0.1:{server.server_port}",
                                 "development": True,
+                                "app_version": "0.3.4.12",
                                 "device_id": "test-device",
                                 "credential": "synthetic-test-credential",
                                 "ice_servers": [],

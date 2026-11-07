@@ -230,7 +230,8 @@ public sealed class Media : IAsyncDisposable
         return new JsonObject
         {
             ["key"] = key, ["server"] = source.Server, ["device_id"] = source.DeviceId, ["credential"] = source.Credential,
-            ["development"] = source.Development, ["offer_path"] = path, ["ice_servers"] = state["ice_servers"]?.DeepClone(),
+            ["development"] = source.Development, ["app_version"] = Program.Version,
+            ["offer_path"] = path, ["ice_servers"] = state["ice_servers"]?.DeepClone(),
         };
     }
 

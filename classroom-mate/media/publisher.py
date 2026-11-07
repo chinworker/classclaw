@@ -11,6 +11,7 @@ import base64
 import ipaddress
 import json
 import logging
+import re
 import sys
 import threading
 import time
@@ -59,12 +60,15 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def post(config, path, payload):
+    version = config.get("app_version", "")
+    agent = "ClassroomMate/" + version if isinstance(version, str) and re.fullmatch(r"[0-9]+(?:\.[0-9]+){2,3}", version) else "ClassroomMate"
     request = urllib.request.Request(
         endpoint(config, path),
         json.dumps(payload).encode(),
         method="POST",
         headers={
             "Content-Type": "application/json",
+            "User-Agent": agent,
             "Authorization": "Bearer " + config["credential"],
             "X-ClassClaw-Device-ID": config["device_id"],
         },
@@ -75,6 +79,13 @@ def post(config, path, payload):
         with opener.open(request, timeout=12) as response:
             value = json.loads(response.read(131072))
     except urllib.error.HTTPError as exc:
+        if exc.headers.get("X-Request-ID"):
+            with suppress(OSError, ValueError, AttributeError):
+                code = json.loads(exc.read(8192)).get("error", {}).get("code")
+                if isinstance(code, str) and re.fullmatch(r"[A-Z0-9_]{1,64}", code):
+                    raise CaptureError(code) from exc
+        if exc.code == 403 and exc.headers.get("CF-Ray") and not exc.headers.get("X-Request-ID"):
+            raise CaptureError("MEDIA_EDGE_HTTP_403") from exc
         raise CaptureError(f"MEDIA_SIGNAL_HTTP_{exc.code}") from exc
     if not value.get("success"):
         raise CaptureError("MEDIA_NEGOTIATION_FAILED")
