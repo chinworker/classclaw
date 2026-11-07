@@ -1,7 +1,9 @@
+import asyncio
 import importlib.util
 import io
 import pathlib
 import unittest
+from contextlib import redirect_stdout
 from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location("publisher", pathlib.Path(__file__).with_name("publisher.py"))
@@ -10,6 +12,33 @@ spec.loader.exec_module(publisher)
 
 
 class ProtocolTests(unittest.TestCase):
+    def test_local_preview_emits_video_without_network_signaling(self):
+        async def exercise():
+            frames = asyncio.Event()
+
+            class SyntheticCapture:
+                def stop(self):
+                    pass
+
+                async def recv(self):
+                    self.on_preview(publisher.av.VideoFrame(320, 240, "yuv420p"))
+                    frames.set()
+                    await asyncio.sleep(1)
+
+            async def eof():
+                await frames.wait()
+                return b""
+
+            with patch.object(publisher, "Capture", return_value=SyntheticCapture()), patch.object(publisher, "post") as post:
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    await asyncio.wait_for(publisher.run({"valid_seconds": 3, "preview": True, "preview_only": True,
+                        "track": "video", "camera": {"source_kind": "windows_device"}}, eof), timeout=5)
+                self.assertTrue(output.getvalue().startswith("preview:"))
+                post.assert_not_called()
+
+        asyncio.run(exercise())
+
     def test_preview_is_a_small_jpeg_of_the_existing_frame(self):
         frame = publisher.av.VideoFrame(640, 360, "yuv420p")
         frame.pts = 5

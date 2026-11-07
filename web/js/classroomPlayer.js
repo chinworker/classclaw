@@ -9,7 +9,8 @@ export function classroomPlayer(classId, lease, { onError = () => {} } = {}) {
   const timers = new Set();
   const status = el("p", { class: "muted" }, "正在等待教室采集端…");
   const video = el("video", { autoplay: true, playsinline: true, controls: true, muted: true });
-  const audio = el("audio", { autoplay: true, controls: true });
+  const audio = el("audio", { autoplay: true, muted: true });
+  audio.muted = true;
   const host = el("div", { class: "classroom-player" }, video, lease.audio_allowed ? audio : null, status);
 
   const closeRemote = (id) => api(`/classes/${classId}/classroom/media/close`, { method: "POST", body: { peer_id: id } }).catch(() => {});
@@ -38,8 +39,9 @@ export function classroomPlayer(classId, lease, { onError = () => {} } = {}) {
         pc.onconnectionstatechange = () => {
           if (disposed) return;
           if (pc.connectionState === "connected") status.textContent = "实时连接已建立";
-          if (["failed", "disconnected"].includes(pc.connectionState)) {
-            status.textContent = "媒体连接已中断，请停止后重新观看";
+          if (pc.connectionState === "failed") {
+            status.textContent = "媒体连接已中断";
+            onError(new Error("媒体连接已中断，正在准备重连"), track);
           }
         };
         await pc.setLocalDescription(await pc.createOffer());
@@ -57,7 +59,7 @@ export function classroomPlayer(classId, lease, { onError = () => {} } = {}) {
         if (disposed) return;
         if (attempt === 9 || ["CLASS_ACCESS_DENIED", "MEDIA_TRACK_DENIED", "MEDIA_SESSION_EXPIRED"].includes(error.code)) {
           status.textContent = error.message;
-          onError(error);
+          onError(error, track);
           return;
         }
         await delay(1500);
@@ -73,6 +75,10 @@ export function classroomPlayer(classId, lease, { onError = () => {} } = {}) {
 
   return {
     el: host,
+    setMuted(muted) {
+      audio.muted = muted;
+      if (!muted && audio.srcObject) audio.play().catch(() => { status.textContent = "浏览器尚未允许播放声音，请再点一次播放。"; });
+    },
     dispose() {
       disposed = true;
       for (const entry of timers) { clearTimeout(entry.id); entry.resolve(); }

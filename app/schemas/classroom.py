@@ -283,6 +283,7 @@ class MediaSessionCreate(BaseModel):
 
     audio: bool = False
     surface: Literal["web", "agent"] = "web"
+    follow_terminal: bool = False
 
 
 class PairingIssueRequest(BaseModel):

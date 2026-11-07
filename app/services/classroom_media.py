@@ -16,6 +16,7 @@ from app.config import settings
 from app.core.errors import AppError, not_found
 from app.database import writer_session
 from app.models.entities import ClassroomCamera, ClassroomDevice, ClassroomMediaSession
+from app.services import classroom_channel
 from app.services.class_student import get_class
 from app.utils.time import now
 
@@ -85,6 +86,8 @@ def issue(db: Session, class_id: str, camera: ClassroomCamera, *, user_id: str |
     )
     db.add(session)
     db.commit()
+    if camera.device_id and settings.classroom.media_provider == "mediamtx":
+        classroom_channel.notify(camera.device_id)
     # The token is returned exactly once; only its hash is stored.
     return {"session_id": session.id, "camera_id": camera.id, "class_id": class_id, "token": token,
             "video_allowed": True, "audio_allowed": audio_allowed, "audio_unavailable_reason": audio_reason,
@@ -99,7 +102,7 @@ def playback(camera: ClassroomCamera, session: ClassroomMediaSession) -> dict:
         return {"available": False, "provider": provider, "reason": "MEDIA_NOT_CONFIGURED",
                 "message": "尚未接入媒体转发组件，当前只能查看终端与摄像头状态，不能显示画面"}
     from app.services import classroom_streaming
-    if not classroom_streaming._ready:
+    if not classroom_streaming.is_ready():
         return {"available": False, "provider": provider, "reason": "MEDIA_UNAVAILABLE", "message": "媒体服务尚未就绪，请检查部署"}
     prefix = f"{settings.api_prefix}/classes/{camera.class_id}/classroom/media-sessions/{session.id}"
     return {"available": True, "provider": provider, "protocol": "webrtc",

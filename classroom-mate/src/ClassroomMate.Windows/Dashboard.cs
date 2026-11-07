@@ -81,6 +81,7 @@ sealed class Dashboard : Form
         var frame = new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty };
         frame.Controls.Add(picture);
         frame.Controls.Add(empty);
+        empty.BringToFront();
         body.Controls.Add(frame, 0, 2);
         var footer = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false };
         footer.Controls.AddRange([capture, feedback]);

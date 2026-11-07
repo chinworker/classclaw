@@ -153,7 +153,10 @@ def connect(db: Session, class_id: str, data: CameraConnectRequest, *, operator_
         if not classroom_devices.is_online(db, device):
             raise AppError("DEVICE_OFFLINE", "请保持终端在线，等待本地设置同步", 409)
         selected = next((row for row in inventory.get("cameras", []) if row.get("identifier") == local.get("camera")), None)
-        if not selected or data.device_identifier != local.get("camera") or (data.microphone_identifier or "") != (local.get("microphone") or ""):
+        selected_mic = local.get("microphone")
+        if not any(row.get("identifier") == selected_mic for row in inventory.get("microphones", [])):
+            selected_mic = None
+        if not selected or data.device_identifier != local.get("camera") or (data.microphone_identifier or None) != (selected_mic or None):
             raise AppError("CAMERA_SELECTION_CHANGED", "请在终端选择设备，然后刷新网页并确认当前来源", 409)
         device_label = str(selected.get("name") or data.device_identifier)[:200]
     if data.source_kind == "windows_device" and data.audio_capable:

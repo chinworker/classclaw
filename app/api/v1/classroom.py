@@ -187,9 +187,8 @@ def media_list(request: Request, class_id: str, db: Session = Depends(get_db)):
 def media_issue(request: Request, class_id: str, body: MediaSessionCreate, db: Session = Depends(get_db)):
     require_owned_class(request, class_id)
     principal = principal_from_request(request)
-    camera = classroom_camera.require_camera(db, class_id)
-    result = classroom_media.issue(db, class_id, camera, user_id=principal.user_id, audio=body.audio,
-                                   surface=body.surface, created_by=principal.username)
+    result = classroom.watch(db, class_id, user_id=principal.user_id, username=principal.username, audio=body.audio,
+                             surface=body.surface, follow_terminal=body.follow_terminal)
     return ok(request, result, "观看会话已创建；令牌只显示一次", 201)
 
 

@@ -47,7 +47,7 @@ function onlineDevice(overrides = {}) {
   };
 }
 
-function status({ device = onlineDevice(), camera = null, viewers = 0 } = {}) {
+function status({ device = onlineDevice(), camera = null, viewers = 0, media = false } = {}) {
   return {
     class_id: "class-a", server_time: "2026-09-23T10:00:00+08:00", device,
     device_warnings: device && !device.capabilities?.chinese_tts ? ["终端未确认可用中文语音"] : [],
@@ -55,7 +55,7 @@ function status({ device = onlineDevice(), camera = null, viewers = 0 } = {}) {
       ? { registered: true, connected: camera.status === "connected", camera, device_online: true, note: "摄像头画面可用" }
       : { registered: false, connected: false, camera: null, note: "本班尚未连接摄像头；连接只能从网页发起，每班最多一路" },
     streaming: camera ? { viewers, keep_stream_up: viewers > 0, grace_remaining_seconds: null, provider: "none" } : null,
-    media_provider: "none", recent_broadcasts: [],
+    media_provider: media ? "mediamtx" : "none", media_ready: media, recent_broadcasts: [],
     note: device ? (device.online ? "教室终端在线" : "教室终端离线") : "本班尚未配对教室终端",
   };
 }
@@ -125,15 +125,13 @@ afterEach(async () => {
   await tick();
 });
 
-test("离页期间创建成功的观看租约立即释放", async () => {
-  statusPayload = status({ camera: CAMERA });
+test("进入监控页自动观看，离页期间返回的租约立即释放", async () => {
+  statusPayload = status({ camera: CAMERA, media: true });
   const fetch = globalThis.fetch;
   let finish;
   globalThis.fetch = (path, options) => path.endsWith("/classroom/media-sessions")
     ? new Promise((resolve) => { finish = resolve; }) : fetch(path, options);
-  const mount = await mountPage();
-  findButton(mount, "开始观看").click();
-  await tick();
+  await mountPage();
   page.dispose();
   finish(response(leasePayload, 201));
   await tick();
@@ -141,14 +139,19 @@ test("离页期间创建成功的观看租约立即释放", async () => {
   assert.equal(calls.filter((row) => row.path.endsWith("/media-sessions/sess-12345678") && row.options.method === "DELETE").length, 1);
 });
 
-test("已有观看租约时不能重复申请并遗留旧租约", async () => {
-  statusPayload = status({ camera: CAMERA });
+test("终端选择足以自动观看，默认接收声音但播放器静音", async () => {
+  const device = onlineDevice();
+  device.inventory.local_capture = { camera: "usb-cam-1", microphone: "mic-1" };
+  statusPayload = status({ device, media: true });
+  leasePayload.available = true;
+  leasePayload.audio_allowed = true;
+  leasePayload.audio_unavailable_reason = null;
   const mount = await mountPage();
-  findButton(mount, "开始观看").click();
-  await tick();
-  await tick();
-  assert.equal(findButton(mount, "开始观看").disabled, true);
-  findButton(mount, "开始观看").click();
+  assert.deepEqual(body("/api/v1/classes/class-a/classroom/media-sessions"), { audio: true, follow_terminal: true });
+  assert.equal(mount.querySelector("audio").muted, true);
+  findButton(mount, "播放现场声音").click();
+  assert.equal(mount.querySelector("audio").muted, false);
+  advanceTimers(5000);
   await tick();
   assert.equal(calls.filter((row) => row.path.endsWith("/classroom/media-sessions") && row.options.method === "POST").length, 1);
 });
@@ -262,63 +265,34 @@ test("连接摄像头提交接入路径，更换时带上当前配置版本", as
   assert.equal(JSON.parse(replaced.options.body).expected_revision, 2);
 });
 
-test("没有摄像头时不提供观看入口", async () => {
+test("没有摄像头时提示去 Windows 设置", async () => {
+  statusPayload = status({ media: true });
   const mount = await mountPage();
-  assert.match(mount.textContent, /尚未连接摄像头/);
-  assert.equal(findButton(mount, "开始观看"), undefined);
+  assert.match(mount.textContent, /请在 Classroom Mate 中选择摄像头/);
+  assert.equal(body("/api/v1/classes/class-a/classroom/media-sessions"), null);
 });
 
-test("观看会话明确说明未接入媒体转发，并不伪造画面", async () => {
-  statusPayload = status({ camera: CAMERA, viewers: 1 });
+test("媒体未启用时说明原因，避免创建无用租约", async () => {
+  statusPayload = status({ camera: CAMERA });
   const mount = await mountPage();
-  findButton(mount, "开始观看").click();
-  await tick();
-  await tick();
-  const sent = body("/api/v1/classes/class-a/classroom/media-sessions");
-  assert.deepEqual(sent, { audio: false });
-test("新版终端由网页确认已选择的本机设备", async () => {
-  const device = onlineDevice();
-  device.inventory.local_capture = { camera: "usb-cam-1", microphone: "mic-1" };
-  statusPayload = status({ device, camera: CAMERA });
-  const mount = await mountPage();
-  assert.equal(findButton(mount, "下发输出设备设置"), undefined);
-  assert.ok(!mount.querySelectorAll("input").some((node) => node.getAttribute("aria-label") === "设备标识"));
-  assert.match(mount.textContent, /终端选择 · 摄像头：USB 摄像头 · 麦克风：内置麦克风/);
-  findButton(mount, "确认更换监控来源").click();
-  await tick();
-  const sent = body("/api/v1/classes/class-a/classroom/camera");
-  assert.equal(sent.device_identifier, "usb-cam-1");
-  assert.equal(sent.microphone_identifier, "mic-1");
-  assert.equal(sent.audio_capable, true);
-  assert.equal(sent.expected_revision, 2);
-});
-
-  assert.match(mount.textContent, /尚未接入媒体转发组件/);
-  assert.match(mount.textContent, /MEDIA_NOT_CONFIGURED/);
-  assert.match(mount.textContent, /声音 未授权 · 该摄像头没有可用音轨/);
-  assert.equal(mount.textContent.includes("once-only-token"), false);
+  assert.match(mount.textContent, /服务器尚未启用媒体转发/);
+  assert.equal(body("/api/v1/classes/class-a/classroom/media-sessions"), null);
 });
 
 test("停止观看与离页都会释放本人会话", async () => {
-  statusPayload = status({ camera: CAMERA, viewers: 1 });
+  statusPayload = status({ camera: CAMERA, media: true });
+  leasePayload.available = true;
   const mount = await mountPage();
-  findButton(mount, "开始观看").click();
-  await tick();
-  await tick();
-
   findButton(mount, "停止观看").click();
   await tick();
+  advanceTimers(5000);
   await tick();
-  const released = calls.filter((row) => row.path.endsWith("/media-sessions/sess-12345678") && row.options.method === "DELETE");
-  assert.equal(released.length, 1);
-
-  findButton(mount, "开始观看").click();
-  await tick();
+  assert.equal(calls.filter((row) => row.path.endsWith("/classroom/media-sessions")).length, 1);
+  findButton(mount, "继续观看").click();
   await tick();
   page.dispose();
   await tick();
-  const afterDispose = calls.filter((row) => row.path.endsWith("/media-sessions/sess-12345678") && row.options.method === "DELETE");
-  assert.equal(afterDispose.length, 2);
+  assert.equal(calls.filter((row) => row.path.endsWith("/media-sessions/sess-12345678") && row.options.method === "DELETE").length, 2);
 });
 
 test("轮询只更新概况，不重建正在填写的摄像头表单", async () => {

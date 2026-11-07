@@ -51,6 +51,10 @@ def configured() -> bool:
     return settings.classroom.media_provider == "mediamtx"
 
 
+def is_ready() -> bool:
+    return configured() and _ready
+
+
 def path_for(camera_id: str, revision: int, track: str) -> str:
     if track not in {"video", "audio"}:
         raise AppError("MEDIA_TRACK_INVALID", "只允许 video 或 audio", 422)

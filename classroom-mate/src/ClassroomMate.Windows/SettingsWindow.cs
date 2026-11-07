@@ -79,7 +79,7 @@ sealed class SettingsWindow : Form
         devices.Controls.AddRange([
             Label("视频来源"), camera, Label("现场声音来源"), microphone,
             Label("播报扬声器"), speaker, Label("广播显示屏"), display,
-            actions, feedback, Label("主界面显示所选摄像头。网页打开实时监控时按需传输视频。")
+            actions, feedback, Label("主界面显示所选摄像头。网页打开实时监控时按需传输画面及可用声音。")
         ]);
         tabs.SelectedIndexChanged += (_, _) =>
         {

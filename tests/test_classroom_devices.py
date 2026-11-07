@@ -361,3 +361,36 @@ def test_class_deletion_revokes_terminal_and_removes_classroom_records(client, d
     assert classroom_channel.online_device_ids() == set()
     counts = deleted.json()["data"].get("deleted_counts", {})
     assert counts.get("classroom_devices") == 1 and counts.get("classroom_broadcasts") == 1
+
+
+def test_web_watch_follows_terminal_selection_without_manual_registration(client, db, sample, monkeypatch):
+    from app.services import classroom_media
+
+    cls, _, _ = sample
+    paired = pair_terminal(client, cls)
+    device = db.get(ClassroomDevice, paired["device_id"])
+    path = f"/api/v1/classes/{cls.id}/classroom/media-sessions"
+    request = {"audio": True, "follow_terminal": True}
+    assert client.post(path, json=request).json()["error"]["code"] == "MEDIA_NOT_CONFIGURED"
+
+    configured = replace(classroom_streaming.settings, classroom=classroom_streaming.settings.classroom.model_copy(
+        update={"media_provider": "mediamtx"}))
+    monkeypatch.setattr(classroom_streaming, "settings", configured)
+    monkeypatch.setattr(classroom_media, "settings", configured)
+    monkeypatch.setattr(classroom_streaming, "_ready", True)
+    inventory = {**TERMINAL_INVENTORY, "local_capture": {"camera": "usb-cam-1", "microphone": "mic-1"}}
+    with online_terminal(db, device.id, cls.id):
+        classroom_devices.heartbeat(db, device, DeviceHeartbeat(inventory=inventory))
+        first = client.post(path, json=request)
+        assert first.status_code == 201 and first.json()["data"]["audio_allowed"]
+        lease = db.get(ClassroomMediaSession, first.json()["data"]["session_id"])
+        camera = db.get(ClassroomCamera, lease.camera_id)
+        assert camera.device_identifier == "usb-cam-1"
+
+        inventory["cameras"] = [{"identifier": "usb-cam-2", "name": "新摄像头"}]
+        inventory["local_capture"]["camera"] = "usb-cam-2"
+        classroom_devices.heartbeat(db, device, DeviceHeartbeat(inventory=inventory))
+        second = client.post(path, json=request)
+        assert second.status_code == 201 and second.json()["data"]["camera_id"] == camera.id
+        assert camera.device_identifier == "usb-cam-2" and camera.config_revision == 2
+        assert lease.status == "revoked"

@@ -81,7 +81,7 @@
 
 连接是长连接，因此每次消息只开一个短数据库会话（`anyio.to_thread.run_sync` + `writer_session`），不整段持有写锁。`receive()` 只在消费完成后重建，绝不取消在途接收，避免丢消息。
 
-新版 Classroom Mate 在 `welcome.local_device_selection` 为真时，通过心跳上报 `inventory.local_capture`（`camera`、`microphone`）及本地显示屏和扬声器。旧终端沿用网页设备选择。本机改选后，网页确认的来源与终端最新选择一致才可登记。已经不匹配的媒体轨会停止，旧观看会话在网页确认更换时撤销。预览只复用有效授权下已经采集的本机视频帧。
+新版 Classroom Mate 在 `welcome.local_device_selection` 为真时，通过心跳上报 `inventory.local_capture`（`camera`、`microphone`）及本地显示屏和扬声器。旧终端沿用网页设备选择。网页打开监控后使用 `follow_terminal` 跟随最新来源，服务端复核本班在线终端上报的设备，并在更换时撤销旧租约。网页默认接收可用声音，播放默认静音。Windows 主界面可独立预览本机所选视频，远程观看仍要求有效采集授权。
 
 ### 3.3 命令白名单
 

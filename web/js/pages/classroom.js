@@ -39,7 +39,7 @@ export async function render(mount, ctx, helpers) {
   mount.append(skeleton(6));
   const classId = state.classId;
   const limits = appConfig.classroom || {};
-  const view = { classId, mounted: true, refreshTimer: null, leaseTimer: null, lease: null, live: {} };
+  const view = { classId, mounted: true, refreshTimer: null, leaseTimer: null, lease: null, watching: true, nextAttempt: 0, live: {} };
   activeView = view;
   const live = () => activeView === view && view.mounted && mount.isConnected && state.classId === classId;
 
@@ -65,7 +65,9 @@ export async function render(mount, ctx, helpers) {
   const volumeHost = el("div");
   const cameraHost = el("div");
   const monitorHost = el("div");
-  mount.append(summaryHost, pairingHost, terminalHost, volumeHost, cameraHost, monitorHost);
+  const advanced = el("details", { class: "card" }, el("summary", {}, "终端与监控设置"),
+    pairingHost, terminalHost, volumeHost, cameraHost);
+  mount.append(monitorHost, summaryHost, advanced);
 
   /* ---------- 概况（轮询只更新这里，表单不会被重建） ---------- */
   function drawSummary(data) {
@@ -384,116 +386,185 @@ export async function render(mount, ctx, helpers) {
   }
 
   /* ---------- 实时监控 ---------- */
-  function drawMonitor(data) {
-    clear(monitorHost);
+  const playerHost = el("div", { class: "monitor-player" });
+  const monitorMessage = el("p", { class: "muted", "aria-live": "polite" });
+  const viewers = el("span", {}, "0");
+  const watch = el("button", { class: "secondary", type: "button" }, "重新连接");
+  const sound = el("button", { class: "secondary", type: "button", hidden: true }, "开启现场声音");
+  const observationHost = el("div");
+  const observe = el("button", { class: "secondary", type: "button" }, "查看现场概况（单帧）");
+  const leases = `/classes/${classId}/classroom/media-sessions`;
+
+  observe.addEventListener("click", async () => {
+    observe.disabled = true;
+    try {
+      const result = await api(`/classes/${classId}/classroom/observation`, { method: "POST", body: {}, timeoutMs: 150000 });
+      if (!live()) return;
+      clear(observationHost).append(el("p", {}, `采样时间：${fmtDateTime(result.captured_at)}`),
+        el("p", {}, result.summary.scene), el("p", {}, result.summary.visible_activity),
+        el("p", { class: "muted" }, [...result.summary.limitations, result.note].join("；")));
+    } catch (error) {
+      if (live()) clear(observationHost).append(el("p", { class: "field-error" }, error.message));
+    } finally { if (live()) observe.disabled = false; }
+  });
+  monitorHost.append(el("div", { class: "card" }, el("h3", {}, "实时监控"), playerHost, monitorMessage,
+    el("p", { class: "muted" }, "正在观看：", viewers, " 人"),
+    el("div", { class: "row-gap" }, watch, sound, observe), observationHost));
+
+  function sourceKey(data) {
     const camera = data.camera?.camera;
-    const card = el("div", { class: "card" }, el("h3", {}, "实时监控"));
-    if (!camera) {
-      card.append(emptyState("尚未连接摄像头", "先登记本班摄像头，再开始观看。"));
-      monitorHost.append(card);
-      return;
-    }
-    const viewers = el("span", {}, String(data.streaming?.viewers ?? 0));
-    view.live.viewers = viewers;
-    const audioBox = el("input", { type: "checkbox", "aria-label": "同时接收现场声音", disabled: !camera.audio_capable });
-    const start = el("button", { class: "primary", type: "button", disabled: !!view.lease || view.starting }, "开始观看");
-    view.live.startButton = start;
-    start.addEventListener("click", async () => {
-      if (view.starting || view.lease) return;
-      view.starting = true;
-      start.disabled = true;
-      try {
-        const lease = await api(`/classes/${classId}/classroom/media-sessions`, { method: "POST", body: { audio: !!audioBox.checked } });
-        if (!live()) {
-          await api(`/classes/${classId}/classroom/media-sessions/${lease.session_id}`, { method: "DELETE" });
-          return;
-        }
-        view.lease = lease;
-        drawLease(lease);
-      } catch (error) {
-        if (live()) toast(error.message, "error");
-      } finally {
-        view.starting = false;
-        if (live() && view.live.startButton) view.live.startButton.disabled = !!view.lease;
-      }
-    });
-    const playerHost = el("div", { class: "monitor-player" });
-    const observationHost = el("div");
-    const observe = el("button", { class: "secondary", type: "button" }, "查看现场概况（单帧）");
-    observe.addEventListener("click", async () => {
-      observe.disabled = true;
-      try {
-        const result = await api(`/classes/${classId}/classroom/observation`, { method: "POST", body: {}, timeoutMs: 150000 });
-        if (!live()) return;
-        clear(observationHost).append(el("p", {}, `采样时间：${fmtDateTime(result.captured_at)}`),
-          el("p", {}, result.summary.scene), el("p", {}, result.summary.visible_activity),
-          el("p", { class: "muted" }, [...result.summary.limitations, result.note].join("；")));
-      } catch (error) {
-        if (live()) clear(observationHost).append(el("p", { class: "field-error" }, error.message));
-      } finally { if (live()) observe.disabled = false; }
-    });
-    view.live.playerHost = playerHost;
-    card.append(el("p", {}, "正在观看：", viewers, " 人 · 共用一路上行"),
-      el("label", { class: "checkbox-row" }, audioBox, "同时接收现场声音"),
-      el("p", { class: "muted" }, camera.audio_capable
-        ? "只有明确开启后才采集或转发音轨；播放器静音不等于没有采集声音。"
-        : "该摄像头没有音轨，勾选也不会收到现场声音。"),
-      start, playerHost, observe, observationHost);
-    monitorHost.append(card);
-    if (view.lease) drawLease(view.lease);
+    if (camera && camera.source_kind !== "windows_device") return `${camera.camera_id}:${camera.config_revision}`;
+    const selected = data.device?.inventory?.local_capture;
+    return selected?.camera != null
+      ? selected.camera ? JSON.stringify([data.device.device_id, selected.camera, selected.microphone]) : ""
+      : camera ? `${camera.camera_id}:${camera.config_revision}` : "";
   }
 
-  function drawLease(lease) {
-    const host = view.live.playerHost;
-    if (!host) return;
-    if (lease.available && !view.player) view.player = classroomPlayer(classId, lease);
-    clear(host).append(
-      lease.available
-        ? view.player.el
-        : el("p", { class: "field-error" }, `${lease.message}（${lease.reason}）`),
-      el("p", { class: "muted" }, `会话 ${lease.session_id.slice(0, 8)} · 视频 ${lease.video_allowed ? "已授权" : "未授权"} · 声音 ${lease.audio_allowed ? "已授权" : "未授权"}`,
-        lease.audio_unavailable_reason ? ` · ${lease.audio_unavailable_reason}` : ""),
-      el("p", { class: "muted" }, `有效期至 ${fmtDateTime(lease.expires_at)}；离页或登出会自动释放`),
-      el("div", { class: "row-gap" },
-        el("button", { class: "secondary", type: "button", onclick: () => void renew(lease.session_id) }, "续期"),
-        el("button", { class: "secondary", type: "button", onclick: () => void stopWatching(lease.session_id) }, "停止观看")));
+  function updateMonitor(data) {
+    status = data;
+    const camera = data.camera?.camera;
+    viewers.textContent = String(data.streaming?.viewers ?? 0);
+    sound.hidden = !view.lease?.audio_allowed;
+    observe.hidden = !camera;
+    observe.disabled = !data.media_ready;
+    watch.textContent = view.lease ? "停止观看" : view.watching ? "重新连接" : "继续观看";
+    const key = sourceKey(data);
+    if (view.lease && view.watching && view.source !== key && !view.busy) {
+      void connect(true);
+      return;
+    }
+    if (view.lease || view.busy) return;
+    if (!view.watching) { monitorMessage.textContent = "已停止观看"; return; }
+    if (data.media_provider === "none") { monitorMessage.textContent = "服务器尚未启用媒体转发，Windows 本机预览仍可使用。"; return; }
+    if (data.media_ready === false) { monitorMessage.textContent = "正在等待服务器媒体服务就绪…"; return; }
+    if (!key) { monitorMessage.textContent = "请在 Classroom Mate 中选择摄像头，保存后这里会自动播放。"; return; }
+    if (camera?.access_path !== "server_direct" && !data.device?.online) {
+      monitorMessage.textContent = "教室终端离线，恢复后自动播放。";
+      return;
+    }
+    if (Date.now() >= view.nextAttempt) void connect();
+  }
+
+  function showButtons() {
+    watch.disabled = sound.disabled = !!view.busy;
+    watch.textContent = view.lease ? "停止观看" : view.watching ? "重新连接" : "继续观看";
+    sound.hidden = !view.lease?.audio_allowed;
+    sound.textContent = view.soundPlaying ? "静音" : "播放现场声音";
+  }
+
+  async function dropLease() {
+    const lease = view.lease;
+    if (!lease) return;
+    // Keep the current lease until the server confirms release so a failed request can be retried.
+    await api(`${leases}/${lease.session_id}`, { method: "DELETE" });
+    if (!live() || view.lease !== lease) return;
+    view.lease = null;
+    view.player?.dispose();
+    view.player = null;
+    window.clearTimeout(view.leaseTimer);
+    clear(playerHost);
+  }
+
+  async function connect(replace = false) {
+    if (view.busy || (view.lease && !replace)) return;
+    view.busy = true;
+    showButtons();
+    const source = sourceKey(status);
+    try {
+      if (replace) await dropLease();
+      if (!live()) return;
+      monitorMessage.textContent = "正在连接教室画面…";
+      const lease = await api(leases, { method: "POST", body: { audio: true, follow_terminal: true } });
+      if (!live() || source !== sourceKey(status) || !lease.available) {
+        await api(`${leases}/${lease.session_id}`, { method: "DELETE" });
+        if (live() && !lease.available) throw new Error(lease.message);
+        return;
+      }
+      view.lease = lease;
+      view.soundPlaying = false;
+      view.source = source;
+      view.player = classroomPlayer(classId, lease, { onError(error, track) {
+        if (!live() || view.lease?.session_id !== lease.session_id) return;
+        monitorMessage.textContent = error.message;
+        if (track === "video") void reconnectAfterFailure(lease.session_id);
+      } });
+      clear(playerHost).append(view.player.el);
+      monitorMessage.textContent = lease.audio_unavailable_reason || (lease.audio_allowed ? "现场声音已接入 · 播放器默认静音" : "仅视频 · 当前来源无可用声音");
+      scheduleRenew(lease);
+    } catch (error) {
+      if (live()) {
+        view.nextAttempt = Date.now() + 10000;
+        monitorMessage.textContent = error.message;
+      }
+    } finally {
+      view.busy = false;
+      if (live()) showButtons();
+    }
+  }
+
+  function scheduleRenew(lease) {
     window.clearTimeout(view.leaseTimer);
     const ttl = new Date(lease.expires_at).getTime() - Date.now();
-    if (ttl > 30000) view.leaseTimer = window.setTimeout(() => { if (live()) void renew(lease.session_id); }, ttl - 30000);
+    view.leaseTimer = window.setTimeout(() => { if (live()) void renew(lease.session_id); }, Math.max(1000, ttl - 30000));
   }
 
   async function renew(sessionId) {
-    if (!live() || view.lease?.session_id !== sessionId) return;
+    if (!live() || view.lease?.session_id !== sessionId || view.busy) return;
     try {
-      const lease = await api(`/classes/${classId}/classroom/media-sessions/${sessionId}/renew`, { method: "POST", body: {} });
+      const updated = await api(`${leases}/${sessionId}/renew`, { method: "POST", body: {} });
       if (!live() || view.lease?.session_id !== sessionId) return;
-      view.lease = { ...view.lease, ...lease };
-      drawLease(view.lease);
-    } catch (error) {
-      if (!live() || view.lease?.session_id !== sessionId) return;
-      view.lease = null;
-      view.player?.dispose();
-      view.player = null;
-      window.clearTimeout(view.leaseTimer);
-      if (view.live.startButton) view.live.startButton.disabled = false;
-      toast(error.message, "error");
+      Object.assign(view.lease, updated);
+      scheduleRenew(view.lease);
+    } catch {
+      await reconnectAfterFailure(sessionId);
     }
   }
 
-  async function stopWatching(sessionId) {
-    window.clearTimeout(view.leaseTimer);
+  async function reconnectAfterFailure(sessionId) {
+    if (!live() || view.lease?.session_id !== sessionId || view.busy) return;
+    view.busy = true;
+    showButtons();
     try {
-      const data = await api(`/classes/${classId}/classroom/media-sessions/${sessionId}`, { method: "DELETE" });
-      if (!live()) return;
-      if (view.lease?.session_id === sessionId) view.lease = null;
-      view.player?.dispose();
-      view.player = null;
-      toast(data.viewers ? "已停止本人的观看" : "已停止观看；最后一名观看者离开后将停止转发", "success");
-      await reload();
+      await dropLease();
+      view.nextAttempt = Date.now() + 5000;
     } catch (error) {
-      if (live()) toast(error.message, "error");
+      if (live()) {
+        monitorMessage.textContent = error.message;
+        view.leaseTimer = window.setTimeout(() => void reconnectAfterFailure(sessionId), 5000);
+      }
+    } finally {
+      view.busy = false;
+      if (live()) showButtons();
     }
   }
+
+  watch.addEventListener("click", async () => {
+    if (view.busy) return;
+    if (!view.lease) {
+      view.watching = true;
+      view.nextAttempt = 0;
+      updateMonitor(status);
+      return;
+    }
+    view.watching = false;
+    view.busy = true;
+    showButtons();
+    try {
+      await dropLease();
+      if (live()) monitorMessage.textContent = "已停止观看";
+    } catch (error) {
+      if (live()) monitorMessage.textContent = error.message;
+    } finally {
+      view.busy = false;
+      if (live()) showButtons();
+    }
+  });
+  sound.addEventListener("click", () => {
+    if (!view.lease?.audio_allowed || !view.player) return;
+    view.soundPlaying = !view.soundPlaying;
+    view.player.setMuted(!view.soundPlaying);
+    showButtons();
+  });
 
   /* ---------- 刷新 ---------- */
   async function reload() {
@@ -504,7 +575,7 @@ export async function render(mount, ctx, helpers) {
       drawPairing(data);
       drawTerminal(data);
       drawCamera(data);
-      drawMonitor(data);
+      updateMonitor(data);
     } catch (error) {
       if (live()) clear(summaryHost).append(errorPanel(error, { onRetry: reload }));
     }
@@ -522,7 +593,7 @@ export async function render(mount, ctx, helpers) {
       if (view.live.volumeReadout && device?.volume_level != null) {
         view.live.volumeReadout.textContent = `${device.volume_level}%`;
       }
-      if (view.live.viewers) view.live.viewers.textContent = String(data.streaming?.viewers ?? 0);
+      updateMonitor(data);
     } catch {
       // 轮询失败不打断正在填写的表单；概况区保留上一次结果。
     } finally {
@@ -534,6 +605,6 @@ export async function render(mount, ctx, helpers) {
   drawPairing(status);
   drawTerminal(status);
   drawCamera(status);
-  drawMonitor(status);
+  updateMonitor(status);
   view.refreshTimer = window.setTimeout(() => { if (live()) void tick(); }, REFRESH_MS);
 }
