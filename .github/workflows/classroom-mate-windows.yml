@@ -2,12 +2,9 @@ name: Classroom Mate Windows x64
 
 on:
   push:
+    branches: ['**']
     paths:
       - 'classroom-mate/**'
-      - '.github/workflows/classroom-mate-windows.yml'
-      - 'docs/windows-client-agent-prompt.md'
-      - 'docs/classroom-monitoring.md'
-      - 'docs/classroom-media-deployment.md'
   workflow_dispatch:
 
 permissions:
@@ -48,3 +45,37 @@ jobs:
             classroom-mate/dist/ClassroomMate-Setup-win-x64.exe.sha256
           compression-level: 0
           if-no-files-found: error
+          overwrite: true
+
+  release:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: ClassroomMate-Setup-win-x64
+      - name: Publish Windows installer to GitHub Releases
+        env:
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          installer=ClassroomMate-Setup-win-x64.exe
+          sha256sum --check "$installer.sha256"
+          tag="classroom-mate-build-$GITHUB_RUN_NUMBER"
+          if draft=$(gh release view "$tag" --json isDraft --jq '.isDraft' 2>/dev/null); then
+            if [[ "$draft" == 'true' ]]; then
+              gh release upload "$tag" "$installer" "$installer.sha256" --clobber
+              gh release edit "$tag" --draft=false
+            fi
+          else
+            gh release create "$tag" "$installer" "$installer.sha256" \
+              --target "$GITHUB_SHA" \
+              --title "Classroom Mate Windows x64 · Build $GITHUB_RUN_NUMBER" \
+              --notes "Windows x64 安装程序，适用于当前用户安装。源代码提交：$GITHUB_SHA。构建与安装验证：$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          fi
+          gh release view "$tag" --json url --jq '.url'

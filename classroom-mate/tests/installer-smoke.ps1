@@ -9,6 +9,10 @@ $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 $app = Join-Path $target 'ClassroomMate.exe'
 $startup = '"' + $app + '" --tray'
 
+function Get-StartupValue {
+    (Get-ItemProperty -LiteralPath $runKey -ErrorAction SilentlyContinue).ClassroomMate
+}
+
 function Invoke-SetupProcess($file, $operation, [switch]$ExpectFailure) {
     $log = Join-Path ([IO.Path]::GetTempPath()) "classroom-mate-$operation.log"
     $arguments = "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG=`"$log`""
@@ -23,7 +27,7 @@ function Invoke-SetupProcess($file, $operation, [switch]$ExpectFailure) {
 foreach ($path in @($target, $data, $shortcut, $entry)) {
     if (Test-Path -LiteralPath $path) { throw "Run the installer test with a clean Windows user: $path already exists." }
 }
-if (Get-ItemPropertyValue $runKey ClassroomMate -ErrorAction SilentlyContinue) {
+if ($null -ne (Get-StartupValue)) {
     throw 'A Classroom Mate startup entry already exists.'
 }
 
@@ -59,7 +63,7 @@ try {
 
 Invoke-SetupProcess $setup 'upgrade'
 if ((Get-FileHash -LiteralPath $fixture).Hash -ne $originalHash -or
-    (Get-ItemPropertyValue $runKey ClassroomMate) -ne $startup) {
+    (Get-StartupValue) -ne $startup) {
     throw 'Upgrade changed the device data or startup setting.'
 }
 
@@ -67,7 +71,7 @@ Invoke-SetupProcess $uninstall 'uninstall'
 foreach ($path in @($target, $shortcut, $entry)) {
     if (Test-Path -LiteralPath $path) { throw "Uninstall left $path behind." }
 }
-if ($null -ne (Get-ItemPropertyValue $runKey ClassroomMate -ErrorAction SilentlyContinue) -or
+if ($null -ne (Get-StartupValue) -or
     (Get-FileHash -LiteralPath $fixture).Hash -ne $originalHash) {
     throw 'Uninstall did not remove startup or preserve the device data.'
 }

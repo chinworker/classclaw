@@ -6,7 +6,7 @@ ClassClaw 的 Windows 教室托盘终端。目录名为 **classroom-mate**。普
 
 目标为 **Windows x64**，支持范围为 Windows 11 及符合 .NET 10 支持范围的 Windows 10 服务版本。安装包含 .NET 自包含运行时、嵌入式 Python 和媒体编解码库，教室电脑可离线安装。
 
-1. 从 [GitHub Actions](https://github.com/chinworker/classclaw/actions/workflows/classroom-mate-windows.yml) 打开对应的成功运行，下载 Artifacts 中的 `ClassroomMate-Setup-win-x64` 并解压。
+1. 在 GitHub Releases 中找到最新的 **Classroom Mate Windows x64**，从 Assets 直接下载 `ClassroomMate-Setup-win-x64.exe` 和可选的 `.exe.sha256` 校验文件。 [GitHub Releases](https://github.com/chinworker/classclaw/releases)
 2. 双击 `ClassroomMate-Setup-win-x64.exe`。安装向导为当前用户安装到 `%LOCALAPPDATA%\Programs\ClassroomMate`，无需管理员权限。可在安装完成时启动，也可从开始菜单打开 **Classroom Mate**。
 3. 在网页「教室设备」生成一次性配对码，在客户端填写 HTTPS 服务器根地址及配对码。正式环境验证证书；开发模式只允许本机 HTTP。
 4. 在网页选择客户端上报的教室显示屏、音箱、摄像头和麦克风。未选定输出设备时明确报错，不随意把广播送到教师副屏或默认音箱。
@@ -60,7 +60,7 @@ python scripts/package.py
 python scripts/package.py --iscc "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
 ```
 
-提交客户端、工作流或随包文档的变更时，GitHub Actions 会在 `windows-2025` 上运行协议测试、打包并验证安装、覆盖安装和卸载。工作流进入默认分支后，也可从 Actions 手动运行。测试通过后可下载安装程序和 SHA-256 文件；下载需要登录 GitHub，产物按仓库保留期限过期。
+推送包含 `classroom-mate/` 变更时，GitHub Actions 会在 `windows-2025` 上运行协议测试、打包并验证安装、覆盖安装和卸载。推送到 `main` 时，测试通过后自动发布一次 GitHub Release，附上安装程序和 SHA-256 文件。一次推送包含多个提交时生成一个 Release，标签为 `classroom-mate-build-<工作流运行编号>`，重跑沿用该标签。其他分支或从 Actions 手动运行可下载构建产物。 [构建记录](https://github.com/chinworker/classclaw/actions/workflows/classroom-mate-windows.yml)
 
 媒体逻辑测试与可选真实联调：
 
