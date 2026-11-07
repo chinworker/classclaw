@@ -7,7 +7,7 @@
 | 部分 | 状态 |
 | --- | --- |
 | 服务端控制面（配对、心跳、命令账本、广播、音量、摄像头登记、观看租约） | 已实现并有回归测试 |
-| 网页端「点名广播」「教室设备与实时监控」 | 已实现并有 node --test 回归 |
+| 网页端「监控与播报」 | 包含实时监控和点名播报两个页签，有 node --test 回归 |
 | Agent / ClassClaw Channels 的点名与音量提案、状态查询 | 已实现（复用 WriteProposal，无新增工具） |
 | Windows 终端 Classroom Mate | 已实现于 `classroom-mate/`：托盘、自启、广播、音量、分轨媒体发布和 Windows x64 打包；协议与合成媒体验证通过，真实 Windows 硬件待验收 |
 | 媒体转发（MediaMTX）与浏览器播放 | 已实现分轨 WHIP/WHEP、真实媒体鉴权与回收；默认关闭，部署见 `docs/classroom-media-deployment.md` |
@@ -54,6 +54,7 @@
 1. 网页 `POST /classes/{id}/classroom/pairing` 生成四位一次性数字码（如 `0007`），保留前导零，有效期最多 120 秒。重新生成会作废旧码，服务重启后须重新生成。已配对的班级须先撤销凭据才能重新配对。
 2. 终端 `POST /api/v1/classroom/device/pair` 用配对码换取本设备专用凭据。保留来源 IP 限流（每 300 秒 10 次）。存在待配对数字码时，共用同一限流逻辑计数（全站每 120 秒 10 次）。超限返回 429 `DEVICE_PAIRING_THROTTLED`。
 3. 凭据只返回一次；终端本地加密保存。终端不持有 `CLASSCLAW_API_TOKEN` 或 Gateway 管理员 Token。
+4. 网页通过现有的 5 秒概况轮询自动检测配对结果，收起一次性码并启用相应操作。终端在线仍以控制通道为准。安装包入口位于「终端与监控设置」。
 
 ### 3.2 控制通道
 

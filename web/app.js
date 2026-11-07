@@ -38,8 +38,7 @@ const TEACHER_NAV = [
     { path: "/class-settings", label: "班级设置" },
   ]},
   { group: "教室", items: [
-    { path: "/broadcast", label: "点名广播" },
-    { path: "/classroom", label: "教室设备与监控" },
+    { path: "/classroom", label: "监控与播报" },
   ]},
   { group: "数据分析", items: [
     { path: "/analytics/students", label: "学生分析" },
@@ -79,8 +78,8 @@ const routes = [
   { path: "/arrangements", title: "日常安排", loader: pageLoader("./js/pages/arrangements.js"), requiresClass: true },
   { path: "/attachments", title: "附件", loader: pageLoader("./js/pages/attachments.js"), requiresClass: true },
   { path: "/class-settings", title: "班级设置", loader: pageLoader("./js/pages/classSettings.js"), requiresClass: true },
-  { path: "/broadcast", title: "点名广播", loader: pageLoader("./js/pages/broadcast.js?v=20260923-classroom-review"), requiresClass: true },
-  { path: "/classroom", title: "教室设备与实时监控", loader: pageLoader("./js/pages/classroom.js?v=20260923-classroom-review"), requiresClass: true },
+  { path: "/broadcast", redirect: ["/classroom", { tab: "broadcast" }] },
+  { path: "/classroom", title: "监控与播报", loader: pageLoader("./js/pages/classroomWorkspace.js?v=20261107"), requiresClass: true },
   { path: "/analytics/students", title: "学生分析", loader: pageLoader("./js/pages/analytics.js?v=20260901-analytics-fix"), requiresClass: true },
   { path: "/analytics/class", title: "班级分析", loader: pageLoader("./js/pages/analytics.js?v=20260901-analytics-fix"), requiresClass: true },
   { path: "/analytics/attention", title: "重点关注", loader: pageLoader("./js/pages/analytics.js?v=20260901-analytics-fix"), requiresClass: true },

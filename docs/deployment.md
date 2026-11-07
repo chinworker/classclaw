@@ -365,6 +365,14 @@ ssh -L 8000:127.0.0.1:8000 your-operator@your-server
 
 依据：[Nginx proxy 模块](https://nginx.org/en/docs/http/ngx_http_proxy_module.html)。模板按 Nginx 是唯一公网入口编写；若增加 CDN/负载均衡，还需检查它的 SSE、超时、缓存和可信来源设置。
 
+### Classroom Mate 安装包下载
+
+生产网页和 Windows 检查更新通过同一站点的 `/downloads/classroom-mate/latest/` 获取最新版本。把 `deploy/nginx/classroom-mate-downloads.conf` 安装到 Nginx snippets，并在公开站点的 HTTPS server 块中包含它。版本清单及安装包由 Nginx 静态提供。若使用 CDN，须对这些路径遵守 `Cache-Control: no-store`。
+
+将 `deploy/classroom-mate-publish.py` 安装为 root 所有的可执行文件 `/usr/local/bin/classroom-mate-publish`。创建专用系统用户 `classroom-mate-release`，给它 `/var/www/downloads/classroom-mate` 写权限，并在该用户的 `authorized_keys` 里用 `restrict,command="/usr/local/bin/classroom-mate-publish"` 限制专用上传公钥。GitHub 的 `classroom-mate-downloads` 环境只允许 main，保存对应的 `MIRROR_KEY` 密钥、`MIRROR_HOST` 地址和 `MIRROR_HOST_KEY` 已核对的 known_hosts 条目。
+
+构建通过后，发布任务上传安装包和版本清单。服务器核验 SHA-256 并原子切换 `latest`。任务从公开下载地址核对实际文件后才公开新 Release。失败时可重跑原发布任务，任务复用该构建已上传至 GitHub 的文件。较旧版本可归档，`latest` 保持版本递增。
+
 ## 8. 首次上线与容量验收
 
 ```bash

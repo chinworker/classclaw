@@ -6,10 +6,10 @@ ClassClaw 的 Windows 教室托盘终端。目录名为 **classroom-mate**。普
 
 目标为 **Windows x64**，支持范围为 Windows 11 及符合 .NET 10 支持范围的 Windows 10 服务版本。安装包含 .NET 自包含运行时、嵌入式 Python 和媒体编解码库，教室电脑可离线安装。
 
-1. 在 GitHub Releases 中找到最新的 **Classroom Mate Windows x64**，从 Assets 直接下载 `ClassroomMate-Setup-win-x64.exe` 和可选的 `.exe.sha256` 校验文件。 [GitHub Releases](https://github.com/chinworker/classclaw/releases)
+1. 打开网页「监控与播报 → 终端与监控设置」，下载最新版 Windows x64 安装包。 [从 ClassClaw 服务器下载](https://claw.dickhead.top/downloads/classroom-mate/latest/ClassroomMate-Setup-win-x64.exe)
 2. 双击 `ClassroomMate-Setup-win-x64.exe`。安装向导请求管理员权限，程序安装到 `%ProgramFiles%\ClassroomMate`。日常运行使用普通权限。可在安装完成时启动，也可从开始菜单打开 **Classroom Mate**。
-3. 在网页「教室设备」生成 4 位一次性数字码，在客户端「设置 → 服务器与配对」输入。默认地址为 `https://claw.dickhead.top`，可改为自己的服务器。正式环境验证证书，开发模式允许本机 HTTP。
-4. 在客户端「设置 → 音视频与播放设备」选择摄像头、麦克风、播报扬声器和显示屏。保存后主界面立即预览。打开网页「教室设备与监控」会自动登记或跟随当前 Windows 来源，并开始观看。
+3. 在网页「监控与播报 → 终端与监控设置」生成 4 位一次性数字码，在客户端「设置 → 服务器与配对」输入。成功后网页自动显示已配对。默认地址为 `https://claw.dickhead.top`，可改为自己的服务器。正式环境验证证书，开发模式允许本机 HTTP。
+4. 在客户端「设置 → 音视频与播放设备」选择摄像头、麦克风、播报扬声器和显示屏。保存后主界面立即预览。打开网页「监控与播报 → 实时监控」会自动登记或跟随当前 Windows 来源，并开始观看。
 5. 主界面可查看连接和采集状态、打开网页、暂停或恢复连接，以及测试显示和播报。主界面可独立预览所选摄像头；网页观看时共用同一路摄像头。关闭主界面后继续驻留托盘，双击托盘或开始菜单重新打开。锁屏、用户会话断开或休眠会暂停，解锁后可主动恢复。
 6. 在网页预览并发送广播，查看显示和语音分别返回的执行状态。广播中的“下课后”是句子内容，不是本机定时任务。
 
@@ -77,6 +77,8 @@ python media/test_live.py --mediamtx /path/to/mediamtx
 ## 升级、卸载与验收
 
 各平台的历史验证记录和待办见 [VALIDATION.md](VALIDATION.md)。
+
+从 0.3.1 开始，在「设置 → 版本更新」检查并从 ClassClaw 官方服务器下载最新版。安装包校验通过后，客户端退出并打开安装向导。GitHub Actions 将构建号写入四段 Windows 版本，验证服务器安装包的 SHA-256 后发布独立的 GitHub Release。 [发布记录](https://github.com/chinworker/classclaw/releases)
 
 从 0.3.0 开始，安装使用管理员权限和全机共用的程序目录、固定 AppId 与 Windows 卸载登记。用日常运行终端的 Windows 账号打开新版安装程序并完成 UAC，旧的每用户安装在发起安装的用户上下文中迁移。旧版在运行时，向导会提示从托盘正常退出。确认页会说明升级步骤，点击 Install 后先移除旧版程序，再安装新版。加密配对凭据、设备配置、去重账本和原用户的登录自启设置随升级保留。以后版本沿用同一程序目录及卸载登记，升级先移除旧程序；卸载入口异常或旧文件仍被占用时停止升级并说明原因。
 

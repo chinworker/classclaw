@@ -4,6 +4,7 @@ import { findButton, installDom, tick, response } from "./dom.mjs";
 
 installDom();
 const page = await import("../../web/js/pages/classroom.js");
+const workspace = await import("../../web/js/pages/classroomWorkspace.js");
 const { state, saveSession } = await import("../../web/js/state.js");
 
 let calls;
@@ -121,6 +122,7 @@ beforeEach((t) => {
 });
 
 afterEach(async () => {
+  workspace.dispose();
   page.dispose();
   await tick();
 });
@@ -168,6 +170,44 @@ test("未配对时只能生成一次性配对码", async () => {
   assert.equal(calls.filter((row) => row.path.endsWith("/classroom/pairing")).length, 1);
   assert.match(mount.textContent, /0007/);
   assert.match(mount.textContent, /只显示一次/);
+});
+
+test("网页保留待兑换的配对码，兑换后无需点击确认并自动启用在线操作", async () => {
+  statusPayload = status({ device: null });
+  const mount = await mountPage();
+  findButton(mount, "生成配对码").click();
+  await tick();
+  await tick();
+  statusPayload = status({ device: onlineDevice({ online: false, pairing_status: "unpaired",
+    pairing_expires_at: "2026-09-23T10:02:00+08:00" }) });
+  advanceTimers(5000);
+  await tick();
+  assert.match(mount.textContent, /0007/);
+  assert.equal(findButton(mount, "我已完成配对"), undefined);
+
+  statusPayload = status({ device: onlineDevice({ online: false }) });
+  advanceTimers(5000);
+  await tick();
+  assert.match(mount.textContent, /已配对：教室终端/);
+  assert.doesNotMatch(mount.textContent, /0007/);
+  const volume = findButton(mount, "下发音量");
+  assert.equal(volume.disabled, true);
+
+  statusPayload = status();
+  advanceTimers(5000);
+  await tick();
+  assert.equal(findButton(mount, "下发音量"), volume);
+  assert.equal(volume.disabled, false);
+});
+
+test("监控与播报共用入口，设置下载链接使用同源最新版", async () => {
+  const mount = document.createElement("main");
+  document.body.append(mount);
+  await workspace.render(mount, { query: { settings: "1" } });
+  assert.equal(mount.querySelector("nav").getAttribute("aria-label"), "监控与播报");
+  assert.notEqual(mount.querySelector("details").getAttribute("open"), null);
+  const link = mount.querySelectorAll("a").find((node) => node.textContent.includes("下载最新版 Classroom Mate"));
+  assert.equal(link.getAttribute("href"), "/downloads/classroom-mate/latest/ClassroomMate-Setup-win-x64.exe");
 });
 
 test("终端离线时音量与测试按钮禁用", async () => {

@@ -69,25 +69,11 @@ function quickPicks(label, values, input, onChange) {
 }
 
 export async function render(mount, ctx, helpers) {
+  dispose();
   clear(mount);
   mount.append(skeleton(5));
   const classId = state.classId;
   const limits = appConfig.classroom || {};
-  let status;
-  let students;
-  try {
-    [status, students] = await Promise.all([
-      api(`/classes/${classId}/classroom/status`),
-      refreshStudents(),
-    ]);
-  } catch (error) {
-    clear(mount);
-    mount.append(errorPanel(error, { onRetry: () => render(mount, ctx, helpers) }));
-    return;
-  }
-
-  clear(mount);
-  const device = status.device;
   const view = {
     classId,
     selected: new Set(),
@@ -99,8 +85,25 @@ export async function render(mount, ctx, helpers) {
   };
   activeView = view;
   const live = () => activeView === view && mount.isConnected && state.classId === classId;
+  let status;
+  let students;
+  try {
+    [status, students] = await Promise.all([
+      api(`/classes/${classId}/classroom/status`),
+      refreshStudents(),
+    ]);
+  } catch (error) {
+    if (!live()) return;
+    clear(mount);
+    mount.append(errorPanel(error, { onRetry: () => render(mount, ctx, helpers) }));
+    return;
+  }
 
-  mount.append(pageHeader("点名广播",
+  if (!live()) return;
+  clear(mount);
+  const device = status.device;
+
+  mount.append(pageHeader("点名播报",
     "以「称谓＋时间＋事项」组成完整句子，教室屏幕显示全文、扬声器播报相同内容。这不是考勤，不判断到场情况。"));
 
   const deviceCard = el("div", { class: "card" },
@@ -114,7 +117,7 @@ export async function render(mount, ctx, helpers) {
     (status.device_warnings || []).length
       ? el("ul", { class: "warning-list" }, status.device_warnings.map((text) => el("li", {}, text))) : null,
     !device
-      ? el("p", {}, el("a", { href: "#/classroom" }, "先去教室设备页完成终端配对"))
+      ? el("p", {}, el("a", { href: "#/classroom?settings=1" }, "打开终端设置完成配对"))
       : null);
   mount.append(deviceCard);
 

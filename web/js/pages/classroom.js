@@ -8,6 +8,7 @@ import { classroomPlayer } from "../classroomPlayer.js";
 import { pageHeader, field, errorPanel, skeleton, emptyState, statusBadge, metricCard, confirmDanger } from "../components.js";
 
 const REFRESH_MS = 5000;
+const INSTALLER = "/downloads/classroom-mate/latest/ClassroomMate-Setup-win-x64.exe";
 const PATH_LABELS = { windows_capture: "Windows 本机采集", server_direct: "服务器直读", windows_relay: "Windows 出站中转" };
 let activeView = null;
 
@@ -56,8 +57,8 @@ export async function render(mount, ctx, helpers) {
   if (!live()) return;
   clear(mount);
   const refreshButton = el("button", { class: "secondary", type: "button" }, "刷新");
-  mount.append(pageHeader("教室设备与实时监控",
-    "配对终端、调整教室音量、登记监控来源与管理观看会话。Windows 本机设备在 Classroom Mate 中选择。", refreshButton));
+  mount.append(pageHeader("实时监控",
+    "查看教室画面和声音。Windows 本机设备在 Classroom Mate 中选择。", refreshButton));
 
   const summaryHost = el("div");
   const pairingHost = el("div");
@@ -65,7 +66,10 @@ export async function render(mount, ctx, helpers) {
   const volumeHost = el("div");
   const cameraHost = el("div");
   const monitorHost = el("div");
-  const advanced = el("details", { class: "card" }, el("summary", {}, "终端与监控设置"),
+  const advanced = el("details", { class: "card", open: ctx?.query?.settings === "1" },
+    el("summary", {}, "终端与监控设置"),
+    el("div", { class: "card" }, el("h3", {}, "Windows 终端软件"),
+      el("a", { href: INSTALLER, download: true }, "下载最新版 Classroom Mate（Windows x64）")),
     pairingHost, terminalHost, volumeHost, cameraHost);
   mount.append(monitorHost, summaryHost, advanced);
 
@@ -85,31 +89,30 @@ export async function render(mount, ctx, helpers) {
   }
 
   /* ---------- 配对 ---------- */
+  const pairingKey = (device) => JSON.stringify([device?.device_id, device?.pairing_status, device?.pairing_expires_at]);
+  let pairingState = status.device;
+  let pairingCode = null;
+  let issuing = false;
+  let statusRequest = 0;
+
   function drawPairing(data) {
     const device = data.device;
     clear(pairingHost);
     const card = el("div", { class: "card" }, el("h3", {}, "终端配对"));
 
-    function drawCode(result) {
-      clear(pairingHost);
-      pairingHost.append(el("div", { class: "card" },
-        el("h3", {}, "终端配对"),
-        el("p", {}, "在 Classroom Mate 的「设置 → 服务器与配对」输入这 4 位数字。默认服务器为 claw.dickhead.top。"),
-        el("p", { class: "pairing-code" }, result.pairing_code),
-        el("p", { class: "muted" }, `只显示一次 · 有效期 ${result.pairing_ttl_seconds || 120} 秒 · 截止 ${fmtDateTime(result.pairing_expires_at)}`),
-        el("div", { class: "row-gap" },
-          el("button", { class: "primary", type: "button",
-            onclick: () => copyText(result.pairing_code).then(() => toast("配对码已复制", "success"), () => toast("复制失败，请手动抄写", "error")) }, "复制配对码"),
-          el("button", { class: "secondary", type: "button", onclick: () => void reload() }, "我已完成配对"))));
-    }
-
     async function issue(name) {
+      if (issuing) return;
+      issuing = true;
       try {
         const result = await api(`/classes/${classId}/classroom/pairing`, { method: "POST", body: { name } });
-        if (live()) { drawCode(result); toast("配对码已生成，只显示一次", "success"); }
+        if (!live()) return;
+        statusRequest += 1;
+        pairingState = pairingCode = result;
+        drawPairing({ device: result });
+        toast("配对码已生成，只显示一次", "success");
       } catch (error) {
         if (live()) toast(error.message, "error");
-      }
+      } finally { issuing = false; }
     }
 
     async function act(path, method, message, body = {}) {
@@ -129,11 +132,21 @@ export async function render(mount, ctx, helpers) {
         "本班还没有教室终端。生成一次性配对码，在教室电脑的 Classroom Mate 中输入。"),
       field("终端名称", nameInput), issueButton);
     } else if (device.pairing_status === "unpaired") {
-      card.append(el("p", {}, "已生成配对码，等待教室终端兑换。"),
-        el("p", {}, el("b", {}, "有效期至："), fmtDateTime(device.pairing_expires_at)),
+      const waiting = device.pairing_expires_at && !(Date.parse(device.pairing_expires_at) <= Date.parse(data.server_time));
+      const code = waiting ? pairingCode?.pairing_code : null;
+      if (code) card.append(
+        el("p", {}, "在 Classroom Mate 的「设置 → 服务器与配对」输入这 4 位数字。默认服务器为 claw.dickhead.top。"),
+        el("p", { class: "pairing-code" }, code),
+        el("p", { class: "muted" }, `只显示一次 · 截止 ${fmtDateTime(device.pairing_expires_at)}`));
+      card.append(el("p", { "aria-live": "polite" }, waiting
+        ? "等待教室终端配对，完成后网页会自动更新。"
+        : "配对码已失效，可以重新生成。"),
         el("div", { class: "row-gap" },
-          el("button", { class: "primary", type: "button", onclick: () => void issue(device.name) }, "重新生成配对码"),
-          el("button", { class: "secondary", type: "button", onclick: () => act("pairing", "DELETE", "配对码已作废") }, "作废配对码")));
+          code
+            ? el("button", { class: "primary", type: "button",
+                onclick: () => copyText(code).then(() => toast("配对码已复制", "success"), () => toast("复制失败，请手动抄写", "error")) }, "复制配对码")
+            : el("button", { class: "primary", type: "button", onclick: () => void issue(device.name) }, "重新生成配对码"),
+          waiting ? el("button", { class: "secondary", type: "button", onclick: () => act("pairing", "DELETE", "配对码已作废") }, "作废配对码") : null));
     } else if (device.pairing_status === "revoked") {
       card.append(el("p", {}, "终端凭据已撤销，既有连接与观看会话已终止。"),
         el("button", { class: "primary", type: "button", onclick: () => void issue(device.name) }, "重新配对"));
@@ -158,7 +171,6 @@ export async function render(mount, ctx, helpers) {
         if (confirmed) await act("device", "DELETE", "终端已解绑");
       });
       card.append(el("p", {}, `已配对：${device.name}`),
-        el("p", { class: "muted" }, `最后心跳 ${fmtDateTime(device.last_seen_at)} · 配置版本 ${device.config_revision}`),
         el("div", { class: "row-gap" }, revokeButton, unbindButton));
     }
     pairingHost.append(card);
@@ -169,13 +181,29 @@ export async function render(mount, ctx, helpers) {
     const device = data.device;
     clear(terminalHost);
     clear(volumeHost);
+    view.live.volumeReadout = null;
+    view.live.terminalActions = [];
     if (!device || device.pairing_status !== "paired") return;
     const capabilities = device.capabilities || {};
     const inventory = device.inventory || {};
     const displays = [...new Set([...(capabilities.displays || []),
       ...(inventory.displays || []).map((row) => row.name || row.identifier)])].filter(Boolean);
     const speakers = (inventory.speakers || []).map((row) => row.name || row.identifier).filter(Boolean);
-    const online = !!device.online;
+    function terminalAction(label, css, action, capable = true) {
+      const button = el("button", { class: css, type: "button" }, label);
+      let pending = false;
+      const refresh = () => { button.disabled = pending || !capable || !pairingState?.online; };
+      view.live.terminalActions.push(refresh);
+      refresh();
+      button.addEventListener("click", async () => {
+        pending = true;
+        refresh();
+        try { await action(); }
+        catch (error) { if (live()) toast(error.message, "error"); }
+        finally { pending = false; if (live()) refresh(); }
+      });
+      return button;
+    }
 
     const displaySelect = el("select", { "aria-label": "目标显示屏" },
       el("option", { value: "" }, "选择显示屏"),
@@ -183,21 +211,13 @@ export async function render(mount, ctx, helpers) {
     const speakerSelect = el("select", { "aria-label": "扬声器" },
       el("option", { value: "" }, "选择扬声器"),
       ...speakers.map((name) => el("option", { value: name, selected: name === device.audio_output_name }, name)));
-    const applyOutput = el("button", { class: "primary", type: "button", disabled: !online }, "下发输出设备设置");
-    applyOutput.addEventListener("click", async () => {
+    const applyOutput = terminalAction("下发输出设备设置", "primary", async () => {
       const body = {};
       if (displaySelect.value) body.display_name = displaySelect.value;
       if (speakerSelect.value) body.audio_output_name = speakerSelect.value;
       if (!Object.keys(body).length) { toast("请先选择显示屏或扬声器", "error"); return; }
-      applyOutput.disabled = true;
-      try {
-        const result = await api(`/classes/${classId}/classroom/device/output`, { method: "POST", body });
-        if (live()) toast(result.note || "设置已下发", "success");
-      } catch (error) {
-        if (live()) toast(error.message, "error");
-      } finally {
-        if (live()) applyOutput.disabled = !online;
-      }
+      const result = await api(`/classes/${classId}/classroom/device/output`, { method: "POST", body });
+      if (live()) toast(result.note || "设置已下发", "success");
     });
 
     terminalHost.append(el("div", { class: "card" },
@@ -224,34 +244,17 @@ export async function render(mount, ctx, helpers) {
     view.live.volumeReadout = readout;
     slider.addEventListener("input", () => { readout.textContent = `${slider.value}%`; });
     const muteBox = el("input", { type: "checkbox", checked: !!device.muted, "aria-label": "静音" });
-    const applyVolume = el("button", { class: "primary", type: "button", disabled: !online || !capabilities.volume_control }, "下发音量");
-    applyVolume.addEventListener("click", async () => {
-      applyVolume.disabled = true;
-      try {
-        const result = await api(`/classes/${classId}/classroom/volume`,
-          { method: "POST", body: { volume: Number(slider.value), mute: !!muteBox.checked } });
-        if (live()) toast(result.note || "音量指令已下发", "success");
-      } catch (error) {
-        if (live()) toast(error.message, "error");
-      } finally {
-        if (live()) applyVolume.disabled = !online || !capabilities.volume_control;
-      }
-    });
+    const applyVolume = terminalAction("下发音量", "primary", async () => {
+      const result = await api(`/classes/${classId}/classroom/volume`,
+        { method: "POST", body: { volume: Number(slider.value), mute: !!muteBox.checked } });
+      if (live()) toast(result.note || "音量指令已下发", "success");
+    }, !!capabilities.volume_control);
 
     function testButton(kind, label) {
-      const button = el("button", { class: "secondary", type: "button", disabled: !online }, label);
-      button.addEventListener("click", async () => {
-        button.disabled = true;
-        try {
-          const result = await api(`/classes/${classId}/classroom/device/test`, { method: "POST", body: { kind } });
-          if (live()) toast(`${result.text}；结果以终端回执为准`, "success");
-        } catch (error) {
-          if (live()) toast(error.message, "error");
-        } finally {
-          if (live()) button.disabled = !online;
-        }
+      return terminalAction(label, "secondary", async () => {
+        const result = await api(`/classes/${classId}/classroom/device/test`, { method: "POST", body: { kind } });
+        if (live()) toast(`${result.text}；结果以终端回执为准`, "success");
       });
-      return button;
     }
 
     volumeHost.append(el("div", { class: "card" },
@@ -315,12 +318,17 @@ export async function render(mount, ctx, helpers) {
     const legacy = el("div", { class: "form-grid" }, field("设备标识", identifierInput, "从上方终端上报的摄像头清单中复制"),
       field("监控麦克风", microphoneSelect), el("label", { class: "checkbox-row" }, legacyAudio, "使用所选麦克风"));
     const isLocal = () => kindSelect.value === "windows_device";
+    let submitting = false;
+    const syncCameraOnline = () => {
+      submit.disabled = submitting || (isLocal() && !!local && (!selectedCamera || !pairingState?.online || (!!local.microphone && !selectedMic)));
+    };
+    view.live.syncCameraOnline = syncCameraOnline;
     const syncSource = () => {
       const builtIn = isLocal();
       network.hidden = builtIn;
       legacy.hidden = !builtIn || !!local;
       reported.hidden = !builtIn || !local;
-      submit.disabled = builtIn && !!local && (!selectedCamera || !data.device?.online || (!!local.microphone && !selectedMic));
+      syncCameraOnline();
       submit.textContent = builtIn && local ? (camera ? "确认更换监控来源" : "登记终端选择的来源") : (camera ? "更换摄像头" : "连接摄像头");
     };
     pathSelect.addEventListener("change", () => {
@@ -342,7 +350,8 @@ export async function render(mount, ctx, helpers) {
         audio_capable: builtIn ? (local ? !!microphone : !!legacyAudio.checked) : !!audioBox.checked,
       };
       if (camera) body.expected_revision = camera.config_revision;
-      submit.disabled = true;
+      submitting = true;
+      syncCameraOnline();
       try {
         const result = await api(`/classes/${classId}/classroom/camera`, { method: "POST", body });
         if (!live()) return;
@@ -354,7 +363,8 @@ export async function render(mount, ctx, helpers) {
         const current = error.details?.current;
         toast(current ? `请先确认替换对象：${current.name}（配置版本 ${current.config_revision}）` : error.message, "error");
       } finally {
-        if (live()) syncSource();
+        submitting = false;
+        if (live()) syncCameraOnline();
       }
     });
 
@@ -567,15 +577,42 @@ export async function render(mount, ctx, helpers) {
   });
 
   /* ---------- 刷新 ---------- */
-  async function reload() {
-    try {
-      const data = await api(`/classes/${classId}/classroom/status`);
-      if (!live()) return;
-      drawSummary(data);
-      drawPairing(data);
+  function applyStatus(data, refreshForms) {
+    const device = data.device;
+    const expired = device?.pairing_expires_at && Date.parse(device.pairing_expires_at) <= Date.parse(data.server_time);
+    const next = expired ? { ...device, pairing_expires_at: null } : device;
+    const pairingChanged = pairingKey(pairingState) !== pairingKey(next);
+    const terminalChanged = pairingState?.device_id !== next?.device_id || pairingState?.pairing_status !== next?.pairing_status;
+    if (pairingCode && pairingKey(pairingCode) !== pairingKey(next)) pairingCode = null;
+    if (pairingState?.pairing_status === "unpaired" && next?.pairing_status === "paired") {
+      toast("教室终端已配对", "success");
+    }
+    const onlineChanged = pairingState?.online !== next?.online;
+    pairingState = next;
+    drawSummary(data);
+    if (refreshForms || pairingChanged) drawPairing({ ...data, device: next });
+    if (refreshForms || terminalChanged) {
       drawTerminal(data);
       drawCamera(data);
-      updateMonitor(data);
+    } else if (onlineChanged) {
+      view.live.terminalActions.forEach((refresh) => refresh());
+      view.live.syncCameraOnline?.();
+    }
+    if (view.live.volumeReadout && device?.volume_level != null) {
+      view.live.volumeReadout.textContent = `${device.volume_level}%`;
+    }
+    updateMonitor(data);
+  }
+
+  async function readStatus(refreshForms) {
+    const request = ++statusRequest;
+    const data = await api(`/classes/${classId}/classroom/status`);
+    if (live() && request === statusRequest) applyStatus(data, refreshForms);
+  }
+
+  async function reload() {
+    try {
+      await readStatus(true);
     } catch (error) {
       if (live()) clear(summaryHost).append(errorPanel(error, { onRetry: reload }));
     }
@@ -583,17 +620,10 @@ export async function render(mount, ctx, helpers) {
 
   refreshButton.addEventListener("click", () => void reload());
 
-  // 轮询只更新概况读数与终端回报音量，不重建表单，避免老师填到一半被清空。
+  // 常规轮询保留表单输入。配对或连接状态变化时同步可用操作。
   async function tick() {
     try {
-      const data = await api(`/classes/${classId}/classroom/status`);
-      if (!live()) return;
-      drawSummary(data);
-      const device = data.device;
-      if (view.live.volumeReadout && device?.volume_level != null) {
-        view.live.volumeReadout.textContent = `${device.volume_level}%`;
-      }
-      updateMonitor(data);
+      await readStatus(false);
     } catch {
       // 轮询失败不打断正在填写的表单；概况区保留上一次结果。
     } finally {
@@ -601,10 +631,6 @@ export async function render(mount, ctx, helpers) {
     }
   }
 
-  drawSummary(status);
-  drawPairing(status);
-  drawTerminal(status);
-  drawCamera(status);
-  updateMonitor(status);
+  applyStatus(status, true);
   view.refreshTimer = window.setTimeout(() => { if (live()) void tick(); }, REFRESH_MS);
 }

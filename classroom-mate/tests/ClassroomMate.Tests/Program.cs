@@ -1,4 +1,7 @@
 using ClassroomMate.Core;
+using System.Net;
+using System.Net.Http.Json;
+using System.Security.Cryptography;
 using System.Text.Json.Nodes;
 
 int passed = 0;
@@ -159,10 +162,43 @@ try
         await execution.WaitAsync(TimeSpan.FromSeconds(10));
         Check(timer.Elapsed >= TimeSpan.FromSeconds(2.9) && fake.Cleared.SequenceEqual(["last-segment"]));
     });
+    await Test("更新使用服务器上的指定构建，哈希不符时保留已校验的文件", async () =>
+    {
+        byte[] installer = [77, 90, 1, 2, 3];
+        var manifest = new { version = "0.3.1.12", size = installer.Length,
+            sha256 = Convert.ToHexString(SHA256.HashData(installer)) };
+        bool corrupt = false;
+        using var client = new UpdateClient(new Uri("https://example.test"), new UpdateServer(uri =>
+        {
+            Check(uri.Host == "example.test");
+            HttpContent content = uri.AbsolutePath switch
+            {
+                "/downloads/classroom-mate/latest/release.json" => JsonContent.Create(manifest),
+                "/downloads/classroom-mate/build-12/ClassroomMate-Setup-win-x64.exe" =>
+                    new ByteArrayContent(corrupt ? [77, 90, 4, 5, 6] : installer),
+                _ => throw new Exception("unexpected update path"),
+            };
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = content };
+        }));
+        var release = await client.Latest(default);
+        Check(release.Version > new Version("0.3.1.11"));
+        var folder = Path.Combine(dir, "updates");
+        var path = await client.Download(release, folder, default);
+        corrupt = true;
+        try { await client.Download(release, folder, default); throw new Exception("损坏安装包通过了校验"); }
+        catch (InvalidDataException) { }
+        Check(File.ReadAllBytes(path).SequenceEqual(installer) && Directory.GetFiles(folder).Length == 1);
+    });
     await Test("真实 WebSocket 鉴权、回执、重复投递与撤销", () => SocketTest.Run(dir));
     Console.WriteLine($"{passed} tests passed");
 }
 finally { Directory.Delete(dir, true); }
+
+sealed class UpdateServer(Func<Uri, HttpResponseMessage> respond) : HttpMessageHandler
+{
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+        Task.FromResult(respond(request.RequestUri!));
+}
 
 sealed class Fake : IPlatform
 {

@@ -17,7 +17,8 @@ sealed class SettingsWindow : Form
     readonly ComboBox display = Picker();
 
     public SettingsWindow(string server, bool localHttp, string message, Func<string, string, bool, Task> pair,
-        Func<Preferences, Task> save, Func<Preferences> preferences)
+        Func<Preferences, Task> save, Func<Preferences> preferences,
+        Func<CancellationToken, Task<UpdateRelease>> checkUpdate, Func<CancellationToken, Task> installUpdate)
     {
         Text = "Classroom Mate · 设置";
         Icon = Program.AppIcon;
@@ -31,6 +32,7 @@ sealed class SettingsWindow : Form
         var devices = Panel();
         tabs.TabPages.Add(new TabPage("服务器与配对") { Controls = { connection } });
         tabs.TabPages.Add(new TabPage("音视频与播放设备") { Controls = { devices } });
+        tabs.TabPages.Add(new TabPage("版本更新") { Controls = { UpdatePanel(checkUpdate, installUpdate) } });
         Controls.Add(tabs);
 
         var address = new TextBox { Width = 490, Text = server, PlaceholderText = Program.DefaultServer };
@@ -95,6 +97,43 @@ sealed class SettingsWindow : Form
         Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false,
         AutoScroll = true, Padding = new Padding(20, 12, 20, 12)
     };
+
+    FlowLayoutPanel UpdatePanel(Func<CancellationToken, Task<UpdateRelease>> check, Func<CancellationToken, Task> install)
+    {
+        var panel = Panel();
+        var info = new Label { AutoSize = true, MaximumSize = new Size(550, 0) };
+        var checkButton = new Button { Text = "检查更新", Width = 130, Height = 38 };
+        var installButton = new Button { Text = "下载并安装", Width = 145, Height = 38, Enabled = false };
+        checkButton.Click += async (_, _) =>
+        {
+            checkButton.Enabled = installButton.Enabled = false;
+            info.Text = "正在从 ClassClaw 服务器检查更新…";
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            try
+            {
+                var release = await check(timeout.Token);
+                if (IsDisposed) return;
+                installButton.Enabled = release.Version > Program.BuildVersion;
+                info.Text = installButton.Enabled ? $"发现新版 {release.Version}。" : "当前已是最新版。";
+            }
+            catch { if (!IsDisposed) info.Text = "无法检查更新，请确认网络连接后重试。"; }
+            finally { if (!IsDisposed) checkButton.Enabled = true; }
+        };
+        installButton.Click += async (_, _) =>
+        {
+            checkButton.Enabled = installButton.Enabled = false;
+            info.Text = "正在下载安装包。校验通过后，终端会退出并打开安装向导。";
+            using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(10));
+            try { await install(timeout.Token); }
+            catch (TerminalException error) { if (!IsDisposed) info.Text = error.Message; }
+            catch { if (!IsDisposed) info.Text = "无法下载安装包，请检查网络或磁盘空间后重试。"; }
+            finally { if (!IsDisposed) checkButton.Enabled = true; }
+        };
+        var buttons = new FlowLayoutPanel { AutoSize = true, WrapContents = false };
+        buttons.Controls.AddRange([checkButton, installButton]);
+        panel.Controls.AddRange([Label($"当前版本 {Program.Version}"), buttons, info]);
+        return panel;
+    }
 
     static string? Value(ComboBox box) => (box.SelectedItem as Option)?.Value;
     Preferences ReadSelection() => new(Value(display) ?? "", Value(speaker) ?? "", Value(camera), Value(microphone));

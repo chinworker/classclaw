@@ -16,6 +16,7 @@ import subprocess
 import sys
 import zipfile
 from pathlib import Path
+from xml.etree import ElementTree
 
 ROOT = Path(__file__).resolve().parents[1]
 EMBEDDED_PYTHON = "python-3.13.15-embed-amd64.zip"
@@ -29,9 +30,10 @@ def run(*args):
 
 def write_checksum(path):
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
-    path.with_suffix(path.suffix + ".sha256").write_text(f"{digest}  {path.name}\n", encoding="utf-8")
+    path.with_suffix(path.suffix + ".sha256").write_text(f"{digest}  {path.name}\n", encoding="utf-8", newline="\n")
     print(path)
     print("SHA256 " + digest)
+    return digest
 
 
 def locked_wheels(folder):
@@ -70,7 +72,15 @@ def main():
     parser.add_argument("--iscc", help="path to Inno Setup 6.3+ ISCC.exe to also build the Windows installer")
     parser.add_argument("--offline", action="store_true", help="use previously fetched media dependencies")
     parser.add_argument("--nuget-source", help="optional NuGet feed or local package directory")
+    parser.add_argument("--build", type=int, help="CI release build number used as the Windows version revision")
     args = parser.parse_args()
+    version = None
+    if args.build is not None:
+        project = ElementTree.parse(ROOT / "src/ClassroomMate.Windows/ClassroomMate.Windows.csproj")
+        base_version = project.findtext("./PropertyGroup/Version", "")
+        if not re.fullmatch(r"\d+\.\d+\.\d+", base_version) or not 1 <= args.build <= 65534:
+            parser.error("release requires a three-part version and a build number between 1 and 65534")
+        version = f"{base_version}.{args.build}"
     cache = ROOT / ".dist-cache"
     wheels = cache / "wheels"
     wheels.mkdir(parents=True, exist_ok=True)
@@ -104,6 +114,8 @@ def main():
     if dist.exists():
         shutil.rmtree(dist)
     options = ["--source", args.nuget_source, "-p:NuGetAudit=false"] if args.nuget_source else []
+    if version:
+        options.extend([f"-p:AssemblyVersion={version}", f"-p:FileVersion={version}"])
     run(
         args.dotnet,
         "publish",
@@ -170,7 +182,11 @@ def main():
 
         run(args.iscc, f"/DPrepareUser={encode_migration(False)}", f"/DFinishUser={encode_migration(True)}",
             str(ROOT / "installer/ClassroomMate.iss"))
-        write_checksum(dist.parent / "ClassroomMate-Setup-win-x64.exe")
+        installer = dist.parent / "ClassroomMate-Setup-win-x64.exe"
+        digest = write_checksum(installer)
+        if version:
+            release = {"version": version, "size": installer.stat().st_size, "sha256": digest}
+            (dist.parent / "release.json").write_text(json.dumps(release) + "\n", encoding="utf-8", newline="\n")
 
 
 if __name__ == "__main__":

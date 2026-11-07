@@ -5,6 +5,7 @@ on:
     branches: ['**']
     paths:
       - 'classroom-mate/**'
+      - '.github/workflows/classroom-mate-windows.yml'
   workflow_dispatch:
 
 permissions:
@@ -34,9 +35,14 @@ jobs:
         run: |
           $iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
           if (!(Test-Path -LiteralPath $iscc)) { throw "Inno Setup compiler not found: $iscc" }
-          python scripts/package.py --iscc $iscc
+          python scripts/package.py --iscc $iscc --build $env:GITHUB_RUN_NUMBER
       - name: Verify Windows install, upgrade and uninstall
         run: |
+          $manifest = Get-Content dist/release.json | ConvertFrom-Json
+          if ((Get-Item dist/ClassroomMate-Setup-win-x64.exe).VersionInfo.FileVersion -ne $manifest.version -or
+              (Get-Item dist/ClassroomMate-win-x64/ClassroomMate.exe).VersionInfo.FileVersion -ne $manifest.version) {
+            throw 'The Windows application and installer must match the update manifest version.'
+          }
           $previous = Join-Path $env:RUNNER_TEMP 'ClassroomMate-0.2.1-Setup.exe'
           $url = 'https://github.com/chinworker/classclaw/releases/download/classroom-mate-build-5/ClassroomMate-Setup-win-x64.exe'
           Invoke-WebRequest -Uri $url -OutFile $previous
@@ -50,6 +56,7 @@ jobs:
           path: |
             classroom-mate/dist/ClassroomMate-Setup-win-x64.exe
             classroom-mate/dist/ClassroomMate-Setup-win-x64.exe.sha256
+            classroom-mate/dist/release.json
           compression-level: 0
           if-no-files-found: error
           overwrite: true
@@ -59,30 +66,27 @@ jobs:
     needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    environment: classroom-mate-downloads
+    concurrency:
+      group: classroom-mate-release
+      queue: max
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: ClassroomMate-Setup-win-x64
+          path: classroom-mate/dist
       - name: Publish Windows installer to GitHub Releases
         env:
           GH_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
+          MIRROR_HOST: ${{ vars.MIRROR_HOST }}
+          MIRROR_HOST_KEY: ${{ vars.MIRROR_HOST_KEY }}
+          MIRROR_KEY: ${{ secrets.MIRROR_KEY }}
         shell: bash
-        run: |
-          installer=ClassroomMate-Setup-win-x64.exe
-          sha256sum --check "$installer.sha256"
-          tag="classroom-mate-build-$GITHUB_RUN_NUMBER"
-          if draft=$(gh release view "$tag" --json isDraft --jq '.isDraft' 2>/dev/null); then
-            if [[ "$draft" == 'true' ]]; then
-              gh release upload "$tag" "$installer" "$installer.sha256" --clobber
-              gh release edit "$tag" --draft=false
-            fi
-          else
-            gh release create "$tag" "$installer" "$installer.sha256" \
-              --target "$GITHUB_SHA" \
-              --title "Classroom Mate Windows x64 · Build $GITHUB_RUN_NUMBER" \
-              --notes "Windows x64 安装程序，适用于当前用户安装。源代码提交：$GITHUB_SHA。构建与安装验证：$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-          fi
-          gh release view "$tag" --json url --jq '.url'
+        working-directory: classroom-mate/dist
+        run: bash ../scripts/publish-release.sh

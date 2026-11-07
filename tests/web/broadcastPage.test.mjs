@@ -170,11 +170,11 @@ test("离线终端禁止发送并说明原因", async () => {
   assert.match(mount.textContent, /教室终端离线/);
 });
 
-test("未配对时引导去教室设备页", async () => {
+test("未配对时引导打开监控与播报的终端设置", async () => {
   device = null;
   const mount = await mountPage();
   assert.match(mount.textContent, /本班尚未配对教室终端/);
-  assert.ok(mount.querySelectorAll("a").some((node) => node.getAttribute("href") === "#/classroom"));
+  assert.ok(mount.querySelectorAll("a").some((node) => node.getAttribute("href") === "#/classroom?settings=1"));
 });
 
 test("选中学生后按服务端预览渲染冻结句子", async (t) => {

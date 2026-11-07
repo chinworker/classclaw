@@ -8,7 +8,8 @@ namespace ClassroomMate.Windows;
 static class Program
 {
     public const string DefaultServer = "https://claw.dickhead.top";
-    public static readonly string Version = typeof(Program).Assembly.GetName().Version!.ToString(3);
+    public static readonly Version BuildVersion = typeof(Program).Assembly.GetName().Version!;
+    public static readonly string Version = BuildVersion.ToString();
     public static readonly Icon AppIcon = Icon.ExtractAssociatedIcon(Environment.ProcessPath!) ?? SystemIcons.Application;
 
     [STAThread]
@@ -22,12 +23,27 @@ static class Program
             bool trayOnly = args.Contains("--tray");
             if (!created) { if (!trayOnly) show.Set(); return; }
             ApplicationConfiguration.Initialize();
-            Application.Run(new Tray(trayOnly, show));
+            var tray = new Tray(trayOnly, show);
+            Application.Run(tray);
+            if (tray.UpdateInstaller is string installer)
+            {
+                singleton.ReleaseMutex();
+                OpenInstaller(installer);
+            }
         }
         catch
         {
             MessageBox.Show("无法安全启动。请确认当前账号可写入应用数据目录，并退出已用其他权限启动的终端。",
                 "Classroom Mate · 启动失败");
+        }
+    }
+
+    static void OpenInstaller(string installer)
+    {
+        try { Process.Start(new ProcessStartInfo(installer) { UseShellExecute = true }); }
+        catch (System.ComponentModel.Win32Exception)
+        {
+            MessageBox.Show("安装程序未启动。可以重新打开 Classroom Mate 并再次下载安装。", "Classroom Mate · 版本更新");
         }
     }
 }
@@ -39,6 +55,7 @@ sealed class Tray : ApplicationContext
     readonly ToolStripMenuItem pause;
     readonly Storage storage = new();
     readonly DeviceApi api = new();
+    readonly UpdateClient updates = new(new Uri(Program.DefaultServer));
     readonly Platform platform;
     readonly Media media;
     bool capturePaused;
@@ -58,6 +75,7 @@ sealed class Tray : ApplicationContext
     bool exiting;
     bool changing;
     readonly SemaphoreSlim stopGate = new(1, 1);
+    public string? UpdateInstaller { get; private set; }
     public Tray(bool trayOnly, EventWaitHandle show)
     {
         _ = dispatcher.Handle;
@@ -213,10 +231,26 @@ sealed class Tray : ApplicationContext
         if (settings is null || settings.IsDisposed)
         {
             settings = new SettingsWindow(pairing?.Server ?? Program.DefaultServer, pairing?.Development ?? false,
-                status, Pair, SaveSelection, () => platform.Selection);
+                status, Pair, SaveSelection, () => platform.Selection, updates.Latest, InstallUpdate);
             settings.FormClosing += (_, e) => { if (!exiting) { e.Cancel = true; settings.Hide(); } };
         }
         settings.Show(); settings.Activate();
+    }
+    async Task InstallUpdate(CancellationToken cancellation)
+    {
+        if (changing || exiting) throw new TerminalException("BUSY", "终端正在切换连接，请稍后重试。");
+        changing = true;
+        try
+        {
+            var release = await updates.Latest(cancellation);
+            if (release.Version <= Program.BuildVersion)
+                throw new TerminalException("UP_TO_DATE", "当前已是最新版。");
+            var installer = await updates.Download(release, Path.Combine(Storage.Root, "updates"), cancellation);
+            cancellation.ThrowIfCancellationRequested();
+            if (exiting) return;
+            await Shutdown(installer);
+        }
+        finally { changing = false; }
     }
     async Task Pair(string url, string code, bool development)
     {
@@ -247,7 +281,7 @@ sealed class Tray : ApplicationContext
         }
         finally { changing = false; }
     }
-    async Task Shutdown()
+    async Task Shutdown(string? installer = null)
     {
         if (exiting) return; exiting = true;
         icon.Visible = false;
@@ -255,6 +289,8 @@ sealed class Tray : ApplicationContext
         showRequest.Unregister(null);
         await Stop();
         await media.DisposeAsync();
-        settings?.Dispose(); dashboard?.Dispose(); icon.Dispose(); api.Dispose(); dispatcher.Dispose(); ExitThread();
+        settings?.Dispose(); dashboard?.Dispose(); icon.Dispose(); api.Dispose(); updates.Dispose(); dispatcher.Dispose();
+        UpdateInstaller = installer;
+        ExitThread();
     }
 }
