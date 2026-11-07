@@ -155,7 +155,8 @@ public sealed class Media : IAsyncDisposable
         var info = new ProcessStartInfo(Path.Combine(AppContext.BaseDirectory, "runtime", "python.exe"))
         { UseShellExecute = false, CreateNoWindow = true, RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true,
             StandardInputEncoding = new System.Text.UTF8Encoding(false), StandardOutputEncoding = System.Text.Encoding.UTF8 };
-        info.ArgumentList.Add("-I"); info.ArgumentList.Add(Path.Combine(AppContext.BaseDirectory, "media", "publisher.py"));
+        info.ArgumentList.Add("-I"); info.ArgumentList.Add("-B");
+        info.ArgumentList.Add(Path.Combine(AppContext.BaseDirectory, "media", "publisher.py"));
         var process = Process.Start(info) ?? throw new IOException("无法启动媒体组件");
         IntPtr job;
         try { job = ProcessJob.Attach(process); }

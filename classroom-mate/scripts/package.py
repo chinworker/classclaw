@@ -1,4 +1,4 @@
-"""Build a self-contained Windows x64 folder and zip from Windows/macOS/Linux.
+"""Build a self-contained Windows x64 folder, zip, and optional Setup EXE.
 
 Requires .NET 10 SDK and Python 3 with pip. Downloads only official runtime and
 PyPI wheels; binary dependencies remain in ignored .dist-cache/dist directories.
@@ -24,6 +24,13 @@ EMBEDDED_PYTHON_SHA256 = "d1f04d990aee1253d8569e8e5104e30fa9f5fa830899f148434488
 
 def run(*args):
     subprocess.run(args, cwd=ROOT, check=True)
+
+
+def write_checksum(path):
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    path.with_suffix(path.suffix + ".sha256").write_text(f"{digest}  {path.name}\n", encoding="utf-8")
+    print(path)
+    print("SHA256 " + digest)
 
 
 def locked_wheels(folder):
@@ -59,6 +66,7 @@ def copy_notices(dist):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--dotnet", default="dotnet")
+    parser.add_argument("--iscc", help="path to Inno Setup 6.3+ ISCC.exe to also build the Windows installer")
     parser.add_argument("--offline", action="store_true", help="use previously fetched media dependencies")
     parser.add_argument("--nuget-source", help="optional NuGet feed or local package directory")
     args = parser.parse_args()
@@ -152,10 +160,10 @@ def main():
     }
     (dist / "SHA256SUMS.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     archive = shutil.make_archive(str(ROOT / "dist/ClassroomMate-win-x64"), "zip", dist.parent, dist.name)
-    digest = hashlib.sha256(Path(archive).read_bytes()).hexdigest()
-    Path(archive + ".sha256").write_text(f"{digest}  {Path(archive).name}\n", encoding="utf-8")
-    print(archive)
-    print("SHA256 " + digest)
+    write_checksum(Path(archive))
+    if args.iscc:
+        run(args.iscc, str(ROOT / "installer/ClassroomMate.iss"))
+        write_checksum(dist.parent / "ClassroomMate-Setup-win-x64.exe")
 
 
 if __name__ == "__main__":

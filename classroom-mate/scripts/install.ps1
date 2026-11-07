@@ -1,5 +1,8 @@
 # Per-user install; run from an extracted release folder. No administrator rights.
 $ErrorActionPreference = 'Stop'
+if (Test-Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\ClassClaw.ClassroomMate_is1') {
+    throw '已使用安装向导安装 Classroom Mate，请用新版安装文件升级。'
+}
 $target = Join-Path $env:LOCALAPPDATA 'Programs\ClassroomMate'
 $exe = Join-Path $target 'ClassroomMate.exe'
 $running = Get-Process -Name ClassroomMate -ErrorAction SilentlyContinue

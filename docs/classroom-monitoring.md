@@ -269,6 +269,6 @@ cd integrations/openclaw/classclaw && npm test && npm run plugin:validate
 
 ## 13. Windows 客户端与剩余验收
 
-1. Windows 程序已实现于 [`classroom-mate/`](../classroom-mate/README.md)：.NET 10 WinForms 托盘、用户登录自启、网页配对、显示/TTS、Core Audio 音量、DirectShow 检测及 aiortc/PyAV 按需采集发布。包含自包含发布脚本、安装/卸载脚本、持久化去重与协议测试。广播的临时音量在结束后条件恢复；`restore_after_broadcast=true` 在下一次正式广播完成后恢复，已有广播时拒绝该设置，暂停/退出也恢复。
+1. Windows 程序已实现于 [`classroom-mate/`](../classroom-mate/README.md)。使用 .NET 10 WinForms 托盘、用户登录自启、网页配对、显示/TTS、Core Audio 音量、DirectShow 检测及 aiortc/PyAV 按需采集发布。GitHub Actions 构建自包含 Windows x64 安装程序，支持在 Windows「已安装的应用」中卸载。终端具备持久化去重和协议测试。广播的临时音量在结束后条件恢复，`restore_after_broadcast=true` 在下一次正式广播完成后恢复，已有广播时拒绝该设置，暂停或退出时也恢复。
 2. 真实 Windows 摄像头/麦克风、显示屏、扬声器、教室网络与 Linux 部署的现场验收。服务端真实媒体链路已通过合成画面/静音联调，不能替代硬件验收。
 3. 全天录像回放、声音内容概况、身份识别/考勤不属于当前交付范围；本次只支持实时音视频查看与按需单帧概况。

@@ -4,18 +4,18 @@ ClassClaw 的 Windows 教室托盘终端。目录名为 **classroom-mate**。普
 
 ## 安装与使用
 
-目标为 **Windows x64**：Windows 11，或符合 .NET 10 支持范围的 Windows 10 LTSC/受支持服务版本。没有验证 Windows 7、32 位 Windows 或 ARM64。发布包包含 .NET 自包含运行时以及媒体所需嵌入式 Python/原生编解码库，不需要安装开发工具或 Python。
+目标为 **Windows x64**，支持范围为 Windows 11 及符合 .NET 10 支持范围的 Windows 10 服务版本。安装包含 .NET 自包含运行时、嵌入式 Python 和媒体编解码库，教室电脑可离线安装。
 
-1. 将 `dist/ClassroomMate-win-x64.zip` 完整解压。不要只拷贝 EXE。
-2. 直接运行 `ClassroomMate.exe`，或在 PowerShell 中运行发布包根目录的 `install.ps1` 安装到当前用户的 `%LOCALAPPDATA%\Programs\ClassroomMate`，创建开始菜单快捷方式和登录启动项。脚本不需要管理员权限。
-3. 网页「教室设备」生成一次性配对码，在客户端填写 HTTPS 服务器根地址及配对码。正式环境验证证书；开发模式只允许本机 HTTP。
-4. 网页选择客户端上报的教室显示屏、音箱、摄像头和麦克风。未选定输出设备时明确报错，不随意把广播送到教师副屏或默认音箱。
-5. 关闭设置窗口继续驻留托盘；托盘菜单提供暂停/恢复及正常退出。锁屏、用户会话断开或休眠会暂停，解锁后从托盘主动恢复。
+1. 从 [GitHub Actions](https://github.com/chinworker/classclaw/actions/workflows/classroom-mate-windows.yml) 打开对应的成功运行，下载 Artifacts 中的 `ClassroomMate-Setup-win-x64` 并解压。
+2. 双击 `ClassroomMate-Setup-win-x64.exe`。安装向导为当前用户安装到 `%LOCALAPPDATA%\Programs\ClassroomMate`，无需管理员权限。可在安装完成时启动，也可从开始菜单打开 **Classroom Mate**。
+3. 在网页「教室设备」生成一次性配对码，在客户端填写 HTTPS 服务器根地址及配对码。正式环境验证证书；开发模式只允许本机 HTTP。
+4. 在网页选择客户端上报的教室显示屏、音箱、摄像头和麦克风。未选定输出设备时明确报错，不随意把广播送到教师副屏或默认音箱。
+5. 关闭设置窗口继续驻留托盘。托盘菜单提供暂停、恢复及正常退出。锁屏、用户会话断开或休眠会暂停，解锁后从托盘主动恢复。
 6. 在网页预览并发送广播，查看显示和语音分别返回的执行状态。广播中的“下课后”是句子内容，不是本机定时任务。
 
 首次成功配对默认打开登录自启，可在设置取消。系统必须已有可用中文 TTS 语音；缺少时显示可以工作，语音会明确报不可用。摄像头和麦克风需在 Windows 隐私设置中允许桌面应用访问。其他程序独占摄像头时需要人工处理，本程序不会终止掌上看家等应用。
 
-发布包目前未进行代码签名。Windows 上的真实 UI、TTS、Core Audio、DirectShow 设备以及低配机器资源占用须按下述清单现场验收；跨平台编译成功不代表完成 Windows 硬件实测。
+安装程序目前未进行代码签名，Windows 可能提示未知发布者。Windows 上的真实 UI、TTS、Core Audio、DirectShow 设备以及低配机器资源占用须按下述清单现场验收。
 
 ## 功能和行为
 
@@ -52,7 +52,15 @@ dotnet build src/ClassroomMate.Windows -c Release
 python scripts/package.py
 ```
 
-`package.py` 下载官方 Python 嵌入式运行时及哈希锁定的 Windows wheels，再执行 `dotnet publish --self-contained true -r win-x64`。Python 运行时整包下载，校验 SHA-256 后才写入缓存；校验通过的缓存会直接复用。支持 `--dotnet <路径>`、`--offline`（已缓存媒体依赖）、`--nuget-source <源地址或本地包目录>`。NuGet 首次还原需要网络；使用本地源时跳过在线漏洞审计，不代表已经完成依赖安全审计。输出目录与 ZIP 均位于 `dist/`，含逐文件 `SHA256SUMS.json`、依赖许可和安装脚本。缓存和发布二进制不提交 Git。
+`package.py` 下载官方 Python 嵌入式运行时及哈希锁定的 Windows wheels，再执行 `dotnet publish --self-contained true -r win-x64`。Python 运行时整包下载，校验 SHA-256 后才写入缓存；校验通过的缓存会直接复用。支持 `--dotnet <路径>`、`--offline`（已缓存媒体依赖）、`--nuget-source <源地址或本地包目录>`。NuGet 首次还原需要网络；使用本地源时跳过在线漏洞审计，不代表已经完成依赖安全审计。`dist/` 中的便携 ZIP 含逐文件 `SHA256SUMS.json`、依赖许可和原有安装脚本。缓存和发布二进制不提交 Git。
+
+在 Windows 上安装 Inno Setup 6.3 或更新版本后，可同时生成 `dist/ClassroomMate-Setup-win-x64.exe` 和 `.exe.sha256`：
+
+```powershell
+python scripts/package.py --iscc "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+```
+
+提交客户端、工作流或随包文档的变更时，GitHub Actions 会在 `windows-2025` 上运行协议测试、打包并验证安装、覆盖安装和卸载。工作流进入默认分支后，也可从 Actions 手动运行。测试通过后可下载安装程序和 SHA-256 文件；下载需要登录 GitHub，产物按仓库保留期限过期。
 
 媒体逻辑测试与可选真实联调：
 
@@ -69,7 +77,9 @@ python media/test_live.py --mediamtx /path/to/mediamtx
 
 各平台的历史验证记录和待办见 [VALIDATION.md](VALIDATION.md)。
 
-先从托盘正常退出，再运行新版 `install.ps1`。升级保留加密凭据、输出配置和去重账本。运行 `uninstall.ps1` 删除登录启动项、快捷方式和安装目录；默认保留设备数据，显式 `-RemoveDeviceData` 才删除。删掉数据或凭据无法解密时，先在网页撤销旧设备再重新配对。不要在运行中手动清除账本。
+先从托盘菜单选择「退出」。升级时运行新版安装程序，保留加密凭据、输出配置、去重账本和登录自启设置。卸载时在 Windows「设置 → 应用 → 已安装的应用」（Windows 10 为「应用和功能」）找到 **Classroom Mate**，选择「卸载」。卸载会移除程序、快捷方式和登录启动项，设备数据保留在 `%LOCALAPPDATA%\ClassClaw\ClassroomMate`，供同一 Windows 用户重装使用。
+
+从旧版 `install.ps1` 安装迁移时，先退出托盘，再用旧安装目录下的 `uninstall.ps1` 卸载，保留默认的设备数据，然后运行新版安装程序。需要彻底移除设备时，先在网页撤销设备，再在退出程序后删除上述设备数据目录。
 
 现场验收至少包含：中文 TTS、长句与多段、屏幕拔出、音箱热插拔、静音/音量恢复、正常退出与任务管理器结束后无残留采集、相机占用/拔出、仅视频/带声音、多观看者、租约到期、服务器撤销、断线不补播。记录低配 Windows 空闲/播报/采集的 CPU、内存、带宽，不以开发机器的合成测试代替。
 
