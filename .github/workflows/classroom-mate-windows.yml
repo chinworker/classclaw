@@ -39,9 +39,16 @@ jobs:
       - name: Verify Windows install, upgrade and uninstall
         run: |
           $manifest = Get-Content dist/release.json | ConvertFrom-Json
-          if ((Get-Item dist/ClassroomMate-Setup-win-x64.exe).VersionInfo.FileVersion -ne $manifest.version -or
-              (Get-Item dist/ClassroomMate-win-x64/ClassroomMate.exe).VersionInfo.FileVersion -ne $manifest.version) {
-            throw 'The Windows application and installer must match the update manifest version.'
+          foreach ($file in @('dist/ClassroomMate-Setup-win-x64.exe', 'dist/ClassroomMate-win-x64/ClassroomMate.exe')) {
+            $info = (Get-Item -LiteralPath $file).VersionInfo
+            $version = @($info.FileMajorPart, $info.FileMinorPart, $info.FileBuildPart, $info.FilePrivatePart) -join '.'
+            if ($version -ne $manifest.version) {
+              throw "$file has binary version $version but the manifest requires $($manifest.version)."
+            }
+          }
+          $assembly = (Get-Item dist/ClassroomMate-win-x64/ClassroomMate.dll).FullName
+          if ([Reflection.AssemblyName]::GetAssemblyName($assembly).Version.ToString() -ne $manifest.version) {
+            throw 'The version checked by the Windows client must match the update manifest.'
           }
           $previous = Join-Path $env:RUNNER_TEMP 'ClassroomMate-0.2.1-Setup.exe'
           $url = 'https://github.com/chinworker/classclaw/releases/download/classroom-mate-build-5/ClassroomMate-Setup-win-x64.exe'
