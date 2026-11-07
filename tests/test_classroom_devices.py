@@ -278,9 +278,13 @@ def test_local_selection_owns_outputs_and_web_confirms_exact_capture(client, db,
         classroom_devices.heartbeat(db, device, DeviceHeartbeat(inventory=inventory))
         assert classroom_streaming.terminal_selection_allows(camera, device, "video")
         assert not classroom_streaming.terminal_selection_allows(camera, device, "audio")
+        viewing = client.post(root + "/media-sessions", json={"audio": True})
+        assert viewing.status_code == 201 and viewing.json()["data"]["audio_allowed"] is False
         inventory["local_capture"]["camera"] = ""
         classroom_devices.heartbeat(db, device, DeviceHeartbeat(inventory=inventory))
         assert not classroom_streaming.terminal_selection_allows(camera, device, "video")
+        blocked = client.post(root + "/media-sessions", json={})
+        assert blocked.status_code == 409 and blocked.json()["error"]["code"] == "CAMERA_SELECTION_CHANGED"
 
 
 def test_volume_is_clamped_by_configured_ceiling(client, db, sample, monkeypatch):

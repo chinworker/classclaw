@@ -77,17 +77,29 @@ public sealed class Platform : IPlatform
         if (SessionLocked) throw new TerminalException("SCREEN_LOCKED", "屏幕已锁定，无法显示");
         var target = Screen.AllScreens.SingleOrDefault(s => s.DeviceName == (string.IsNullOrEmpty(screen) ? preferences.DisplayName : screen))
             ?? throw new TerminalException("DEVICE_OUTPUT_UNAVAILABLE", "请在 Classroom Mate 设置中选择教室显示屏");
-        if (window is not null) { window.SuppressCloseCallback = true; window.Close(); window.Dispose(); }
-        window = new BroadcastWindow(id, text, target.Bounds);
-        var created = window;
-        window.FormClosed += (_, _) => { if (!created.SuppressCloseCallback) Cleared?.Invoke(id); };
-        window.Show(); window.Activate(); window.Refresh();
+        CloseBroadcast();
+        var created = new BroadcastWindow(id, text, target.Bounds);
+        window = created;
+        created.FormClosed += (_, _) =>
+        {
+            if (window == created) window = null;
+            if (!created.SuppressCloseCallback) Cleared?.Invoke(id);
+        };
+        created.Show();
+        if (!created.IsDisposed) { created.Activate(); created.Refresh(); }
     });
     public Task Clear(string id) => Invoke(() =>
     {
-        if (window?.CommandId != id) return;
-        window.SuppressCloseCallback = true; window.Close(); window.Dispose(); window = null;
+        if (window?.CommandId == id) CloseBroadcast();
     });
+    void CloseBroadcast()
+    {
+        if (window is not { } previous) return;
+        window = null;
+        previous.SuppressCloseCallback = true;
+        previous.Close();
+        previous.Dispose();
+    }
     public async Task Speak(string text, CancellationToken token)
     {
         try { await audio.Speak(text, token); }
@@ -115,7 +127,7 @@ sealed class BroadcastWindow : Form
             ForeColor = Color.White, BackColor = Color.FromArgb(38, 55, 77) };
         close.Click += (_, _) => Close();
         var label = new Label { Text = text, Dock = DockStyle.Fill, ForeColor = Color.White, Padding = new Padding(50),
-            TextAlign = ContentAlignment.MiddleCenter, Font = new Font("Microsoft YaHei UI", 48, FontStyle.Bold) };
+            TextAlign = ContentAlignment.MiddleCenter, UseMnemonic = false, Font = new Font("Microsoft YaHei UI", 48, FontStyle.Bold) };
         Controls.Add(label); Controls.Add(close);
         void Fit()
         {
@@ -123,7 +135,7 @@ sealed class BroadcastWindow : Form
             for (int points = 120; points >= 12; points -= 2)
             {
                 var candidate = new Font("Microsoft YaHei UI", points, FontStyle.Bold);
-                var measured = TextRenderer.MeasureText(text, candidate, new Size(area.Width, int.MaxValue), TextFormatFlags.WordBreak);
+                var measured = TextRenderer.MeasureText(text, candidate, new Size(area.Width, int.MaxValue), TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix);
                 if ((measured.Height <= area.Height && measured.Width <= area.Width) || points == 12)
                 { var previous = label.Font; label.Font = candidate; previous.Dispose(); break; }
                 candidate.Dispose();

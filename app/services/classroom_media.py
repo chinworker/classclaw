@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.core.errors import AppError, not_found
 from app.database import writer_session
-from app.models.entities import ClassroomCamera, ClassroomMediaSession
+from app.models.entities import ClassroomCamera, ClassroomDevice, ClassroomMediaSession
 from app.services.class_student import get_class
 from app.utils.time import now
 
@@ -61,14 +61,21 @@ def viewer_count(db: Session, camera_id: str) -> int:
 def issue(db: Session, class_id: str, camera: ClassroomCamera, *, user_id: str | None, audio: bool,
           surface: str = "web", created_by: str | None = None) -> dict:
     """Grant a short viewing lease. Audio is granted only when the source really has it."""
-    expire_overdue(db, commit=False)
-    audio_reason = None
-    audio_allowed = bool(audio)
-    if audio_allowed and not camera.audio_capable:
-        audio_allowed = False
-        audio_reason = "该摄像头没有可用音轨；现场声音需另接麦克风，不能凭空获取"
+    from app.services.classroom_streaming import terminal_selection_allows
+
     if camera.status == "disconnected":
         raise AppError("CAMERA_DISCONNECTED", "摄像头已断开，无法开始观看", 409, {"camera_id": camera.id})
+    device = db.get(ClassroomDevice, camera.device_id) if camera.source_kind == "windows_device" and camera.device_id else None
+    if device and not terminal_selection_allows(camera, device, "video"):
+        raise AppError("CAMERA_SELECTION_CHANGED", "终端已改选摄像头，请先在教室设备页确认新来源", 409)
+    expire_overdue(db, commit=False)
+    audio_reason = None
+    audio_allowed = bool(audio and camera.audio_capable)
+    if audio and not camera.audio_capable:
+        audio_reason = "该摄像头没有可用音轨；现场声音需另接麦克风，不能凭空获取"
+    if audio_allowed and device and not terminal_selection_allows(camera, device, "audio"):
+        audio_allowed = False
+        audio_reason = "终端已改选麦克风，请先在教室设备页确认新来源"
     token = secrets.token_urlsafe(TOKEN_BYTES)
     session = ClassroomMediaSession(
         class_id=class_id, camera_id=camera.id, user_id=user_id, token_hash=_hash(token),

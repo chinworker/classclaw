@@ -32,7 +32,18 @@ public sealed class Media : IAsyncDisposable
     volatile bool previewRequested;
     public byte[]? Preview
     {
-        get { lock (gate) return previewRequested && desired?.Flag("video") == true && until > clock.UtcNow ? videoWorker?.Preview : null; }
+        get
+        {
+            lock (gate)
+            {
+                if (!previewRequested || desired?.Flag("enabled") != true || !desired.Flag("video") || until <= clock.UtcNow ||
+                    desired["camera"] is not JsonObject camera || videoWorker is not { } worker ||
+                    worker.Key != CaptureKey(camera, "video") || worker.State == "failed" ||
+                    !CameraMatches(camera, selection()))
+                    return null;
+                return worker.Preview;
+            }
+        }
     }
     public void SetPreview(bool enabled)
     {
@@ -102,6 +113,12 @@ public sealed class Media : IAsyncDisposable
             try { await Task.Delay(500, lifetime.Token); } catch (OperationCanceledException) { break; }
         }
     }
+    static string CaptureKey(JsonObject camera, string track) =>
+        $"{camera.Text("camera_id")}:{camera.Number("config_revision")}:{track}";
+
+    static bool CameraMatches(JsonObject camera, Preferences local) =>
+        camera.Text("source_kind") != "windows_device" || local.CameraIdentifier is null || local.CameraIdentifier == camera.Text("identifier");
+
     async Task Reconcile()
     {
         JsonObject? state; DateTimeOffset expiry;
@@ -110,11 +127,11 @@ public sealed class Media : IAsyncDisposable
         bool enabled = state?.Flag("enabled") == true && expiry > clock.UtcNow && camera is not null && camera.Text("access_path") != "server_direct";
         var local = selection();
         bool windows = camera?.Text("source_kind") == "windows_device";
-        bool cameraMatches = !windows || local.CameraIdentifier is null || local.CameraIdentifier == camera!.Text("identifier");
+        bool cameraMatches = camera is null || CameraMatches(camera, local);
         bool micMatches = !windows || local.MicrophoneIdentifier is null || local.MicrophoneIdentifier == camera!.Text("microphone_identifier");
         foreach (var track in new[] { "video", "audio" })
         {
-            string key = camera is null ? "" : $"{camera.Text("camera_id")}:{camera.Number("config_revision")}:{track}";
+            string key = camera is null ? "" : CaptureKey(camera, track);
             bool wanted = enabled && state!.Flag(track) && cameraMatches && (track == "video" || micMatches);
             if (workers.TryGetValue(track, out var old) && (!wanted || old.Key != key))
             { if (track == "video") videoWorker = null; workers.Remove(track); await Stop(old); }
