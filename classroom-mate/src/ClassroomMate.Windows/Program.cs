@@ -140,7 +140,8 @@ sealed class Tray : ApplicationContext
         SetPreview(dashboard?.PreviewVisible == true);
         var source = pairing;
         var client = new Connection(source, clock, executor, () => platform.Report(includeLocal: true),
-            state => media.Apply(source, state), media.StopRemote, SetStatus, Program.Version);
+            state => media.Apply(source, state), media.StopRemote, SetStatus, Program.Version,
+            code => Storage.Diagnostic("connection", code));
         connection = client;
         var token = running.Token;
         connectionTask = Task.Run(() => client.Run(token));
@@ -256,17 +257,21 @@ sealed class Tray : ApplicationContext
     {
         if (changing) throw new TerminalException("BUSY", "正在切换连接，请稍后重试");
         changing = true;
+        var stage = "pair_address";
         try
         {
             url = url.Trim();
             if (!url.Contains("://", StringComparison.Ordinal)) url = "https://" + url;
             var server = Wire.Server(url, development);
-            var report = platform.Report();
+            stage = "pair_request";
+            Storage.Diagnostic(stage, "STARTED");
             var result = await api.Post(server, "/api/v1/classroom/device/pair", new JsonObject {
                 ["pairing_code"] = code.Trim(), ["protocol_version"] = 1, ["app_version"] = Program.Version,
                 ["os_version"] = Environment.OSVersion.VersionString, ["device_name"] = Environment.MachineName,
-                ["capabilities"] = report["capabilities"]!.DeepClone(), ["inventory"] = report["inventory"]!.DeepClone()
+                // The terminal reports its hardware after it connects. A missing driver cannot block pairing.
+                ["capabilities"] = new JsonObject { ["display"] = false }
             }, CancellationToken.None);
+            stage = "pair_save";
             var next = Pairing.FromResponse(server, result, development);
             try { storage.SavePairing(next); }
             catch { throw new TerminalException("PAIR_SAVE_FAILED", "设备已兑换但未能加密保存。请在网页撤销设备、修复本机目录权限后重新配对。"); }
@@ -277,7 +282,18 @@ sealed class Tray : ApplicationContext
             catch (Exception exception) when (exception is UnauthorizedAccessException or System.Security.SecurityException or IOException)
             { startupFailed = true; }
             Start();
+            Storage.Diagnostic("pair", "SUCCEEDED");
             SetStatus(startupFailed ? "配对成功 · 正在连接；无法启用登录自启，请检查本用户注册表权限" : "配对成功 · 正在连接");
+        }
+        catch (TerminalException error)
+        {
+            Storage.Diagnostic(stage, error.Code, error.RequestId);
+            throw;
+        }
+        catch (Exception error)
+        {
+            Storage.Diagnostic(stage, error.GetType().Name);
+            throw new TerminalException("PAIR_LOCAL_ERROR", "配对未完成，请打开诊断日志查看失败阶段。");
         }
         finally { changing = false; }
     }

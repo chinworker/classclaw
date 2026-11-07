@@ -50,12 +50,24 @@ sealed class SettingsWindow : Form
         {
             pairButton.Enabled = false;
             try { await pair(address.Text, code.Text, development.Checked); code.Clear(); startup.Checked = Storage.StartupEnabled; }
-            catch (TerminalException error) { SetStatus(error.Message); }
+            catch (TerminalException error) { SetStatus($"{error.Message} [{error.Code}]"); }
             catch { SetStatus("连接失败，请检查服务器地址、证书、网络和配对码。"); }
             finally { pairButton.Enabled = true; }
         };
+        var diagnostic = new Button { Text = "打开诊断日志", Width = 150, Height = 38 };
+        diagnostic.Click += (_, _) =>
+        {
+            try
+            {
+                if (!File.Exists(Storage.DiagnosticsPath)) { SetStatus("目前没有诊断记录，可以先试一次配对。"); return; }
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(Storage.DiagnosticsPath) { UseShellExecute = true });
+            }
+            catch { SetStatus($"无法打开诊断日志。文件位置 {Storage.DiagnosticsPath}"); }
+        };
+        var connectionActions = new FlowLayoutPanel { AutoSize = true, WrapContents = false };
+        connectionActions.Controls.AddRange([pairButton, diagnostic]);
         connection.Controls.AddRange([Label("服务器根地址"), address, Label("一次性配对码"), code, development,
-            pairButton, startup, status]);
+            connectionActions, startup, status]);
 
         var detect = new Button { Text = "刷新设备", Width = 130, Height = 38 };
         var saveButton = new Button { Text = "保存设备选择", Width = 160, Height = 38 };

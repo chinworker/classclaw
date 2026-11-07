@@ -69,7 +69,8 @@ def post(config, path, payload):
             "X-ClassClaw-Device-ID": config["device_id"],
         },
     )
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+    proxy = urllib.request.ProxyHandler({}) if request.type == "http" else urllib.request.ProxyHandler()
+    opener = urllib.request.build_opener(proxy, NoRedirect())
     try:
         with opener.open(request, timeout=12) as response:
             value = json.loads(response.read(131072))

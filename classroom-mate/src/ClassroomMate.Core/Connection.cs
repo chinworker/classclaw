@@ -23,26 +23,56 @@ public sealed record Pairing(string Server, string DeviceId, string ClassId, str
         { throw new TerminalException("PROTOCOL_ERROR", error); }
     }
 }
-public sealed class DeviceApi : IDisposable
+public sealed class DeviceApi(HttpMessageHandler? handler = null) : IDisposable
 {
-    readonly HttpClient http = new(new HttpClientHandler { AllowAutoRedirect = false, UseProxy = false }) { Timeout = TimeSpan.FromSeconds(30) };
+    readonly HttpClient http = CreateClient(handler ?? new HttpClientHandler { AllowAutoRedirect = false });
+    readonly HttpClient loopback = CreateClient(new HttpClientHandler { AllowAutoRedirect = false, UseProxy = false });
+
+    static HttpClient CreateClient(HttpMessageHandler handler) => new(handler)
+    {
+        Timeout = TimeSpan.FromSeconds(20), MaxResponseContentBufferSize = 65536,
+    };
+
     public async Task<JsonObject> Post(Uri server, string path, JsonObject body, CancellationToken token)
     {
-        using var response = await http.PostAsJsonAsync(Wire.Endpoint(server, path), body, token);
-        var data = Wire.Object(await response.Content.ReadAsStringAsync(token));
-        if (!response.IsSuccessStatusCode || !data.Flag("success"))
+        try
         {
-            var error = data["error"] as JsonObject;
-            throw new TerminalException(error?.Text("code") ?? "HTTP_ERROR", error?.Text("message") ?? "服务器请求失败");
+            var client = server.Scheme == "http" && server.IsLoopback ? loopback : http;
+            using var response = await client.PostAsJsonAsync(Wire.Endpoint(server, path), body, token);
+            var status = (int)response.StatusCode;
+            if (!string.Equals(response.Content.Headers.ContentType?.MediaType, "application/json", StringComparison.OrdinalIgnoreCase))
+                throw new TerminalException($"HTTP_{status}", $"服务器返回了无法识别的响应（HTTP {status}）。");
+            var data = Wire.Object(await response.Content.ReadAsStringAsync(token));
+            if (!response.IsSuccessStatusCode || !data.Flag("success"))
+            {
+                var error = data["error"] as JsonObject;
+                var requestId = Guid.TryParse(data.Text("request_id"), out var id) ? id : (Guid?)null;
+                throw new TerminalException(error?.Text("code") ?? $"HTTP_{status}",
+                    error?.Text("message") ?? $"服务器请求失败（HTTP {status}）。", requestId);
+            }
+            return (data["data"] as JsonObject)?.Copy() ?? throw new TerminalException("PROTOCOL_ERROR", "服务器响应缺少配对结果。");
         }
-        return (data["data"] as JsonObject)?.Copy() ?? throw new TerminalException("PROTOCOL_ERROR", "响应缺少 data");
+        catch (OperationCanceledException) when (!token.IsCancellationRequested)
+        { throw new TerminalException("NETWORK_TIMEOUT", "连接服务器超时，请检查教室电脑的网络或代理。"); }
+        catch (HttpRequestException error) { throw NetworkError(error); }
+        catch (JsonException) { throw new TerminalException("PROTOCOL_ERROR", "服务器返回的配对响应格式无效。"); }
     }
-    public void Dispose() => http.Dispose();
+
+    internal static TerminalException NetworkError(HttpRequestException error) => error.HttpRequestError switch
+    {
+        HttpRequestError.NameResolutionError => new("DNS_ERROR", "无法解析服务器地址，请检查网络和 DNS。"),
+        HttpRequestError.SecureConnectionError => new("TLS_ERROR", "无法验证服务器的 HTTPS 连接，请检查 Windows 日期、时间及证书信任。"),
+        HttpRequestError.ProxyTunnelError => new("PROXY_ERROR", "系统代理无法连接服务器，请检查 Windows 代理设置。"),
+        HttpRequestError.ConnectionError => new("NETWORK_CONNECTION_ERROR", "教室电脑无法连接服务器，请检查网络或代理。"),
+        _ => new("HTTP_TRANSPORT_ERROR", "与服务器通信中断，请稍后重试。"),
+    };
+
+    public void Dispose() { http.Dispose(); loopback.Dispose(); }
 }
 
 public sealed class Connection(Pairing pairing, ServerClock clock, Executor executor,
     Func<JsonObject> report, Func<JsonObject, Task> media, Func<Task> stopMedia, Action<string> status,
-    string appVersion = "0.1.0")
+    string appVersion = "0.1.0", Action<string>? diagnostic = null)
 {
     readonly SemaphoreSlim sendGate = new(1, 1);
     readonly System.Threading.Channels.Channel<bool> reportChanges = System.Threading.Channels.Channel.CreateBounded<bool>(1);
@@ -54,13 +84,13 @@ public sealed class Connection(Pairing pairing, ServerClock clock, Executor exec
         {
             using var socket = new ClientWebSocket();
             socket.Options.KeepAliveInterval = TimeSpan.FromSeconds(15);
-            socket.Options.Proxy = null;
             using var connection = CancellationTokenSource.CreateLinkedTokenSource(lifetime);
             var tasks = new List<Task>();
             try
             {
                 status("正在连接服务器…");
                 var server = Wire.Server(pairing.Server, pairing.Development);
+                socket.Options.Proxy = server.Scheme == "https" ? HttpClient.DefaultProxy : null;
                 var uri = new UriBuilder(Wire.Endpoint(server, "/api/v1/classroom/device-channel")) { Scheme = server.Scheme == "https" ? "wss" : "ws" };
                 using (var connectTimeout = CancellationTokenSource.CreateLinkedTokenSource(lifetime))
                 { connectTimeout.CancelAfter(TimeSpan.FromSeconds(20)); await socket.ConnectAsync(uri.Uri, connectTimeout.Token); }
@@ -124,9 +154,14 @@ public sealed class Connection(Pairing pairing, ServerClock clock, Executor exec
                 }
             }
             catch (TerminalException e) when (e.Code is "DEVICE_UNAUTHORIZED" or "DEVICE_REVOKED" or "DEVICE_PROTOCOL_UNSUPPORTED" or "PROTOCOL_ERROR")
-            { status($"已停止连接：{e.Code}；请在网页复核后重新配对或手动恢复"); return; }
+            { diagnostic?.Invoke(e.Code); status($"已停止连接：{e.Code}；请在网页复核后重新配对或手动恢复"); return; }
             catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { break; }
-            catch { status("连接中断 · 已停止当前执行，稍后重连"); }
+            catch (Exception error)
+            {
+                diagnostic?.Invoke(error.InnerException is HttpRequestException request
+                    ? DeviceApi.NetworkError(request).Code : error.GetType().Name);
+                status("连接中断 · 已停止当前执行，稍后重连");
+            }
             finally
             {
                 connection.Cancel(); socket.Abort();

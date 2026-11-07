@@ -4,9 +4,10 @@ using System.Text.Json.Nodes;
 
 namespace ClassroomMate.Core;
 
-public sealed class TerminalException(string code, string message) : Exception(message)
+public sealed class TerminalException(string code, string message, Guid? requestId = null) : Exception(message)
 {
     public string Code { get; } = code;
+    public Guid? RequestId { get; } = requestId;
 }
 
 public static class Wire

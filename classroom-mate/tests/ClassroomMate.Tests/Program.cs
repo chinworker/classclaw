@@ -1,6 +1,7 @@
 using ClassroomMate.Core;
 using System.Net;
 using System.Net.Http.Json;
+using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text.Json.Nodes;
 
@@ -20,6 +21,29 @@ try
         Check(Wire.Server("http://127.0.0.1:8000", true).IsLoopback);
         try { Wire.Endpoint(Wire.Server("https://example.com"), "//evil.test/token"); throw new Exception("未拒绝跳转"); } catch (TerminalException) { }
         return Task.CompletedTask;
+    });
+    await Test("HTTPS 配对使用系统代理，隧道错误有单独的诊断码", async () =>
+    {
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var original = HttpClient.DefaultProxy;
+        HttpClient.DefaultProxy = new WebProxy($"http://127.0.0.1:{((IPEndPoint)listener.LocalEndpoint).Port}");
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        using var api = new DeviceApi();
+        var pairing = api.Post(new Uri("https://classroom.example"), "/api/v1/classroom/device/pair",
+            new JsonObject { ["pairing_code"] = "0123" }, timeout.Token);
+        try
+        {
+            using var client = await listener.AcceptTcpClientAsync(timeout.Token);
+            await using var stream = client.GetStream();
+            using var reader = new StreamReader(stream, leaveOpen: true);
+            Check(await reader.ReadLineAsync(timeout.Token) == "CONNECT classroom.example:443 HTTP/1.1");
+            while (await reader.ReadLineAsync(timeout.Token) is { Length: > 0 }) { }
+            await stream.WriteAsync("HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"u8.ToArray(), timeout.Token);
+            try { await pairing; throw new Exception("代理拒绝后仍返回了配对结果"); }
+            catch (TerminalException error) { Check(error.Code == "PROXY_ERROR"); }
+        }
+        finally { HttpClient.DefaultProxy = original; }
     });
     await Test("配对响应必须完整且协议兼容", () =>
     {

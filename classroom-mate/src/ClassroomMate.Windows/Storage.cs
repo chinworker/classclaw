@@ -14,8 +14,28 @@ public sealed record Preferences(string DisplayName = "", string AudioOutputName
 }
 public sealed class Storage
 {
+    static readonly object DiagnosticLock = new();
     public static string Root => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ClassClaw", "ClassroomMate");
+    public static string DiagnosticsPath => Path.Combine(Root, "diagnostics.log");
     public string LedgerPath => Path.Combine(Root, "commands.json");
+
+    public static void Diagnostic(string stage, string code, Guid? requestId = null)
+    {
+        if (code.Length > 64 || code.Any(character => !char.IsAsciiLetterOrDigit(character) && character != '_'))
+            code = "UNKNOWN";
+        var entry = $"{DateTimeOffset.Now:O} {stage} {code}" + (requestId is Guid id ? $" request_id={id}" : "") + Environment.NewLine;
+        lock (DiagnosticLock)
+        {
+            try
+            {
+                Directory.CreateDirectory(Root);
+                var file = new FileInfo(DiagnosticsPath);
+                if (file.Exists && file.Length >= 65536) File.WriteAllText(file.FullName, entry);
+                else File.AppendAllText(file.FullName, entry);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or SecurityException) { }
+        }
+    }
     public Pairing? LoadPairing()
     {
         var path = Path.Combine(Root, "device.dpapi");
