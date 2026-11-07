@@ -36,7 +36,14 @@ jobs:
           if (!(Test-Path -LiteralPath $iscc)) { throw "Inno Setup compiler not found: $iscc" }
           python scripts/package.py --iscc $iscc
       - name: Verify Windows install, upgrade and uninstall
-        run: ./tests/installer-smoke.ps1
+        run: |
+          $previous = Join-Path $env:RUNNER_TEMP 'ClassroomMate-0.2.0-Setup.exe'
+          $url = 'https://github.com/chinworker/classclaw/releases/download/classroom-mate-build-4/ClassroomMate-Setup-win-x64.exe'
+          Invoke-WebRequest -Uri $url -OutFile $previous
+          if ((Get-FileHash -LiteralPath $previous).Hash -ne '2c8f9a8db479c5347ce2020d8ee4f8e4579e86fac397b08c68b3dad523d580ec') {
+            throw 'The published upgrade baseline has an unexpected SHA-256.'
+          }
+          ./tests/installer-smoke.ps1 -PreviousSetup $previous
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: ClassroomMate-Setup-win-x64

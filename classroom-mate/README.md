@@ -61,7 +61,7 @@ python scripts/package.py
 python scripts/package.py --iscc "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
 ```
 
-推送包含 `classroom-mate/` 变更时，GitHub Actions 会在 `windows-2025` 上运行协议测试、打包并验证安装、覆盖安装和卸载。推送到 `main` 时，测试通过后自动发布一次 GitHub Release，附上安装程序和 SHA-256 文件。一次推送包含多个提交时生成一个 Release，标签为 `classroom-mate-build-<工作流运行编号>`，重跑沿用该标签。其他分支或从 Actions 手动运行可下载构建产物。 [构建记录](https://github.com/chinworker/classclaw/actions/workflows/classroom-mate-windows.yml)
+推送包含 `classroom-mate/` 变更时，GitHub Actions 会在 `windows-2025` 上运行协议测试、打包并验证全新安装、从已发布旧版升级、脚本版迁移和卸载。推送到 `main` 时，测试通过后自动发布一次 GitHub Release，附上安装程序和 SHA-256 文件。一次推送包含多个提交时生成一个 Release，标签为 `classroom-mate-build-<工作流运行编号>`，重跑沿用该标签。其他分支或从 Actions 手动运行可下载构建产物。 [构建记录](https://github.com/chinworker/classclaw/actions/workflows/classroom-mate-windows.yml)
 
 媒体逻辑测试与可选真实联调：
 
@@ -78,11 +78,13 @@ python media/test_live.py --mediamtx /path/to/mediamtx
 
 各平台的历史验证记录和待办见 [VALIDATION.md](VALIDATION.md)。
 
-先从托盘菜单选择「退出」。升级时运行新版安装程序，保留加密凭据、输出配置、去重账本和登录自启设置。卸载时在 Windows「设置 → 应用 → 已安装的应用」（Windows 10 为「应用和功能」）找到 **Classroom Mate**，选择「卸载」。卸载会移除程序、快捷方式和登录启动项，设备数据保留在 `%LOCALAPPDATA%\ClassClaw\ClassroomMate`，供同一 Windows 用户重装使用。
+升级时直接用安装旧版的 Windows 账号运行新版安装程序。旧版在运行时，向导会提示从托盘正常退出。确认页会说明升级步骤，点击 Install 后先移除旧版程序，再安装新版。加密配对凭据、设备配置、去重账本和登录自启设置随升级保留。
+
+卸载时先从托盘退出，再在 Windows「设置 → 应用 → 已安装的应用」（Windows 10 为「应用和功能」）找到 **Classroom Mate**，选择「卸载」。卸载会移除程序、快捷方式和登录启动项，设备数据保留在 `%LOCALAPPDATA%\ClassClaw\ClassroomMate`，供同一 Windows 用户重装使用。
 
 四位配对码和网页确认本机来源需要同步更新 ClassClaw 服务端。升级后的客户端可沿用已有设备配对，未在本机改选的采集项可沿用旧登记。
 
-从旧版 `install.ps1` 安装迁移时，先退出托盘，再用旧安装目录下的 `uninstall.ps1` 卸载，保留默认的设备数据，然后运行新版安装程序。需要彻底移除设备时，先在网页撤销设备，再在退出程序后删除上述设备数据目录。
+通过 `install.ps1` 装在默认位置的旧版也可由新版安装程序移除。需要彻底移除设备时，先在网页撤销设备，再在退出程序后删除上述设备数据目录。
 
 现场验收至少包含：中文 TTS、长句与多段、屏幕拔出、音箱热插拔、静音/音量恢复、正常退出与任务管理器结束后无残留采集、相机占用/拔出、仅视频/带声音、多观看者、租约到期、服务器撤销、断线不补播。记录低配 Windows 空闲/播报/采集的 CPU、内存、带宽，不以开发机器的合成测试代替。
 
