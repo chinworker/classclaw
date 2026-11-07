@@ -123,7 +123,7 @@ def authenticate(db: Session, token: str, *, camera_id: str | None = None) -> Cl
         session.status = "expired"
         session.released_at = now()
         db.commit()
-        raise AppError("MEDIA_SESSION_EXPIRED", "观看会话已过期，请重新发起观看", 401)
+        raise AppError("MEDIA_SESSION_EXPIRED", "观看会话已过期，请重新发起观看", 409)
     if camera_id and session.camera_id != camera_id:
         raise AppError("CLASS_ACCESS_DENIED", "观看会话与请求的摄像头不一致", 403)
     session.last_seen_at = now()

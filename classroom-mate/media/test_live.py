@@ -12,12 +12,15 @@ import socket
 import sys
 import tempfile
 import threading
+import time
 from dataclasses import replace
+from fractions import Fraction
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from aiortc import AudioStreamTrack, RTCConfiguration, RTCPeerConnection, RTCSessionDescription, VideoStreamTrack
+from aiortc import RTCConfiguration, RTCPeerConnection, RTCSessionDescription
 
 from app.config import settings
 from app.core.errors import AppError
@@ -26,6 +29,35 @@ from app.services import classroom_streaming as media
 spec = importlib.util.spec_from_file_location("publisher", Path(__file__).with_name("publisher.py"))
 publisher = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(publisher)
+
+
+class SyntheticInput:
+    def __init__(self, track):
+        self.track = track
+        self.streams = SimpleNamespace(video=[0] if track == "video" else [], audio=[0] if track == "audio" else [])
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        pass
+
+    def decode(self, _):
+        index = 0
+        while True:
+            if self.track == "video":
+                frame = publisher.av.VideoFrame(1920, 1080, "yuv420p")
+                for plane, color in zip(frame.planes, (80 + index % 30, 128, 128)):
+                    plane.update(bytes([color]) * plane.buffer_size)
+                time.sleep(1 / 30)
+            else:
+                frame = publisher.av.AudioFrame(format="s16", layout="mono", samples=960)
+                frame.sample_rate = 48000
+                frame.pts, frame.time_base = index * 960, Fraction(1, 48000)
+                frame.planes[0].update(bytes(frame.planes[0].buffer_size))
+                time.sleep(0.02)
+            index += 1
+            yield frame
 
 
 def port():
@@ -118,25 +150,33 @@ paths:
                 events = asyncio.Queue()
                 inputs = asyncio.Queue()
                 publisher.emit = lambda state, code="", target=events: target.put_nowait((state, code))
-                publisher.Capture = lambda _config, kind=track: VideoStreamTrack() if kind == "video" else AudioStreamTrack()
+                publisher.open_capture = lambda config, _profile: SyntheticInput(config["track"])
+                receiver = RTCPeerConnection(RTCConfiguration(iceServers=[]))
+                receiver.addTransceiver(track, direction="recvonly")
+                await receiver.setLocalDescription(await receiver.createOffer())
                 worker = asyncio.create_task(
                     publisher.run(
                         {
-                            "server": f"http://127.0.0.1:{server.server_port}",
-                            "development": True,
-                            "device_id": "test-device",
-                            "credential": "synthetic-test-credential",
                             "track": track,
-                            "ice_servers": [],
-                            "offer_path": f"/api/v1/classroom/device/media/test-camera/1/{track}/offer",
-                            "valid_seconds": 30,
+                            "quality": 1080,
+                            "publish": {
+                                "key": f"test-camera:1:{track}",
+                                "server": f"http://127.0.0.1:{server.server_port}",
+                                "development": True,
+                                "device_id": "test-device",
+                                "credential": "synthetic-test-credential",
+                                "ice_servers": [],
+                                "offer_path": f"/api/v1/classroom/device/media/test-camera/1/{track}/offer",
+                            },
+                            "valid_seconds": 45,
                         },
                         inputs.get,
                     )
                 )
-                receiver = RTCPeerConnection(RTCConfiguration(iceServers=[]))
                 try:
                     event = await asyncio.wait_for(events.get(), 20)
+                    if event[0] == "starting":
+                        event = await asyncio.wait_for(events.get(), 20)
                     assert event[0] == "connected", event
                     for _ in range(50):
                         paths = await media.request("GET", f"http://127.0.0.1:{api}/v3/paths/list")
@@ -146,18 +186,19 @@ paths:
                         ):
                             break
                         await asyncio.sleep(0.1)
-                    receiver.addTransceiver(track, direction="recvonly")
                     future = asyncio.get_running_loop().create_future()
 
                     @receiver.on("track")
                     def on_track(remote, pending=future):
                         pending.set_result(remote)
 
-                    await receiver.setLocalDescription(await receiver.createOffer())
                     result = await media.offer("test-camera", 1, track, receiver.localDescription.sdp, lease_id="test-viewer")
                     await receiver.setRemoteDescription(RTCSessionDescription(result["sdp"], "answer"))
                     remote = await asyncio.wait_for(future, 10)
-                    assert await asyncio.wait_for(remote.recv(), 10) is not None
+                    frames = [await asyncio.wait_for(remote.recv(), 10) for _ in range(6)]
+                    if track == "video":
+                        assert all((frame.width, frame.height) == (1920, 1080) for frame in frames)
+                        assert frames[0].pts < frames[-1].pts
                     await inputs.put(b"")
                     await asyncio.wait_for(worker, 10)
                     assert not any(p.device_id for p in media._peers.values())

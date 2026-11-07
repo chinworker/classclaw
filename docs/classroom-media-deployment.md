@@ -52,7 +52,7 @@ media_ice_servers = []
 - 仅环回：FastAPI 8000、MediaMTX 8889（WHIP/WHEP）、9997（控制）、8554（RTSP）。**不要向公网反代 MediaMTX 信令或控制 API**，也不要开放它们的监听端口。
 - 仓库 Nginx 模板通过 `/api/v1/classroom/device-channel` 转发 WSS；`/api/v1/classroom/media/auth` 对公网返回 404。MediaMTX 从环回直接回调 FastAPI。
 - 网络限制导致 WebRTC 无法连通时，可配置已有 TURN 服务的 RTCIceServer 条目，例如 `media_ice_servers = [{ urls = ["turn:turn.example.com:3478"], username = "classroom", credential = "受限的TURN客户端凭据" }]`。这些客户端凭据会交给授权观看者和终端，不得填 TURN 管理密钥。若 MediaMTX 所在网络也需要中继，在其 `webrtcICEServers2` 中按官方配置另设。此仓库不部署 TURN 服务。
-- Windows 发完整 ICE SDP，服务端不提供 trickle PATCH。编解码统一优先 H.264 无 B 帧和 Opus，默认低分辨率/低帧率以适配教室电脑。
+- Windows 发完整 ICE SDP。终端对 360p、480p、720p、1080p 视频本地编码，默认 720p，使用低延迟 H.264 和 Opus；MediaMTX 对 Windows 上行直接转发。网页区分等待源和协商失败，保持有效租约，在黑屏或停帧时重连。
 
 配置依据：[官方配置参考](https://mediamtx.org/docs/references/configuration-file)、[HTTP 鉴权](https://mediamtx.org/docs/features/authentication)、[WebRTC 读取与网络](https://mediamtx.org/docs/read/webrtc)。
 

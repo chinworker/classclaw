@@ -79,7 +79,7 @@ const routes = [
   { path: "/attachments", title: "附件", loader: pageLoader("./js/pages/attachments.js"), requiresClass: true },
   { path: "/class-settings", title: "班级设置", loader: pageLoader("./js/pages/classSettings.js"), requiresClass: true },
   { path: "/broadcast", redirect: ["/classroom", { tab: "broadcast" }] },
-  { path: "/classroom", title: "监控与播报", loader: pageLoader("./js/pages/classroomWorkspace.js?v=20261107"), requiresClass: true },
+  { path: "/classroom", title: "监控与播报", loader: pageLoader("./js/pages/classroomWorkspace.js?v=20261107-media"), requiresClass: true },
   { path: "/analytics/students", title: "学生分析", loader: pageLoader("./js/pages/analytics.js?v=20260901-analytics-fix"), requiresClass: true },
   { path: "/analytics/class", title: "班级分析", loader: pageLoader("./js/pages/analytics.js?v=20260901-analytics-fix"), requiresClass: true },
   { path: "/analytics/attention", title: "重点关注", loader: pageLoader("./js/pages/analytics.js?v=20260901-analytics-fix"), requiresClass: true },

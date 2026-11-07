@@ -6,7 +6,7 @@ using NAudio.CoreAudioApi;
 
 namespace ClassroomMate.Windows;
 
-public sealed record InputDevice(string Identifier, string Name, string NativeName);
+public sealed record InputDevice(string Identifier, string Name, string NativeName, string? FriendlyName = null);
 public static class Devices
 {
     [ComImport, Guid("29840822-5B84-11D0-BD3B-00A0C911CE86"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
@@ -40,7 +40,7 @@ public static class Devices
                     ((IPropertyBag)bag).Read("FriendlyName", out var name, IntPtr.Zero);
                     var id = StableId(native);
                     // FFmpeg's dshow alternate device name replaces ':' with '_'.
-                    result.Add(new(id, $"{name} [{id[..8]}]", native.Replace(':', '_')));
+                    result.Add(new(id, $"{name} [{id[..8]}]", native.Replace(':', '_'), name as string));
                 }
                 finally { if (bag is not null) Marshal.ReleaseComObject(bag); Marshal.ReleaseComObject(monikers[0]); }
             }

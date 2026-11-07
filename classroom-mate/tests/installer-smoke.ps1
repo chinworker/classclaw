@@ -63,8 +63,10 @@ Invoke-SetupProcess $setup 'install'
 $uninstall = Get-InstalledUninstaller
 $newVersion = (Get-Item -LiteralPath $app).VersionInfo.FileVersion
 $python = Join-Path $target 'runtime\python.exe'
-& $python -I -B -c 'import aiortc, av, struct; assert struct.calcsize("P") == 8'
+& $python -I -B -c 'import aiortc, av, struct; assert struct.calcsize("P") == 8; assert "dshow" in av.formats_available; assert "libx264" in av.codecs_available'
 if ($LASTEXITCODE -ne 0) { throw 'The installed x64 media runtime failed to load.' }
+& $python -I -B (Join-Path $root 'media\test_publisher.py')
+if ($LASTEXITCODE -ne 0) { throw 'The packaged Python media runtime failed its capture tests.' }
 
 # Open the unpaired client on the Windows runner without connecting or opening media devices.
 $client = Start-Process -FilePath $app -PassThru

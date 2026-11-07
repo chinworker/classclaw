@@ -7,7 +7,11 @@ using Microsoft.Win32;
 namespace ClassroomMate.Windows;
 
 public sealed record Preferences(string DisplayName = "", string AudioOutputName = "",
-    string? CameraIdentifier = null, string? MicrophoneIdentifier = null);
+    string? CameraIdentifier = null, string? MicrophoneIdentifier = null, int VideoHeight = 720)
+{
+    [System.Text.Json.Serialization.JsonIgnore]
+    public int CaptureHeight => VideoHeight is 360 or 480 or 720 or 1080 ? VideoHeight : 720;
+}
 public sealed class Storage
 {
     public static string Root => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ClassClaw", "ClassroomMate");

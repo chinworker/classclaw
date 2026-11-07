@@ -1,5 +1,5 @@
 import { clear, el } from "../util.js";
-import * as monitor from "./classroom.js?v=20261107";
+import * as monitor from "./classroom.js?v=20261107-media";
 import * as broadcast from "./broadcast.js?v=20261107";
 
 let activePage;

@@ -12,17 +12,28 @@ import ipaddress
 import json
 import logging
 import sys
+import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
-from contextlib import suppress
+from collections import deque
+from contextlib import contextmanager, nullcontext, suppress
 from fractions import Fraction
 
 import av
-from aiortc import MediaStreamTrack, RTCConfiguration, RTCIceServer, RTCPeerConnection, RTCRtpSender, RTCSessionDescription
+from aiortc import MediaStreamTrack, RTCConfiguration, RTCIceServer, RTCPeerConnection, RTCRtpSender, RTCSessionDescription, rtcrtpsender
+from aiortc.codecs import CODECS
+from aiortc.codecs.h264 import H264Encoder
 
 logging.disable(logging.CRITICAL)
 av.logging.set_level(av.logging.PANIC)
+
+
+QUALITY = {360: (640, 360, 20, 650000), 480: (854, 480, 24, 1000000),
+           720: (1280, 720, 30, 1800000), 1080: (1920, 1080, 30, 3000000)}
+VIDEO_CLOCK = Fraction(1, 90000)
+OUTPUT_LOCK = threading.Lock()
 
 
 class CaptureError(Exception):
@@ -59,8 +70,11 @@ def post(config, path, payload):
         },
     )
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
-    with opener.open(request, timeout=15) as response:
-        value = json.loads(response.read(131072))
+    try:
+        with opener.open(request, timeout=12) as response:
+            value = json.loads(response.read(131072))
+    except urllib.error.HTTPError as exc:
+        raise CaptureError(f"MEDIA_SIGNAL_HTTP_{exc.code}") from exc
     if not value.get("success"):
         raise CaptureError("MEDIA_NEGOTIATION_FAILED")
     return value["data"]
@@ -74,7 +88,7 @@ def source(config):
         native = config.get("native_device")
         if not native or any(char in native for char in ('"', "\n", "\r")):
             raise CaptureError("CAPTURE_DEVICE_MISSING")
-        options = {"video_size": "640x480", "framerate": "10"} if track == "video" else {}
+        options = {"rtbufsize": "16000000"} if track == "video" else {}
         return f"{track}={native}", "dshow", options
     stream = camera.get("source", {})
     url = urllib.parse.urlsplit(stream.get("location", ""))
@@ -106,198 +120,315 @@ def source(config):
     return urllib.parse.urlunsplit(url), None, options
 
 
-class Capture(MediaStreamTrack):
-    def __init__(self, config):
-        super().__init__()
+class Capture:
+    """The same thread opens, reads and closes the native capture device."""
+
+    def __init__(self, config, preview):
+        self.config = config
         self.kind = config["track"]
-        location, format_name, options = source(config)
-        try:
-            self.container = av.open(location, format=format_name, options=options, timeout=5)
-        except av.error.FFmpegError:
-            if format_name != "dshow" or self.kind != "video" or not options:
-                raise
-            # Some USB cameras offer only their native format. Downscale after decoding.
-            self.container = av.open(location, format=format_name, timeout=5)
-        streams = [stream for stream in self.container.streams if stream.type == self.kind]
-        if not streams:
-            self.container.close()
-            raise CaptureError("CAPTURE_TRACK_UNAVAILABLE")
-        self.frames = iter(self.container.decode(streams[0]))
-        self.first_pts = None
+        self.profile = QUALITY.get(config.get("quality"), QUALITY[720])
+        self.preview = preview
+        self.frames = deque(maxlen=1 if self.kind == "video" else 12)
+        self.changed = threading.Condition()
+        self.closed = False
+        self.error = None
+        self.last_frame = None
         self.started = time.monotonic()
-        self.last_video = -1.0
-        self.frame_received = False
-        self.on_frame = lambda: None
-        self.on_preview = lambda _frame: None
+        threading.Thread(target=self.read, daemon=True).start()
 
     def read(self):
         try:
-            frame = next(self.frames)
-            if self.kind == "video":
-                while frame.time is not None and frame.time < self.last_video + 0.095:
-                    frame = next(self.frames)
-                self.last_video = frame.time if frame.time is not None else self.last_video + 0.1
-                width = min(640, frame.width)
-                height = max(2, int(frame.height * width / frame.width) // 2 * 2)
-                if height > 480:
-                    width = max(2, int(width * 480 / height) // 2 * 2)
-                    height = 480
-                frame = frame.reformat(width=width // 2 * 2, height=height, format="yuv420p")
-            if frame.pts is not None:
-                if self.first_pts is None:
-                    self.first_pts = frame.pts
-                frame.pts -= self.first_pts
-            return frame
-        except (StopIteration, av.error.FFmpegError) as exc:
-            raise CaptureError("CAPTURE_READ_FAILED") from exc
+            with open_capture(self.config, self.profile) as container:
+                streams = container.streams.video if self.kind == "video" else container.streams.audio
+                if not streams:
+                    raise CaptureError("CAPTURE_TRACK_UNAVAILABLE")
+                first_pts = None
+                last_sent = 0.0
+                width, height, fps, _ = self.profile
+                for frame in container.decode(streams[0]):
+                    if self.closed:
+                        return
+                    current = time.monotonic()
+                    if self.kind == "video":
+                        if current - last_sent < 0.9 / fps:
+                            continue
+                        last_sent = current
+                        size = fit(frame, width, height)
+                        frame = frame.reformat(width=size[0], height=size[1], format="yuv420p")
+                        frame.time_base = VIDEO_CLOCK
+                        frame.pts = round((current - self.started) / VIDEO_CLOCK)
+                    elif frame.pts is not None:
+                        if first_pts is None:
+                            first_pts = frame.pts
+                        frame.pts -= first_pts
+                    with self.changed:
+                        self.last_frame = current
+                        self.frames.append(frame)
+                        self.changed.notify_all()
+                    if self.kind == "video":
+                        self.preview(frame, current)
+                raise CaptureError("CAPTURE_ENDED")
+        except Exception as exc:  # noqa: BLE001 - native messages may contain camera locations and credentials.
+            with self.changed:
+                self.error = str(exc) if isinstance(exc, CaptureError) else "CAPTURE_READ_FAILED"
+                self.changed.notify_all()
+
+    def next_frame(self):
+        with self.changed:
+            self.changed.wait_for(lambda: self.frames or self.error or self.closed, timeout=8)
+            if self.error or self.closed or not self.frames:
+                raise CaptureError(self.error or "CAPTURE_STALLED")
+            return self.frames.popleft()
+
+    def stop(self):
+        with self.changed:
+            self.closed = True
+            self.changed.notify_all()
+
+
+def fit(frame, width, height):
+    scale = min(1, width / frame.width, height / frame.height)
+    return tuple(max(2, int(size * scale) // 2 * 2) for size in (frame.width, frame.height))
+
+
+def open_capture(config, profile):
+    location, format_name, options = source(config)
+    if format_name != "dshow":
+        return av.open(location, format=format_name, options=options, timeout=(5, 6))
+    names = [location]
+    friendly = config.get("friendly_device")
+    if friendly and not any(char in friendly for char in (":", '"', "\n", "\r")):
+        names.append(f"{config['track']}={friendly}")
+    width, height, fps, _ = profile
+    modes = [{**options, "video_size": f"{width}x{height}", "framerate": str(fps)},
+             {**options, "video_size": f"{width}x{height}"}, options] if config["track"] == "video" else [options]
+    if format_name not in av.formats_available:
+        raise CaptureError("CAPTURE_DSHOW_UNAVAILABLE")
+    for name in names:
+        for mode in modes:
+            try:
+                return av.open(name, format=format_name, options=mode, timeout=(3, 6))
+            except av.error.PermissionError as exc:
+                raise CaptureError("CAPTURE_PERMISSION_DENIED") from exc
+            except av.error.FFmpegError:
+                continue
+    raise CaptureError("CAPTURE_OPEN_FAILED")
+
+
+class PublishingTrack(MediaStreamTrack):
+    def __init__(self, capture, ready):
+        super().__init__()
+        self.kind = capture.kind
+        self.capture = capture
+        self.ready = ready
 
     async def recv(self):
-        try:
-            frame = await asyncio.to_thread(self.read)
-        except Exception:
-            self.stop()
-            raise
-        if not self.frame_received:
-            self.frame_received = True
-            self.on_frame()
-        if frame.pts is not None and frame.time_base is not None:
-            delay = self.started + float(frame.pts * frame.time_base) - time.monotonic()
-            if delay > 0:
-                await asyncio.sleep(min(delay, 1))
-        if self.kind == "video":
-            self.on_preview(frame)
+        frame = await asyncio.to_thread(self.capture.next_frame)
+        self.ready()
         return frame
 
 
+class VideoEncoder(H264Encoder):
+    """Use aiortc's RTP packetization, bitrate feedback and keyframe requests."""
+
+    def __init__(self, profile):
+        super().__init__()
+        self.fps, self.limit = profile[2:]
+        self.level = "4.0" if profile[1] > 720 else "3.1"
+        self.target_bitrate = self.limit
+
+    def _encode_frame(self, frame, force_keyframe):
+        bitrate = min(self.target_bitrate, self.limit)
+        if self.codec is None or (self.codec.width, self.codec.height) != (frame.width, frame.height) or (
+            abs(bitrate - self.codec.bit_rate) > self.codec.bit_rate * 0.25
+        ):
+            codec = av.CodecContext.create("libx264", "w")
+            codec.width, codec.height = frame.width, frame.height
+            codec.bit_rate = bitrate
+            codec.pix_fmt = "yuv420p"
+            codec.framerate = Fraction(self.fps)
+            codec.time_base = VIDEO_CLOCK
+            codec.gop_size = self.fps * 2
+            codec.max_b_frames = 0
+            codec.profile = "Baseline"
+            codec.options = {"preset": "veryfast", "tune": "zerolatency", "level": self.level,
+                             "x264-params": f"repeat-headers=1:vbv-maxrate={bitrate // 1000}:vbv-bufsize={bitrate // 1000}"}
+            self.codec = codec
+        frame.pict_type = av.video.frame.PictureType.I if force_keyframe else av.video.frame.PictureType.NONE
+        data = b"".join(bytes(packet) for packet in self.codec.encode(frame))
+        yield from self._split_bitstream(data)
+
+
+@contextmanager
+def video_encoding(profile):
+    """A worker process has one publishing track. The pinned aiortc factory also serves its retransmissions."""
+    default = rtcrtpsender.get_encoder
+    codecs = [codec for codec in CODECS["video"] if codec.mimeType == "video/H264"]
+    previous = [codec.parameters["profile-level-id"] for codec in codecs]
+    level = "28" if profile[1] > 720 else "1f"
+    try:
+        for codec, value in zip(codecs, previous):
+            codec.parameters["profile-level-id"] = value[:-2] + level
+        rtcrtpsender.get_encoder = lambda codec: VideoEncoder(profile) if codec.mimeType == "video/H264" else default(codec)
+        yield
+    finally:
+        rtcrtpsender.get_encoder = default
+        for codec, value in zip(codecs, previous):
+            codec.parameters["profile-level-id"] = value
+
+
+def output(line):
+    with OUTPUT_LOCK:
+        print(line, flush=True)
+
+
 def emit(state, code=""):
-    print(json.dumps({"state": state, "code": code}), flush=True)
+    output(json.dumps({"state": state, "code": code}))
 
 
-def preview_jpeg(frame):
-    """A small in-memory copy of an already authorized frame; no second capture."""
-    scale = min(1, 320 / frame.width, 240 / frame.height)
-    width, height = (max(2, int(size * scale) // 2 * 2) for size in (frame.width, frame.height))
-    codec = av.CodecContext.create("mjpeg", "w")
-    codec.width, codec.height, codec.pix_fmt, codec.time_base = width, height, "yuvj420p", Fraction(1, 10)
-    image = frame.reformat(width=width, height=height, format=codec.pix_fmt)
-    # reformat may return the input when its format and dimensions match. Do not mutate its timestamps.
-    return b"".join(bytes(packet) for packet in codec.encode(image))
+class Preview:
+    """Small JPEGs for the Windows dashboard, generated from the local capture thread."""
+
+    def __init__(self):
+        self.codec = None
+        self.last = 0.0
+        self.until = 0.0
+        self.pts = 0
+
+    def __call__(self, frame, current):
+        if current >= self.until or current - self.last < 1 / 12:
+            return
+        self.last = current
+        with suppress(av.error.FFmpegError, OSError, ValueError):
+            jpeg = self.encode(frame)
+            if 0 < len(jpeg) <= 48000 and time.monotonic() < self.until:
+                output("preview:" + base64.b64encode(jpeg).decode("ascii"))
+
+    def encode(self, frame):
+        width, height = fit(frame, 320, 240)
+        if self.codec is None or (self.codec.width, self.codec.height) != (width, height):
+            codec = av.CodecContext.create("mjpeg", "w")
+            codec.width, codec.height = width, height
+            codec.pix_fmt, codec.time_base = "yuvj420p", Fraction(1, 12)
+            self.codec = codec
+        image = frame.reformat(width=width, height=height, format=self.codec.pix_fmt)
+        if image is frame:
+            image = frame.reformat(format="yuv420p").reformat(format=self.codec.pix_fmt)
+        self.pts += 1
+        image.pts, image.time_base = self.pts, self.codec.time_base
+        return b"".join(bytes(packet) for packet in self.codec.encode(image))
+
+
+async def publish(config, capture):
+    peer = RTCPeerConnection(RTCConfiguration(iceServers=[RTCIceServer(**v) for v in config.get("ice_servers") or []]))
+    peer_id = None
+    connected = asyncio.Event()
+    ended = asyncio.Event()
+    try:
+        def frame_sent():
+            if peer.connectionState == "connected":
+                connected.set()
+
+        @peer.on("connectionstatechange")
+        async def changed():
+            if peer.connectionState in {"failed", "closed"}:
+                ended.set()
+
+        track = capture.kind
+        publisher = PublishingTrack(capture, frame_sent)
+        publisher.on("ended", ended.set)
+        peer.addTransceiver(publisher, direction="sendonly")
+        codec = "video/H264" if track == "video" else "audio/opus"
+        peer.getTransceivers()[0].setCodecPreferences([c for c in RTCRtpSender.getCapabilities(track).codecs if c.mimeType == codec])
+        try:
+            async with asyncio.timeout(20):
+                await peer.setLocalDescription(await peer.createOffer())
+                answer = await asyncio.to_thread(post, config, config["offer_path"], {"sdp": peer.localDescription.sdp})
+                peer_id = answer["peer_id"]
+                await peer.setRemoteDescription(RTCSessionDescription(answer["sdp"], "answer"))
+                while not connected.is_set():
+                    if ended.is_set():
+                        raise CaptureError("MEDIA_SENDER_FAILED" if publisher.readyState == "ended" else "MEDIA_ICE_FAILED")
+                    await asyncio.sleep(0.1)
+        except TimeoutError as exc:
+            raise CaptureError("MEDIA_CONNECT_TIMEOUT") from exc
+        emit("connected")
+        await ended.wait()
+        raise CaptureError("MEDIA_SENDER_FAILED" if publisher.readyState == "ended" else "MEDIA_ICE_FAILED")
+    finally:
+        await peer.close()
+        if peer_id:
+            with suppress(OSError, ValueError, KeyError, CaptureError, TimeoutError):
+                await asyncio.wait_for(asyncio.to_thread(
+                    post, config, "/api/v1/classroom/device/media/close", {"peer_id": peer_id}
+                ), 2)
 
 
 async def run(config, lines=None):
-    expiry = time.monotonic() + min(900, max(0, config["valid_seconds"]))
-    preview_enabled = bool(config.get("preview"))
-    last_preview = 0.0
-    stopped = asyncio.Event()
-    peer = None
+    preview = Preview()
     capture = None
-    peer_id = None
-    local_only = bool(config.get("preview_only"))
+    stream = None
+    state = config
+    received_at = time.monotonic()
+    eof = False
+    video = config["track"] == "video"
+    if config.get("preview") and (not video or config["camera"]["source_kind"] != "windows_device"):
+        raise CaptureError("LOCAL_PREVIEW_VIDEO_ONLY")
 
     async def renew():
-        nonlocal expiry, preview_enabled
-        while True:
-            line = await asyncio.to_thread(sys.stdin.buffer.readline) if lines is None else await lines()
-            if not line:
-                stopped.set()
-                return
-            try:
+        nonlocal state, received_at, eof
+        try:
+            while line := (await asyncio.to_thread(sys.stdin.buffer.readline, 262145) if lines is None else await lines()):
                 state = json.loads(line)
-                expiry = time.monotonic() + min(900, max(0, float(state["valid_seconds"])))
-                preview_enabled = bool(state.get("preview"))
-            except (ValueError, KeyError, TypeError):
-                stopped.set()
-                return
+                received_at = time.monotonic()
+        finally:
+            eof = True
+            preview.until = 0
 
-    async def watchdog():
-        while not stopped.is_set():
-            if time.monotonic() >= expiry:
-                stopped.set()
-                return
-            await asyncio.sleep(0.2)
+    async def stop_stream(task):
+        if task:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
-    reader, guard = asyncio.create_task(renew()), asyncio.create_task(watchdog())
+    reader = asyncio.create_task(renew())
+    profile = QUALITY.get(config.get("quality"), QUALITY[720])
+    active_key, retry_at, retry_delay = None, 0, 1
     try:
-
-        def preview(frame):
-            nonlocal last_preview
-            current = time.monotonic()
-            if not preview_enabled or stopped.is_set() or current >= expiry or current - last_preview < 0.5:
-                return
-            last_preview = current
-            with suppress(av.error.FFmpegError, OSError, ValueError):
-                jpeg = preview_jpeg(frame)
-                if 0 < len(jpeg) <= 48000:
-                    print("preview:" + base64.b64encode(jpeg).decode("ascii"), flush=True)
-
-        async def connect():
-            nonlocal peer, capture, peer_id
-            if local_only and (config["track"] != "video" or config["camera"]["source_kind"] != "windows_device"):
-                raise CaptureError("LOCAL_PREVIEW_VIDEO_ONLY")
-            capture = await asyncio.to_thread(Capture, config)
-            capture.on_preview = preview
-            if local_only:
-                while not stopped.is_set():
-                    await capture.recv()
-                return
-            peer = RTCPeerConnection(RTCConfiguration(iceServers=[RTCIceServer(**value) for value in config.get("ice_servers") or []]))
-
-            def ready():
-                if peer.connectionState == "connected" and getattr(capture, "frame_received", True):
-                    emit("connected")
-
-            capture.on_frame = ready
-
-            @capture.on("ended")
-            def ended():
-                if not stopped.is_set():
-                    emit("failed", "CAPTURE_ENDED")
-                stopped.set()
-
-            @peer.on("connectionstatechange")
-            async def changed():
-                if peer.connectionState == "connected":
-                    ready()
-                elif peer.connectionState in {"failed", "closed"}:
-                    stopped.set()
-
-            peer.addTransceiver(capture, direction="sendonly")
-            codec = "video/H264" if config["track"] == "video" else "audio/opus"
-            peer.getTransceivers()[0].setCodecPreferences(
-                [c for c in RTCRtpSender.getCapabilities(config["track"]).codecs if c.mimeType == codec]
-            )
-            await peer.setLocalDescription(await peer.createOffer())
-            answer = await asyncio.to_thread(post, config, config["offer_path"], {"sdp": peer.localDescription.sdp})
-            peer_id = answer["peer_id"]
-            if stopped.is_set():
-                return
-            await peer.setRemoteDescription(RTCSessionDescription(answer["sdp"], "answer"))
-
-        attempt = asyncio.create_task(connect())
-        stop_task = asyncio.create_task(stopped.wait())
-        done, _ = await asyncio.wait([attempt, stop_task], timeout=25, return_when=asyncio.FIRST_COMPLETED)
-        if attempt in done:
-            await attempt
-            await stopped.wait()
-        else:
-            attempt.cancel()
-            await asyncio.gather(attempt, return_exceptions=True)
-        stop_task.cancel()
-    except Exception as exc:  # noqa: BLE001 - process boundary must redact native URLs and credentials.
-        emit("failed", str(exc) if isinstance(exc, CaptureError) else "MEDIA_CAPTURE_OR_NETWORK_FAILED")
+        with video_encoding(profile) if video else nullcontext():
+            while not eof:
+                current = time.monotonic()
+                preview.until = received_at + 3 if state.get("preview") else 0
+                grant = state.get("publish") if current < received_at + min(900, max(0, state.get("valid_seconds", 0))) else None
+                if not grant and current >= preview.until:
+                    break
+                if capture is None:
+                    capture = Capture(config, preview)
+                if capture.error:
+                    raise CaptureError(capture.error)
+                if current - (capture.last_frame or capture.started) > (8 if capture.last_frame else 25):
+                    raise CaptureError("CAPTURE_STALLED")
+                key = grant.get("key") if grant else None
+                if key != active_key:
+                    await stop_stream(stream)
+                    stream, active_key, retry_at, retry_delay = None, key, 0, 1
+                    emit("starting" if key else "idle")
+                if stream and stream.done():
+                    error = stream.exception()
+                    emit("retrying", str(error) if isinstance(error, CaptureError) else "MEDIA_SIGNAL_FAILED")
+                    stream = None
+                    retry_at, retry_delay = current + retry_delay, min(12, retry_delay * 2)
+                if key and stream is None and capture.last_frame and current >= retry_at:
+                    stream = asyncio.create_task(publish(grant, capture))
+                await asyncio.sleep(0.1)
+    except Exception as exc:  # noqa: BLE001 - never expose native errors, credentials or device names.
+        emit("failed", str(exc) if isinstance(exc, CaptureError) else "MEDIA_CAPTURE_FAILED")
     finally:
+        preview.until = 0
         reader.cancel()
-        guard.cancel()
-        if peer:
-            await peer.close()
+        await asyncio.gather(reader, return_exceptions=True)
+        await stop_stream(stream)
         if capture:
             capture.stop()
-            # Avoid concurrent close while a native read is blocked. Parent Job ends
-            # the short-lived process; no worker survives the authorization scope.
-        if peer_id:
-            # Local resources are already closed; the server also expires this peer.
-            with suppress(OSError, ValueError, KeyError, CaptureError):
-                await asyncio.to_thread(post, config, "/api/v1/classroom/device/media/close", {"peer_id": peer_id})
 
 
 def main():

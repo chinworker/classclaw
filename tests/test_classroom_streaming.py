@@ -75,6 +75,23 @@ def test_device_publish_requires_live_demand_and_current_camera_revision(client,
         assert client.post(path.replace("/1/", "/2/"), json=body, headers=headers).status_code == 403
 
 
+def test_viewer_waits_for_a_publisher_without_losing_the_lease(client, db, sample, media_ready, monkeypatch):
+    cls, _, _ = sample
+    pair_terminal(client, cls)
+    _connect(client, cls.id, WINDOWS_CAMERA)
+    base = f"/api/v1/classes/{cls.id}/classroom"
+    lease = client.post(base + "/media-sessions", json={}).json()["data"]
+
+    async def no_publisher(*_args, **_kwargs):
+        return httpx.Response(404)
+
+    monkeypatch.setattr(media, "request", no_publisher)
+    result = client.post(lease["offers"]["video"], json={"sdp": VIDEO_SDP})
+    assert result.status_code == 409
+    assert result.json()["error"]["code"] == "MEDIA_WAITING_FOR_SOURCE"
+    assert db.get(ClassroomMediaSession, lease["session_id"]).status == "active"
+
+
 def test_releasing_lease_terminates_existing_peer(client, db, sample, media_ready, monkeypatch):
     from contextlib import contextmanager
 

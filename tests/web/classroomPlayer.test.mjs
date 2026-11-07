@@ -53,3 +53,31 @@ test("late signaling response is closed after leaving the page", async () => {
   assert.equal(peers[0].remote, undefined);
   assert.ok(calls.some((row) => row.path.endsWith("/media/close") && JSON.parse(row.options.body).peer_id === "late-peer"));
 });
+
+test("an unready publisher is retried on the same offer, and a stalled peer is closed", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const fetch = globalThis.fetch;
+  globalThis.fetch = (path, options) => {
+    if (!calls.length) {
+      calls.push({ path, options });
+      return Promise.resolve(new Response(JSON.stringify({ success: false,
+        error: { code: "MEDIA_WAITING_FOR_SOURCE", message: "等待上行" } }), { status: 409 }));
+    }
+    return fetch(path, options);
+  };
+  const view = player(false);
+  await tick();
+  assert.match(view.el.textContent, /等待上行/);
+  t.mock.timers.tick(1000);
+  await tick();
+  assert.equal(calls[0].path, calls[1].path);
+  peers[1].connectionState = "connected";
+  t.mock.timers.tick(15000);
+  await tick();
+  assert.ok(peers[1].closed);
+  assert.ok(calls.some((row) => row.path.endsWith("/media/close")));
+  assert.match(view.el.textContent, /还未收到画面/);
+  t.mock.timers.tick(2000);
+  await tick();
+  assert.equal(calls.filter((row) => row.path === calls[0].path).length, 3);
+});

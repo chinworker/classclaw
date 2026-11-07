@@ -4,7 +4,7 @@ import { el, clear, toast, fmtDateTime, copyText } from "../util.js";
 import { api } from "../api.js";
 import { state } from "../state.js";
 import { appConfig } from "../config.js";
-import { classroomPlayer } from "../classroomPlayer.js";
+import { classroomPlayer } from "../classroomPlayer.js?v=20261107-media";
 import { pageHeader, field, errorPanel, skeleton, emptyState, statusBadge, metricCard, confirmDanger } from "../components.js";
 
 const REFRESH_MS = 5000;
@@ -443,7 +443,13 @@ export async function render(mount, ctx, helpers) {
       void connect(true);
       return;
     }
-    if (view.lease || view.busy) return;
+    if (view.lease) {
+      monitorMessage.textContent = camera?.status === "failed"
+        ? `教室端采集暂不可用 · ${camera.last_error || "正在等待终端恢复"}`
+        : view.lease.audio_unavailable_reason || (view.lease.audio_allowed ? "现场声音已接入 · 播放器默认静音" : "仅视频 · 当前来源无可用声音");
+      return;
+    }
+    if (view.busy) return;
     if (!view.watching) { monitorMessage.textContent = "已停止观看"; return; }
     if (data.media_provider === "none") { monitorMessage.textContent = "服务器尚未启用媒体转发，Windows 本机预览仍可使用。"; return; }
     if (data.media_ready === false) { monitorMessage.textContent = "正在等待服务器媒体服务就绪…"; return; }

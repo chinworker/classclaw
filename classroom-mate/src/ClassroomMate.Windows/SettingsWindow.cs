@@ -12,6 +12,7 @@ sealed class SettingsWindow : Form
     readonly Label status = new() { AutoSize = true, MaximumSize = new Size(560, 0) };
     readonly Label feedback = new() { AutoSize = true, MaximumSize = new Size(560, 0) };
     readonly ComboBox camera = Picker();
+    readonly ComboBox quality = Picker();
     readonly ComboBox microphone = Picker();
     readonly ComboBox speaker = Picker();
     readonly ComboBox display = Picker();
@@ -68,7 +69,7 @@ sealed class SettingsWindow : Form
             {
                 var next = ReadSelection();
                 bool captureChanged = next.CameraIdentifier != preferences().CameraIdentifier ||
-                    next.MicrophoneIdentifier != preferences().MicrophoneIdentifier;
+                    next.MicrophoneIdentifier != preferences().MicrophoneIdentifier || next.CaptureHeight != preferences().CaptureHeight;
                 await save(next);
                 feedback.Text = captureChanged
                     ? "已保存。主界面预览与网页监控会切换到新来源。"
@@ -78,8 +79,10 @@ sealed class SettingsWindow : Form
             catch { feedback.Text = "无法保存设备设置，请检查本机应用数据目录。"; }
             finally { saveButton.Enabled = true; }
         };
+        Fill(quality, [new("1080", "1080p · 最清晰"), new("720", "720p · 均衡"),
+            new("480", "480p · 流畅"), new("360", "360p · 省流量")], preferences().CaptureHeight.ToString(), false, allowNone: false);
         devices.Controls.AddRange([
-            Label("视频来源"), camera, Label("现场声音来源"), microphone,
+            Label("视频来源"), camera, Label("视频清晰度"), quality, Label("现场声音来源"), microphone,
             Label("播报扬声器"), speaker, Label("广播显示屏"), display,
             actions, feedback, Label("主界面显示所选摄像头。网页打开实时监控时按需传输画面及可用声音。")
         ]);
@@ -136,7 +139,8 @@ sealed class SettingsWindow : Form
     }
 
     static string? Value(ComboBox box) => (box.SelectedItem as Option)?.Value;
-    Preferences ReadSelection() => new(Value(display) ?? "", Value(speaker) ?? "", Value(camera), Value(microphone));
+    Preferences ReadSelection() => new(Value(display) ?? "", Value(speaker) ?? "", Value(camera), Value(microphone),
+        int.TryParse(Value(quality), out int height) ? height : 720);
 
     void RefreshDevices(Preferences selected)
     {
@@ -153,9 +157,10 @@ sealed class SettingsWindow : Form
         catch { feedback.Text = "设备检测失败，请检查 Windows 设备管理器及摄像头、麦克风权限。"; }
     }
 
-    static void Fill(ComboBox box, IEnumerable<Option> available, string? selected, bool capture)
+    static void Fill(ComboBox box, IEnumerable<Option> available, string? selected, bool capture, bool allowNone = true)
     {
-        var options = new List<Option> { new("", "不选择") };
+        var options = new List<Option>();
+        if (allowNone) options.Add(new("", "不选择"));
         if (capture && selected is null) options.Add(new(null, "未设置（如有旧登记则沿用）"));
         options.AddRange(available);
         if (!options.Any(item => item.Value == selected))

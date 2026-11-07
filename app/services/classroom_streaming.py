@@ -96,7 +96,7 @@ def valid_lease(db: Session, lease_id: str, class_id: str | None = None, user_id
                 *, check_owner: bool = False) -> ClassroomMediaSession:
     lease = db.get(ClassroomMediaSession, lease_id)
     if not lease or lease.status != "active" or classroom_media._aware(lease.expires_at) <= now():
-        raise AppError("MEDIA_SESSION_EXPIRED", "观看租约已结束，请重新开始观看", 401)
+        raise AppError("MEDIA_SESSION_EXPIRED", "观看租约已结束，请重新开始观看", 409)
     if class_id and lease.class_id != class_id or check_owner and lease.user_id != user_id:
         raise AppError("CLASS_ACCESS_DENIED", "只能使用本人本班观看租约", 403)
     cls = db.get(ClassRoom, lease.class_id)
@@ -207,6 +207,8 @@ async def offer(camera_id: str, revision: int, track: str, sdp: str, *, device_i
         token = capability("publish" if publish else "read", path)
         response = await request("POST", url, content=sdp,
                                  headers={"Content-Type": "application/sdp", "Authorization": f"Bearer {token}"})
+        if not publish and response.status_code == 404:
+            raise AppError("MEDIA_WAITING_FOR_SOURCE", "正在等待 Windows 终端或摄像头上传画面", 409)
         if response.status_code != 201:
             raise AppError("MEDIA_NEGOTIATION_FAILED", "媒体协商失败，采集端可能尚未就绪或编码不兼容", 502,
                            {"upstream_status": response.status_code})

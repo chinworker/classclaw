@@ -82,7 +82,7 @@
 
 连接是长连接，因此每次消息只开一个短数据库会话（`anyio.to_thread.run_sync` + `writer_session`），不整段持有写锁。`receive()` 只在消费完成后重建，绝不取消在途接收，避免丢消息。
 
-新版 Classroom Mate 在 `welcome.local_device_selection` 为真时，通过心跳上报 `inventory.local_capture`（`camera`、`microphone`）及本地显示屏和扬声器。旧终端沿用网页设备选择。网页打开监控后使用 `follow_terminal` 跟随最新来源，服务端复核本班在线终端上报的设备，并在更换时撤销旧租约。网页默认接收可用声音，播放默认静音。Windows 主界面可独立预览本机所选视频，远程观看仍要求有效采集授权。
+新版 Classroom Mate 在 `welcome.local_device_selection` 为真时，通过心跳上报 `inventory.local_capture`（`camera`、`microphone`）及本地显示屏和扬声器。旧终端沿用网页设备选择。网页打开监控后使用 `follow_terminal` 跟随最新来源，服务端复核本班在线终端上报的设备，并在更换时撤销旧租约。网页默认接收可用声音，播放默认静音。Windows 直接预览本地视频，远程观看复用这一路采集，在有效授权内以 H.264 推流。尚未收到上行时观看信令返回 `MEDIA_WAITING_FOR_SOURCE`，网页保留租约并重试。
 
 ### 3.3 命令白名单
 

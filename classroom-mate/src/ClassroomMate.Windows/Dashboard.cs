@@ -16,7 +16,7 @@ sealed class Dashboard : Form
         ForeColor = Color.FromArgb(204, 220, 238), BackColor = Color.FromArgb(19, 34, 52),
         Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter
     };
-    readonly System.Windows.Forms.Timer refresh = new() { Interval = 350 };
+    readonly System.Windows.Forms.Timer refresh = new() { Interval = 80 };
     byte[]? lastFrame;
     bool paired;
     public bool PreviewVisible => Visible && WindowState != FormWindowState.Minimized;
