@@ -3,12 +3,16 @@ param([string]$PreviousSetup)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $setup = Join-Path $root 'dist\ClassroomMate-Setup-win-x64.exe'
-$target = Join-Path $env:LOCALAPPDATA 'Programs\ClassroomMate'
+$target = Join-Path $env:ProgramFiles 'ClassroomMate'
+$oldTarget = Join-Path $env:LOCALAPPDATA 'Programs\ClassroomMate'
 $data = Join-Path $env:LOCALAPPDATA 'ClassClaw\ClassroomMate'
-$shortcut = Join-Path ([Environment]::GetFolderPath('Programs')) 'Classroom Mate.lnk'
-$entry = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\ClassClaw.ClassroomMate_is1'
+$shortcut = Join-Path ([Environment]::GetFolderPath('CommonPrograms')) 'Classroom Mate.lnk'
+$oldShortcut = Join-Path ([Environment]::GetFolderPath('Programs')) 'Classroom Mate.lnk'
+$entry = 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\ClassClaw.ClassroomMate_is1'
+$oldEntry = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\ClassClaw.ClassroomMate_is1'
 $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 $app = Join-Path $target 'ClassroomMate.exe'
+$oldApp = Join-Path $oldTarget 'ClassroomMate.exe'
 $startup = '"' + $app + '" --tray'
 $upgradeState = 'HKCU:\Software\ClassClaw\ClassroomMate\Setup'
 
@@ -31,11 +35,11 @@ function Invoke-SetupProcess($file, $operation, [switch]$ExpectFailure, [string]
     Write-Host "$operation passed"
 }
 
-function Get-InstalledUninstaller {
-    $installed = Get-ItemProperty -LiteralPath $entry
+function Get-InstalledUninstaller($RegistryPath = $entry, $Application = $app, $ShortcutPath = $shortcut) {
+    $installed = Get-ItemProperty -LiteralPath $RegistryPath
     if ($installed.DisplayName -ne 'Classroom Mate' -or $installed.Publisher -ne 'ClassClaw' -or
-        $installed.DisplayVersion -ne (Get-Item -LiteralPath $app).VersionInfo.FileVersion -or
-        !(Test-Path -LiteralPath $shortcut)) {
+        $installed.DisplayVersion -ne (Get-Item -LiteralPath $Application).VersionInfo.FileVersion -or
+        !(Test-Path -LiteralPath $ShortcutPath)) {
         throw 'The Windows uninstall entry or Start menu shortcut is incomplete.'
     }
     $installed.UninstallString.Trim('"')
@@ -48,7 +52,7 @@ function Assert-Uninstalled {
     if ($null -ne (Get-StartupValue)) { throw 'Uninstall did not remove login startup.' }
 }
 
-foreach ($path in @($target, $data, $shortcut, $entry, $upgradeState)) {
+foreach ($path in @($target, $oldTarget, $data, $shortcut, $oldShortcut, $entry, $oldEntry, $upgradeState)) {
     if (Test-Path -LiteralPath $path) { throw "Run the installer test with a clean Windows user: $path already exists." }
 }
 if ($null -ne (Get-StartupValue)) {
@@ -98,14 +102,14 @@ Invoke-SetupProcess $uninstall 'uninstall-fresh-install'
 Assert-Uninstalled
 Assert-DeviceData
 
-if (!$PreviousSetup) { $PreviousSetup = $setup }
+if (!$PreviousSetup) { throw 'Supply the published 0.2.1 installer as the migration baseline.' }
 Invoke-SetupProcess $PreviousSetup 'install-previous-release'
-$uninstall = Get-InstalledUninstaller
-if ($PreviousSetup -ne $setup -and [version]((Get-Item -LiteralPath $app).VersionInfo.FileVersion) -ge [version]$newVersion) {
+$uninstall = Get-InstalledUninstaller $oldEntry $oldApp $oldShortcut
+if ([version]((Get-Item -LiteralPath $oldApp).VersionInfo.FileVersion) -ge [version]$newVersion) {
     throw 'The upgrade baseline is not older than the new version.'
 }
 $null = New-Item -Path $runKey -Force
-Set-ItemProperty -Path $runKey -Name ClassroomMate -Value $startup
+Set-ItemProperty -Path $runKey -Name ClassroomMate -Value ('"' + $oldApp + '" --tray')
 
 # Hold the same per-user mutex as the tray without accessing classroom hardware.
 $userBytes = [Text.Encoding]::UTF8.GetBytes([Environment]::UserName)
@@ -118,27 +122,33 @@ try {
     $mutex.Dispose()
 }
 
-Invoke-SetupProcess $setup 'upgrade' -ExpectedLog 'Previous Classroom Mate uninstaller completed.'
+Invoke-SetupProcess $setup 'upgrade-from-per-user' -ExpectedLog 'Classroom Mate user migration checked.'
+foreach ($path in @($oldTarget, $oldEntry, $oldShortcut)) {
+    if (Test-Path -LiteralPath $path) { throw "Previous installation left $path behind." }
+}
 Assert-DeviceData
 $uninstall = Get-InstalledUninstaller
 if ((Get-Item -LiteralPath $app).VersionInfo.FileVersion -ne $newVersion -or
-    (Get-StartupValue) -ne $startup -or (Test-Path -LiteralPath $upgradeState)) {
+    (Get-StartupValue) -ne $startup -or (Get-ItemProperty -LiteralPath $upgradeState -ErrorAction SilentlyContinue).RestoreStartup) {
     throw 'Upgrade did not install the new version, retain startup or clear upgrade state.'
 }
 
+Invoke-SetupProcess $setup 'upgrade-machine-install' -ExpectedLog 'Previous Classroom Mate uninstaller completed.'
+$uninstall = Get-InstalledUninstaller
+if ((Get-StartupValue) -ne $startup) { throw 'Machine upgrade changed the login startup choice.' }
 Invoke-SetupProcess $uninstall 'uninstall'
 Assert-Uninstalled
 Assert-DeviceData
 
 # Recreate the footprint of a pre-Setup PowerShell installation.
-$null = New-Item -ItemType Directory -Path $target
-Copy-Item -LiteralPath (Join-Path $root 'dist\ClassroomMate-win-x64\ClassroomMate.exe') -Destination $app
+$null = New-Item -ItemType Directory -Path $oldTarget
+Copy-Item -LiteralPath (Join-Path $root 'dist\ClassroomMate-win-x64\ClassroomMate.exe') -Destination $oldApp
 foreach ($name in @('install.ps1', 'uninstall.ps1', 'old-only.dll')) {
-    Set-Content -LiteralPath (Join-Path $target $name) -Value 'legacy test fixture'
+    Set-Content -LiteralPath (Join-Path $oldTarget $name) -Value 'legacy test fixture'
 }
-Invoke-SetupProcess $setup 'upgrade-legacy' -ExpectedLog 'Previous Classroom Mate script installation removed.'
+Invoke-SetupProcess $setup 'upgrade-legacy' -ExpectedLog 'Classroom Mate user migration checked.'
 $uninstall = Get-InstalledUninstaller
-if ((Test-Path -LiteralPath (Join-Path $target 'old-only.dll')) -or $null -ne (Get-StartupValue)) {
+if ((Test-Path -LiteralPath $oldTarget) -or $null -ne (Get-StartupValue)) {
     throw 'Legacy upgrade left an old file or enabled startup.'
 }
 Assert-DeviceData

@@ -111,7 +111,13 @@ class Capture(MediaStreamTrack):
         super().__init__()
         self.kind = config["track"]
         location, format_name, options = source(config)
-        self.container = av.open(location, format=format_name, options=options, timeout=5)
+        try:
+            self.container = av.open(location, format=format_name, options=options, timeout=5)
+        except av.error.FFmpegError:
+            if format_name != "dshow" or self.kind != "video" or not options:
+                raise
+            # Some USB cameras offer only their native format. Downscale after decoding.
+            self.container = av.open(location, format=format_name, timeout=5)
         streams = [stream for stream in self.container.streams if stream.type == self.kind]
         if not streams:
             self.container.close()
@@ -186,6 +192,7 @@ async def run(config, lines=None):
     peer = None
     capture = None
     peer_id = None
+    local_only = bool(config.get("preview_only"))
 
     async def renew():
         nonlocal expiry, preview_enabled
@@ -225,7 +232,14 @@ async def run(config, lines=None):
 
         async def connect():
             nonlocal peer, capture, peer_id
+            if local_only and (config["track"] != "video" or config["camera"]["source_kind"] != "windows_device"):
+                raise CaptureError("LOCAL_PREVIEW_VIDEO_ONLY")
             capture = await asyncio.to_thread(Capture, config)
+            capture.on_preview = preview
+            if local_only:
+                while not stopped.is_set():
+                    await capture.recv()
+                return
             peer = RTCPeerConnection(RTCConfiguration(iceServers=[RTCIceServer(**value) for value in config.get("ice_servers") or []]))
 
             def ready():
@@ -233,7 +247,6 @@ async def run(config, lines=None):
                     emit("connected")
 
             capture.on_frame = ready
-            capture.on_preview = preview
 
             @capture.on("ended")
             def ended():

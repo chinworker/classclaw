@@ -8,13 +8,14 @@ namespace ClassroomMate.Windows;
 
 public sealed class Media : IAsyncDisposable
 {
-    sealed class Worker(Process process, string key, IntPtr job)
+    sealed class Worker(Process process, string key, IntPtr job, bool localOnly)
     {
         public Process Process = process; public string Key = key; public IntPtr Job = job;
         public volatile string State = "starting"; public volatile string Code = "";
         public volatile byte[]? Preview;
+        public bool LocalOnly { get; } = localOnly;
     }
-    readonly Pairing pairing;
+    Pairing? pairing;
     readonly ServerClock clock;
     readonly Action<string> status;
     readonly Func<Preferences> selection;
@@ -29,6 +30,7 @@ public sealed class Media : IAsyncDisposable
     JsonObject? cameraState;
     string lastCaptureStatus = "";
     volatile Worker? videoWorker;
+    string? previewFailure;
     volatile bool previewRequested;
     public byte[]? Preview
     {
@@ -36,11 +38,12 @@ public sealed class Media : IAsyncDisposable
         {
             lock (gate)
             {
-                if (!previewRequested || desired?.Flag("enabled") != true || !desired.Flag("video") || until <= clock.UtcNow ||
-                    desired["camera"] is not JsonObject camera || videoWorker is not { } worker ||
-                    worker.Key != CaptureKey(camera, "video") || worker.State == "failed" ||
-                    !CameraMatches(camera, selection()))
-                    return null;
+                if (!previewRequested || videoWorker is not { } worker || worker.State == "failed") return null;
+                if (worker.LocalOnly)
+                    return worker.Key == PreviewKey(selection().CameraIdentifier) ? worker.Preview : null;
+                if (desired?.Flag("enabled") != true || !desired.Flag("video") || until <= clock.UtcNow ||
+                    desired["camera"] is not JsonObject camera || worker.Key != CaptureKey(camera, "video") ||
+                    !CameraMatches(camera, selection())) return null;
                 return worker.Preview;
             }
         }
@@ -52,23 +55,31 @@ public sealed class Media : IAsyncDisposable
     }
     public static bool Available => File.Exists(Path.Combine(AppContext.BaseDirectory, "runtime", "python.exe"))
         && File.Exists(Path.Combine(AppContext.BaseDirectory, "media", "publisher.py"));
-    public Media(Pairing pairing, ServerClock clock, Action<string> status, Func<Preferences> selection)
-    { this.pairing = pairing; this.clock = clock; this.status = status; this.selection = selection; loop = Loop(); }
+    public Media(ServerClock clock, Action<string> status, Func<Preferences> selection)
+    { this.clock = clock; this.status = status; this.selection = selection; loop = Task.Run(Loop); }
     public JsonObject? Report() { lock (gate) return cameraState?.Copy(); }
-    public Task Apply(JsonObject state)
+    public Task Apply(Pairing source, JsonObject state)
     {
         lock (gate)
         {
+            pairing = source;
             desired = state.Copy();
             if (!DateTimeOffset.TryParse(state.Text("valid_until"), out until)) until = DateTimeOffset.MinValue;
         }
         return Task.CompletedTask;
     }
-    public async Task Stop()
+    public Task StopRemote() => StopCapture(includeLocal: false);
+    public Task Stop() => StopCapture(includeLocal: true);
+
+    async Task StopCapture(bool includeLocal)
     {
-        lock (gate) { desired = null; until = DateTimeOffset.MinValue; }
+        if (includeLocal) SetPreview(false);
         await serial.WaitAsync();
-        try { await StopAll(); }
+        try
+        {
+            lock (gate) { pairing = null; desired = null; until = DateTimeOffset.MinValue; }
+            await StopWorkers(includeLocal);
+        }
         finally { serial.Release(); }
     }
     public async Task CameraCommand(Command command)
@@ -83,24 +94,24 @@ public sealed class Media : IAsyncDisposable
                     || camera.Number("config_revision") != command.Payload.Number("config_revision")) return;
                 desired = null; until = DateTimeOffset.MinValue;
             }
-            await StopAll();
+            await StopWorkers(includeLocal: false);
         }
         finally { serial.Release(); }
     }
-    async Task StopAll()
+    async Task StopWorkers(bool includeLocal)
     {
-        videoWorker = null;
         // Remove each reference before disposal: a failed stop must not leave a disposed
         // Process in the registry or prevent the other authorized track from stopping.
         foreach (var track in workers.Keys.ToArray())
         {
-            var worker = workers[track]; workers.Remove(track);
-            await Stop(worker);
+            var worker = workers[track];
+            if (!includeLocal && worker.LocalOnly) continue;
+            await RemoveWorker(track);
         }
         failures.Clear();
-        lock (gate) { if (cameraState is not null) cameraState["state"] = "stopped"; }
+        if (includeLocal) previewFailure = null;
+        lock (gate) cameraState = null;
         lastCaptureStatus = "";
-        status("未在采集音视频");
     }
     async Task Loop()
     {
@@ -119,71 +130,97 @@ public sealed class Media : IAsyncDisposable
     static bool CameraMatches(JsonObject camera, Preferences local) =>
         camera.Text("source_kind") != "windows_device" || local.CameraIdentifier is null || local.CameraIdentifier == camera.Text("identifier");
 
+    static string PreviewKey(string? identifier) => "preview:" + identifier;
+
+    async Task RemoveWorker(string track)
+    {
+        if (track == "video") videoWorker = null;
+        if (workers.Remove(track, out var worker)) await Stop(worker);
+    }
+
     async Task Reconcile()
     {
-        JsonObject? state; DateTimeOffset expiry;
-        lock (gate) { state = desired?.Copy(); expiry = until; }
+        JsonObject? state; DateTimeOffset expiry; Pairing? source;
+        lock (gate) { state = desired?.Copy(); expiry = until; source = pairing; }
         var camera = state?["camera"] as JsonObject;
-        bool enabled = state?.Flag("enabled") == true && expiry > clock.UtcNow && camera is not null && camera.Text("access_path") != "server_direct";
         var local = selection();
-        bool windows = camera?.Text("source_kind") == "windows_device";
-        bool cameraMatches = camera is null || CameraMatches(camera, local);
-        bool micMatches = !windows || local.MicrophoneIdentifier is null || local.MicrophoneIdentifier == camera!.Text("microphone_identifier");
+        bool enabled = source is not null && state?.Flag("enabled") == true && expiry > clock.UtcNow
+            && camera is not null && camera.Text("access_path") != "server_direct" && CameraMatches(camera, local);
+        bool localPreview = previewRequested && !string.IsNullOrEmpty(local.CameraIdentifier);
+        string localKey = PreviewKey(local.CameraIdentifier);
+        if (!localPreview) previewFailure = null;
+        bool microphoneMatches = camera?.Text("source_kind") != "windows_device" || local.MicrophoneIdentifier is null
+            || local.MicrophoneIdentifier == camera.Text("microphone_identifier");
+
         foreach (var track in new[] { "video", "audio" })
         {
-            string key = camera is null ? "" : CaptureKey(camera, track);
-            bool wanted = enabled && state!.Flag(track) && cameraMatches && (track == "video" || micMatches);
-            if (workers.TryGetValue(track, out var old) && (!wanted || old.Key != key))
-            { if (track == "video") videoWorker = null; workers.Remove(track); await Stop(old); }
-            if (!wanted) { failures.Remove(track); continue; }
-            if (failures.TryGetValue(track, out var failureKey) && failureKey == key) continue;
-            if (!Available) { failures[track] = key; continue; }
+            bool remote = enabled && state!.Flag(track) && (track == "video" || microphoneMatches);
+            var remoteKey = remote ? CaptureKey(camera!, track) : "";
+            if (!remote) failures.Remove(track);
+            if (workers.TryGetValue(track, out var current) && (current.State == "failed" || current.Process.HasExited))
+            {
+                if (current.LocalOnly) previewFailure = current.Key;
+                else if (current.Key == remoteKey) failures[track] = remoteKey;
+                await RemoveWorker(track);
+            }
+            bool publish = remote && failures.GetValueOrDefault(track) != remoteKey;
+            bool preview = !publish && track == "video" && localPreview && previewFailure != localKey;
+            var key = publish ? remoteKey : preview ? localKey : "";
+            if (workers.TryGetValue(track, out var old) && old.Key != key) await RemoveWorker(track);
+            if (!publish && !preview) continue;
+
+            var workerExpiry = preview ? clock.UtcNow.AddSeconds(3) : expiry;
             if (!workers.TryGetValue(track, out var worker))
             {
-                try { worker = Start(state!, camera!, track, key, expiry); }
-                catch { failures[track] = key; status("采集设备不可用 · 请检测设备后重新观看"); continue; }
-                workers[track] = worker;
-                if (track == "video") videoWorker = worker;
-                failures.Remove(track);
+                var selectedCamera = preview ? new JsonObject
+                { ["source_kind"] = "windows_device", ["identifier"] = local.CameraIdentifier } : camera!;
+                try
+                {
+                    if (!Available) throw new IOException("媒体运行库不可用");
+                    worker = Start(publish ? source : null, state, selectedCamera, track, key, workerExpiry);
+                    workers[track] = worker;
+                    if (track == "video") videoWorker = worker;
+                }
+                catch
+                {
+                    if (preview) previewFailure = key;
+                    else failures[track] = key;
+                    continue;
+                }
             }
-            if (worker.State == "failed" || worker.Process.HasExited)
+            try
             {
-                if (track == "video") videoWorker = null;
-                workers.Remove(track); failures[track] = key;
-                await Stop(worker);
-                continue;
+                await worker.Process.StandardInput.WriteLineAsync(JsonSerializer.Serialize(new
+                {
+                    valid_seconds = Math.Max(0, (workerExpiry - clock.UtcNow).TotalSeconds),
+                    preview = track == "video" && previewRequested
+                }));
             }
-            // Failed acquisition stays failed until the viewer restarts, avoiding camera-open retry storms.
-            if (!worker.Process.HasExited)
-                try { await worker.Process.StandardInput.WriteLineAsync(JsonSerializer.Serialize(new { valid_seconds = Math.Max(0, (expiry - clock.UtcNow).TotalSeconds), preview = track == "video" && previewRequested })); }
-                catch (IOException) { worker.State = "failed"; worker.Code = "MEDIA_PROCESS_EXITED"; }
+            catch (IOException) { worker.State = "failed"; worker.Code = "MEDIA_PROCESS_EXITED"; }
         }
-        if (state is not null && camera is null)
+
+        bool videoConnected = workers.TryGetValue("video", out var video) && !video.LocalOnly && video.State == "connected";
+        bool audioConnected = workers.TryGetValue("audio", out var audio) && audio.State == "connected";
+        string captureState = failures.Count > 0 && !videoConnected ? "failed" : videoConnected || audioConnected ? "connected" : "idle";
+        lock (gate) cameraState = camera is null ? null : new JsonObject
         {
-            lock (gate) cameraState = null;
-            const string text = "未登记本机摄像头 · 未采集音视频";
-            if (text != lastCaptureStatus) { lastCaptureStatus = text; status(text); }
-        }
-        else if (camera is not null && state is not null)
-        {
-            string primaryTrack = state.Flag("video") ? "video" : state.Flag("audio") ? "audio" : "";
-            string captureState = !enabled || primaryTrack.Length == 0 ? "idle" : workers.TryGetValue(primaryTrack, out var primary) ?
-                primary.Process.HasExited ? "failed" : primary.State == "connected" ? "connected" : primary.State == "failed" ? "failed" : "idle" : "idle";
-            var failed = workers.Values.FirstOrDefault(w => w.State == "failed" || w.Process.HasExited);
-            if (failed is not null || failures.Count > 0) captureState = "failed";
-            lock (gate) cameraState = new JsonObject { ["camera_id"] = camera.Text("camera_id"), ["config_revision"] = camera.Number("config_revision"),
-                ["identifier"] = camera.Text("identifier"), ["state"] = captureState, ["audio_capable"] = camera.Flag("audio_capable"),
-                ["error"] = failed?.Code ?? (failures.Count > 0 ? "CAPTURE_DEVICE_UNAVAILABLE" : "") };
-            string text = !cameraMatches || (state.Flag("audio") && !micMatches) ? "本机来源已更改 · 请在网页确认来源" : captureState == "connected" ? state.Flag("video") ? (workers.TryGetValue("audio", out var audio) && audio.State == "connected"
-                ? "正在采集视频和现场声音" : "正在采集视频 · 未采集现场声音") : "正在采集现场声音"
-                : captureState == "failed" ? "媒体采集失败 · 请检查设备" : "媒体采集已停止或正在连接";
-            if (text != lastCaptureStatus) { lastCaptureStatus = text; status(text); }
-        }
+            ["camera_id"] = camera.Text("camera_id"), ["config_revision"] = camera.Number("config_revision"),
+            ["identifier"] = camera.Text("identifier"), ["state"] = captureState, ["audio_capable"] = camera.Flag("audio_capable"),
+            ["error"] = captureState == "failed" ? "CAPTURE_DEVICE_UNAVAILABLE" : ""
+        };
+        string text = videoConnected ? audioConnected ? "正在向网页传输画面和声音" : "正在向网页传输画面"
+            : audioConnected ? "正在向网页传输声音"
+            : video?.LocalOnly == true && video.Preview is not null ? "本机摄像头预览"
+            : video is not null ? "正在打开摄像头…"
+            : localPreview && previewFailure == localKey ? "无法打开摄像头 · 请检查占用及 Windows 摄像头权限"
+            : failures.Count > 0 ? "远程采集失败 · 请检查设备与网络" : "未在采集音视频";
+        if (text != lastCaptureStatus) { lastCaptureStatus = text; status(text); }
     }
-    Worker Start(JsonObject state, JsonObject camera, string track, string key, DateTimeOffset expiry)
+
+    Worker Start(Pairing? source, JsonObject? state, JsonObject camera, string track, string key, DateTimeOffset expiry)
     {
-        var path = (state["publish"] as JsonObject)?.Text(track) ?? "";
-        Wire.Endpoint(Wire.Server(pairing.Server, pairing.Development), path);
+        var path = (state?["publish"] as JsonObject)?.Text(track) ?? "";
+        if (source is not null) Wire.Endpoint(Wire.Server(source.Server, source.Development), path);
         string? native = null;
         if (camera.Text("source_kind") == "windows_device")
         {
@@ -200,7 +237,7 @@ public sealed class Media : IAsyncDisposable
         IntPtr job;
         try { job = ProcessJob.Attach(process); }
         catch { process.Kill(true); process.Dispose(); throw; }
-        var worker = new Worker(process, key, job);
+        var worker = new Worker(process, key, job, source is null);
         // No credentials, SDP, camera URLs or native library stderr enter logs.
         _ = Task.Run(async () => { try { while (await process.StandardError.ReadLineAsync() is not null) { } } catch { } });
         _ = Task.Run(async () =>
@@ -225,10 +262,10 @@ public sealed class Media : IAsyncDisposable
             }
             catch { worker.State = "failed"; worker.Code = "MEDIA_PROCESS_EXITED"; }
         });
-        var init = new JsonObject { ["server"] = pairing.Server, ["device_id"] = pairing.DeviceId, ["credential"] = pairing.Credential,
-            ["development"] = pairing.Development, ["track"] = track, ["offer_path"] = path,
+        var init = new JsonObject { ["server"] = source?.Server, ["device_id"] = source?.DeviceId, ["credential"] = source?.Credential,
+            ["development"] = source?.Development, ["track"] = track, ["offer_path"] = path, ["preview_only"] = source is null,
             ["camera"] = camera.DeepClone(), ["native_device"] = native,
-            ["ice_servers"] = state["ice_servers"]?.DeepClone(), ["valid_seconds"] = Math.Max(0, (expiry - clock.UtcNow).TotalSeconds),
+            ["ice_servers"] = state?["ice_servers"]?.DeepClone(), ["valid_seconds"] = Math.Max(0, (expiry - clock.UtcNow).TotalSeconds),
             ["preview"] = track == "video" && previewRequested };
         try { process.StandardInput.WriteLine(init.ToJsonString()); process.StandardInput.Flush(); }
         catch { ProcessJob.Close(job); process.Dispose(); throw; }

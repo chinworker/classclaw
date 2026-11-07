@@ -12,7 +12,7 @@ sealed class Dashboard : Form
     readonly PictureBox picture = new() { Dock = DockStyle.Fill, SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.FromArgb(19, 34, 52) };
     readonly Label empty = new()
     {
-        Text = "等待授权采集\n网页开始观看后，这里会显示同一采集画面",
+        Text = "等待本机摄像头画面\n请在设置中选择视频来源",
         ForeColor = Color.FromArgb(204, 220, 238), BackColor = Color.FromArgb(19, 34, 52),
         Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter
     };

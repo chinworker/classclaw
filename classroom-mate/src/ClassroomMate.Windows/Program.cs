@@ -40,6 +40,8 @@ sealed class Tray : ApplicationContext
     readonly Storage storage = new();
     readonly DeviceApi api = new();
     readonly Platform platform;
+    readonly Media media;
+    bool capturePaused;
     readonly ServerClock clock = new();
     readonly Executor executor;
     Pairing? pairing;
@@ -60,6 +62,8 @@ sealed class Tray : ApplicationContext
     {
         _ = dispatcher.Handle;
         platform = new(dispatcher, storage);
+        media = new Media(clock, SetMediaStatus, () => platform.Selection);
+        platform.Media = media;
         executor = new(platform, new Ledger(storage.LedgerPath), clock);
         platform.Cleared = executor.ClearFromWindow;
         var menu = new ContextMenuStrip();
@@ -114,11 +118,11 @@ sealed class Tray : ApplicationContext
     {
         if (pairing is null || running is not null || exiting || platform.SessionLocked) return;
         running = new();
-        var media = new Media(pairing, clock, SetMediaStatus, () => platform.Selection);
-        platform.Media = media;
-        media.SetPreview(dashboard?.PreviewVisible == true);
-        var client = new Connection(pairing, clock, executor, () => platform.Report(includeLocal: true),
-            media.Apply, media.Stop, SetStatus, Program.Version);
+        capturePaused = false;
+        SetPreview(dashboard?.PreviewVisible == true);
+        var source = pairing;
+        var client = new Connection(source, clock, executor, () => platform.Report(includeLocal: true),
+            state => media.Apply(source, state), media.StopRemote, SetStatus, Program.Version);
         connection = client;
         var token = running.Token;
         connectionTask = Task.Run(() => client.Run(token));
@@ -132,11 +136,13 @@ sealed class Tray : ApplicationContext
         {
             localTest?.Cancel();
             running?.Cancel();
+            capturePaused = true;
+            media.SetPreview(false);
             dashboard?.ClearPreview();
             if (localTestTask is not null) await localTestTask;
             if (connectionTask is not null) try { await connectionTask; } catch { }
-            if (platform.Media is not null) await platform.Media.DisposeAsync();
-            platform.Media = null; connection = null; connectionTask = null; running?.Dispose(); running = null;
+            await media.Stop();
+            connection = null; connectionTask = null; running?.Dispose(); running = null;
             platform.RestoreVolume(); pause.Text = "恢复连接";
             mediaStatus = "未在采集音视频";
             UpdateDashboard();
@@ -156,19 +162,22 @@ sealed class Tray : ApplicationContext
         }
         finally { changing = false; }
     }
+    void SetPreview(bool visible) =>
+        media.SetPreview(visible && !exiting && !platform.SessionLocked && (!capturePaused || pairing is null));
+
     void ShowDashboard()
     {
         if (dashboard is null || dashboard.IsDisposed)
         {
             dashboard = new Dashboard(ShowSettings, Toggle, OpenWeb, TestOutput,
-                () => platform.SessionLocked ? null : platform.Media?.Preview,
-                visible => platform.Media?.SetPreview(visible));
+                () => platform.SessionLocked ? null : media.Preview, SetPreview);
             dashboard.FormClosing += (_, e) => { if (!exiting) { e.Cancel = true; dashboard.Hide(); } };
         }
         UpdateDashboard();
         dashboard.Show();
         if (dashboard.WindowState == FormWindowState.Minimized) dashboard.WindowState = FormWindowState.Normal;
         dashboard.Activate();
+        SetPreview(dashboard.PreviewVisible);
     }
     void OpenWeb()
     {
@@ -245,6 +254,7 @@ sealed class Tray : ApplicationContext
         SystemEvents.SessionSwitch -= SessionChanged; SystemEvents.PowerModeChanged -= PowerChanged;
         showRequest.Unregister(null);
         await Stop();
+        await media.DisposeAsync();
         settings?.Dispose(); dashboard?.Dispose(); icon.Dispose(); api.Dispose(); dispatcher.Dispose(); ExitThread();
     }
 }

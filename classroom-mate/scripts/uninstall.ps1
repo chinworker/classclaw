@@ -1,6 +1,7 @@
 param([switch]$RemoveDeviceData)
 $ErrorActionPreference = 'Stop'
-if (Test-Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\ClassClaw.ClassroomMate_is1') {
+if ((Test-Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\ClassClaw.ClassroomMate_is1') -or
+    (Test-Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\ClassClaw.ClassroomMate_is1')) {
     throw '已使用安装向导安装 Classroom Mate，请在 Windows 设置的已安装应用中卸载。'
 }
 if (Get-Process -Name ClassroomMate -ErrorAction SilentlyContinue) { throw '请先从托盘正常退出 Classroom Mate。' }

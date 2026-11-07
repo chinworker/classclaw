@@ -69,7 +69,7 @@ sealed class SettingsWindow : Form
                     next.MicrophoneIdentifier != preferences().MicrophoneIdentifier;
                 await save(next);
                 feedback.Text = captureChanged
-                    ? "已保存。请到网页「教室设备」确认监控来源，广播设备已在本机生效。"
+                    ? "已保存。主界面预览与网页监控会切换到新来源。"
                     : "设备选择已保存。";
             }
             catch (TerminalException error) { feedback.Text = error.Message; }
@@ -79,7 +79,7 @@ sealed class SettingsWindow : Form
         devices.Controls.AddRange([
             Label("视频来源"), camera, Label("现场声音来源"), microphone,
             Label("播报扬声器"), speaker, Label("广播显示屏"), display,
-            actions, feedback, Label("在本机选好监控设备后，到网页确认登记。\n本机预览复用已授权的视频，不会额外打开摄像头。")
+            actions, feedback, Label("主界面显示所选摄像头。网页打开实时监控时按需传输视频。")
         ]);
         tabs.SelectedIndexChanged += (_, _) =>
         {

@@ -37,10 +37,10 @@ jobs:
           python scripts/package.py --iscc $iscc
       - name: Verify Windows install, upgrade and uninstall
         run: |
-          $previous = Join-Path $env:RUNNER_TEMP 'ClassroomMate-0.2.0-Setup.exe'
-          $url = 'https://github.com/chinworker/classclaw/releases/download/classroom-mate-build-4/ClassroomMate-Setup-win-x64.exe'
+          $previous = Join-Path $env:RUNNER_TEMP 'ClassroomMate-0.2.1-Setup.exe'
+          $url = 'https://github.com/chinworker/classclaw/releases/download/classroom-mate-build-5/ClassroomMate-Setup-win-x64.exe'
           Invoke-WebRequest -Uri $url -OutFile $previous
-          if ((Get-FileHash -LiteralPath $previous).Hash -ne '2c8f9a8db479c5347ce2020d8ee4f8e4579e86fac397b08c68b3dad523d580ec') {
+          if ((Get-FileHash -LiteralPath $previous).Hash -ne '046816502335a64438187b2b553b1099e5f20be6ff2fb0042dc49dcd80990633') {
             throw 'The published upgrade baseline has an unexpected SHA-256.'
           }
           ./tests/installer-smoke.ps1 -PreviousSetup $previous

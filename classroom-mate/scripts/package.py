@@ -7,6 +7,7 @@ PyPI wheels; binary dependencies remain in ignored .dist-cache/dist directories.
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import re
@@ -162,7 +163,13 @@ def main():
     archive = shutil.make_archive(str(ROOT / "dist/ClassroomMate-win-x64"), "zip", dist.parent, dist.name)
     write_checksum(Path(archive))
     if args.iscc:
-        run(args.iscc, str(ROOT / "installer/ClassroomMate.iss"))
+        migration = (ROOT / "installer/migrate-user-install.ps1").read_text(encoding="utf-8")
+        def encode_migration(finalize):
+            script = f"$finalizeUpgrade = ${str(finalize).lower()}\n{migration}"
+            return base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+
+        run(args.iscc, f"/DPrepareUser={encode_migration(False)}", f"/DFinishUser={encode_migration(True)}",
+            str(ROOT / "installer/ClassroomMate.iss"))
         write_checksum(dist.parent / "ClassroomMate-Setup-win-x64.exe")
 
 
