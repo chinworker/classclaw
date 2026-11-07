@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import secrets
 import time
 from datetime import datetime, timedelta
@@ -43,15 +44,18 @@ from app.utils.time import now
 PAIRING_ALPHABET = "ABCDEFGHJKMNPQRSTVWXZ23456789"
 CREDENTIAL_BYTES = 32
 PROTOCOL_VERSION = 1
-# 配对端点对终端开放，必须限流；配对码本身有 29^8 空间与短有效期。
+# 四位数字码共用现有限流逻辑，另外限制跨 IP 的尝试。
 PAIR_WINDOW_SECONDS = 300.0
 PAIR_MAX_ATTEMPTS = 10
+PIN_TTL_SECONDS = 120
+_PIN_PREFIX = "pin:"
+_PIN_KEY = secrets.token_bytes(32)
 PENDING_STATUSES = ("authorized", "delivered", "executing")
 TERMINAL_STATUSES = ("succeeded", "failed", "expired", "unknown")
 _DISPLAY_OUTCOME = {"pending": "executing", "shown": "succeeded", "cleared": "succeeded", "unavailable": "failed", "failed": "failed"}
 _SPEAK_OUTCOME = {"pending": "executing", "spoken": "succeeded", "skipped": "failed", "unavailable": "failed", "failed": "failed"}
 
-_pair_attempts: dict[str, tuple[int, float]] = {}
+_pair_attempts: dict[str | None, tuple[int, float]] = {}
 # Session-scoped, mirroring db.info["deletion_operation"]: commands wait for their
 # authorizing transaction to commit before being pushed to the terminal.
 _DISPATCH_KEY = "classroom_dispatch"
@@ -68,26 +72,39 @@ def _hash(value: str) -> str:
 
 
 def _canonical_code(value: str) -> str:
-    chars = [char for char in value.strip().upper() if char in PAIRING_ALPHABET]
-    if len(chars) != 8:
-        return ""
-    return f"{''.join(chars[:4])}-{''.join(chars[4:])}"
+    code = value.strip().upper()
+    if len(code) == 4 and code.isascii() and code.isdecimal():
+        return code
+    # 已发放的旧版配对码在原有效期内仍可使用。
+    raw = code[:4] + code[5:] if len(code) == 9 and code[4] == "-" else code
+    return f"{raw[:4]}-{raw[4:]}" if len(raw) == 8 and all(char in PAIRING_ALPHABET for char in raw) else ""
 
 
-def _new_pairing_code() -> str:
-    raw = "".join(secrets.choice(PAIRING_ALPHABET) for _ in range(8))
-    return f"{raw[:4]}-{raw[4:]}"
+def _pairing_hash(code: str) -> str:
+    if len(code) == 4:
+        # 低熵数字码不能只用普通 SHA-256。密钥仅驻留在单进程内，重启后请重新生成。
+        return _PIN_PREFIX + hmac.digest(_PIN_KEY, code.encode(), "sha256").hex()[:60]
+    return _hash(code)
 
 
-def _throttle_pairing(client_key: str) -> None:
+def _active_pins(db: Session) -> set[str]:
+    return set(db.scalars(select(ClassroomDevice.pairing_code_hash).where(
+        ClassroomDevice.pairing_status == "unpaired", ClassroomDevice.pairing_expires_at > now(),
+        ClassroomDevice.pairing_code_hash.startswith(_PIN_PREFIX),
+    )))
+
+
+def _throttle_pairing(client_key: str | None) -> None:
     current = time.monotonic()
     stale = [key for key, (_, started) in _pair_attempts.items() if current - started > PAIR_WINDOW_SECONDS]
     for key in stale:
         _pair_attempts.pop(key, None)
     attempts, started = _pair_attempts.get(client_key, (0, current))
+    if client_key is None and current - started >= PIN_TTL_SECONDS:
+        attempts, started = 0, current
     _pair_attempts[client_key] = (attempts + 1, started)
     if attempts >= PAIR_MAX_ATTEMPTS:
-        raise AppError("DEVICE_PAIRING_THROTTLED", "配对码尝试过于频繁，请稍后重试或在网页重新生成", 429)
+        raise AppError("DEVICE_PAIRING_THROTTLED", "配对码尝试过于频繁，请稍后重试", 429)
 
 
 def _require_protocol(version: int) -> None:
@@ -156,21 +173,29 @@ def issue_pairing(db: Session, class_id: str, name: str, *, operator_id: str | N
     device = get_device(db, class_id)
     if device and device.pairing_status == "paired":
         raise AppError("DEVICE_ALREADY_PAIRED", "本班终端已配对，请先撤销凭据再重新配对", 409, {"device_id": device.id})
+    active = _active_pins(db)
+    for _ in range(32):
+        code = f"{secrets.randbelow(10000):04d}"
+        code_hash = _pairing_hash(code)
+        if code_hash not in active and (device is None or code_hash != device.pairing_code_hash):
+            break
+    else:
+        raise AppError("DEVICE_PAIRING_BUSY", "暂时无法分配配对码，请重试", 409)
     if device is None:
         device = ClassroomDevice(class_id=class_id, name=name)
         db.add(device)
-    code = _new_pairing_code()
+    ttl = min(settings.classroom.pairing_code_ttl_seconds, PIN_TTL_SECONDS)
     device.name = name
     device.pairing_status = "unpaired"
-    device.pairing_code_hash = _hash(_canonical_code(code))
-    device.pairing_expires_at = now() + timedelta(seconds=settings.classroom.pairing_code_ttl_seconds)
+    device.pairing_code_hash = code_hash
+    device.pairing_expires_at = now() + timedelta(seconds=ttl)
     device.credential_hash = None
     device.last_error = None
     db.flush()
     audit(db, "pair_issue", "classroom_device", device.id, operator_id=operator_id)
     db.commit()
     return {**public_device(device, online=False, pairing_code=code),
-            "pairing_ttl_seconds": settings.classroom.pairing_code_ttl_seconds}
+            "pairing_ttl_seconds": ttl}
 
 
 def cancel_pairing(db: Session, class_id: str, *, operator_id: str | None = None) -> dict:
@@ -192,10 +217,12 @@ def pair_device(db: Session, data: DevicePairRequest, *, client_key: str = "unkn
     invalid = AppError("DEVICE_PAIRING_INVALID", "配对码无效或已被使用，请在网页重新生成", 400)
     if not code:
         raise invalid
+    if len(code) == 4 and _active_pins(db):
+        _throttle_pairing(None)
     device = db.scalar(
         select(ClassroomDevice).where(
-            ClassroomDevice.pairing_code_hash == _hash(code), ClassroomDevice.pairing_status == "unpaired"
-        )
+            ClassroomDevice.pairing_code_hash == _pairing_hash(code), ClassroomDevice.pairing_status == "unpaired"
+        ).order_by(ClassroomDevice.pairing_expires_at.desc()).limit(1)
     )
     if not device:
         raise invalid
@@ -255,10 +282,11 @@ def apply_report(device: ClassroomDevice, *, capabilities=None, inventory=None, 
         device.capabilities_json = capabilities.model_dump(mode="json")
     if inventory is not None:
         device.inventory_json = inventory.model_dump(mode="json")
-    if display_name:
-        device.display_name = display_name
-    if audio_output_name:
-        device.audio_output_name = audio_output_name
+    local = (device.inventory_json or {}).get("local_capture") is not None
+    if display_name or (local and display_name is not None):
+        device.display_name = display_name or None
+    if audio_output_name or (local and audio_output_name is not None):
+        device.audio_output_name = audio_output_name or None
     if volume_level is not None:
         device.volume_level = volume_level
     if muted is not None:
@@ -283,6 +311,7 @@ def hello(db: Session, device: ClassroomDevice, data: DeviceHello) -> dict:
     db.commit()
     from app.services.classroom_streaming import device_state
     return {"type": "welcome", "device_id": device.id, "class_id": device.class_id,
+            "local_device_selection": True,
             "media": device_state(db, device),
             "output": {"display_name": device.display_name, "audio_output_name": device.audio_output_name},
             "protocol_version": PROTOCOL_VERSION, "server_time": now().isoformat(),
@@ -601,6 +630,8 @@ def configure_output(db: Session, class_id: str, data: DeviceOutputRequest, *, r
     """预选显示屏与扬声器。取值必须来自终端上报的清单，不接受任意字符串。"""
     device = require_online(db, class_id)
     inventory = device.inventory_json or {}
+    if inventory.get("local_capture") is not None:
+        raise AppError("DEVICE_LOCAL_SETTINGS", "请在 Classroom Mate 设置中选择显示屏与扬声器", 409)
     reported_displays = set((device.capabilities_json or {}).get("displays") or [])
     displays = _reported_names(inventory.get("displays")) | reported_displays
     speakers = _reported_names(inventory.get("speakers"))

@@ -41,9 +41,12 @@ public sealed class DeviceApi : IDisposable
 }
 
 public sealed class Connection(Pairing pairing, ServerClock clock, Executor executor,
-    Func<JsonObject> report, Func<JsonObject, Task> media, Func<Task> stopMedia, Action<string> status)
+    Func<JsonObject> report, Func<JsonObject, Task> media, Func<Task> stopMedia, Action<string> status,
+    string appVersion = "0.1.0")
 {
     readonly SemaphoreSlim sendGate = new(1, 1);
+    readonly System.Threading.Channels.Channel<bool> reportChanges = System.Threading.Channels.Channel.CreateBounded<bool>(1);
+    public void RequestReport() => reportChanges.Writer.TryWrite(true);
     public async Task Run(CancellationToken lifetime)
     {
         int failures = 0;
@@ -69,8 +72,9 @@ public sealed class Connection(Pairing pairing, ServerClock clock, Executor exec
                     finally { sendGate.Release(); }
                 }
                 var hello = report();
+                (hello["inventory"] as JsonObject)?.Remove("local_capture");
                 hello["type"] = "hello"; hello["device_id"] = pairing.DeviceId; hello["credential"] = pairing.Credential;
-                hello["protocol_version"] = 1; hello["app_version"] = "0.1.0"; hello["os_version"] = Environment.OSVersion.VersionString;
+                hello["protocol_version"] = 1; hello["app_version"] = appVersion; hello["os_version"] = Environment.OSVersion.VersionString;
                 hello.Remove("camera_state");
                 await Send(hello);
                 JsonObject welcome;
@@ -82,6 +86,7 @@ public sealed class Connection(Pairing pairing, ServerClock clock, Executor exec
                 clock.Sync(welcome.Text("server_time"));
                 await ApplyMedia(welcome["media"] as JsonObject);
                 int interval = Math.Clamp(welcome.Number("heartbeat_interval_seconds", 30), 1, 300);
+                bool localSelection = welcome.Flag("local_device_selection");
                 failures = 0; status("已连接 · 等待网页操作");
                 tasks.Add(Task.Run(async () =>
                 {
@@ -89,9 +94,13 @@ public sealed class Connection(Pairing pairing, ServerClock clock, Executor exec
                     {
                         while (!connection.IsCancellationRequested)
                         {
-                            await Task.Delay(TimeSpan.FromSeconds(interval), connection.Token);
                             var heartbeat = report(); heartbeat["type"] = "heartbeat";
+                            if (!localSelection) (heartbeat["inventory"] as JsonObject)?.Remove("local_capture");
                             await Send(heartbeat);
+                            using var next = CancellationTokenSource.CreateLinkedTokenSource(connection.Token);
+                            next.CancelAfter(TimeSpan.FromSeconds(interval));
+                            try { await reportChanges.Reader.ReadAsync(next.Token); }
+                            catch (OperationCanceledException) when (!connection.IsCancellationRequested) { }
                         }
                     }
                     catch { connection.Cancel(); }

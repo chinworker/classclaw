@@ -12,12 +12,12 @@ public sealed class Audio
     string selected = "";
     Restore? pending;
     public bool HasChineseVoice { get { try { using var synth = new SpeechSynthesizer(); return synth.GetInstalledVoices().Any(v => v.Enabled && v.VoiceInfo.Culture.TwoLetterISOLanguageName == "zh"); } catch { return false; } } }
-    public void Select(string name) { using var device = Open(name); lock (gate) selected = name; }
+    public void Select(string name) { lock (gate) { pending?.Dispose(); pending = null; selected = name; } }
     MMDevice Open(string? name = null)
     {
         var value = name ?? selected;
         var item = Devices.Speakers().SingleOrDefault(s => s.Name == value)
-            ?? throw new TerminalException("DEVICE_OUTPUT_UNAVAILABLE", "请在网页选择可用的教室扬声器");
+            ?? throw new TerminalException("DEVICE_OUTPUT_UNAVAILABLE", "请在 Classroom Mate 设置中选择可用的扬声器");
         using var enumerator = new MMDeviceEnumerator();
         return enumerator.GetDevice(item.NativeName);
     }

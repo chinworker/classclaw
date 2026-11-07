@@ -43,6 +43,25 @@ $python = Join-Path $target 'runtime\python.exe'
 & $python -I -B -c 'import aiortc, av, struct; assert struct.calcsize("P") == 8'
 if ($LASTEXITCODE -ne 0) { throw 'The installed x64 media runtime failed to load.' }
 
+# Open the unpaired client on the Windows runner without connecting or opening media devices.
+$client = Start-Process -FilePath $app -PassThru
+try {
+    $deadline = [DateTime]::UtcNow.AddSeconds(15)
+    do {
+        Start-Sleep -Milliseconds 250
+        $client.Refresh()
+    } until ($client.HasExited -or $client.MainWindowTitle -eq 'Classroom Mate' -or [DateTime]::UtcNow -ge $deadline)
+    if ($client.HasExited -or $client.MainWindowTitle -ne 'Classroom Mate') {
+        throw "The installed client did not open its dashboard. Window: $($client.MainWindowTitle)"
+    }
+    Write-Host 'Dashboard opened'
+} finally {
+    if (!$client.HasExited) {
+        Stop-Process -Id $client.Id
+        $client.WaitForExit()
+    }
+}
+
 $null = New-Item -ItemType Directory -Path $data -Force
 $fixture = Join-Path $data 'device.dpapi'
 Set-Content -LiteralPath $fixture -Value 'simulated device data'
@@ -76,5 +95,6 @@ if ($null -ne (Get-StartupValue) -or
     throw 'Uninstall did not remove startup or preserve the device data.'
 }
 Remove-Item -LiteralPath $fixture
+Remove-Item -LiteralPath (Join-Path $data 'commands.json')
 Remove-Item -LiteralPath $data
 Write-Host 'Verified install, media imports, upgrade, uninstall, and preservation of device data.'

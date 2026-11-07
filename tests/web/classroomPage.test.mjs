@@ -106,8 +106,8 @@ beforeEach((t) => {
     if (path.endsWith("/classroom/pairing")) {
       return options.method === "DELETE"
         ? response(status().device)
-        : response({ ...onlineDevice(), pairing_status: "unpaired", pairing_code: "K7M2-P9QX",
-            pairing_expires_at: "2026-09-23T10:10:00+08:00", pairing_ttl_seconds: 600 }, 201);
+        : response({ ...onlineDevice(), pairing_status: "unpaired", pairing_code: "0007",
+            pairing_expires_at: "2026-09-23T10:02:00+08:00", pairing_ttl_seconds: 120 }, 201);
     }
     if (path.endsWith("/classroom/device/output")) return response({ note: "已下发输出设备设置", command: {} });
     if (path.endsWith("/classroom/volume")) return response({ note: "已登记音量指令", command_id: "c-1", requested_volume: 55 });
@@ -162,7 +162,7 @@ test("未配对时只能生成一次性配对码", async () => {
   await tick();
   await tick();
   assert.equal(calls.filter((row) => row.path.endsWith("/classroom/pairing")).length, 1);
-  assert.match(mount.textContent, /K7M2-P9QX/);
+  assert.match(mount.textContent, /0007/);
   assert.match(mount.textContent, /只显示一次/);
 });
 
@@ -262,6 +262,23 @@ test("观看会话明确说明未接入媒体转发，并不伪造画面", async
   await tick();
   const sent = body("/api/v1/classes/class-a/classroom/media-sessions");
   assert.deepEqual(sent, { audio: false });
+test("新版终端由网页确认已选择的本机设备", async () => {
+  const device = onlineDevice();
+  device.inventory.local_capture = { camera: "usb-cam-1", microphone: "mic-1" };
+  statusPayload = status({ device, camera: CAMERA });
+  const mount = await mountPage();
+  assert.equal(findButton(mount, "下发输出设备设置"), undefined);
+  assert.ok(!mount.querySelectorAll("input").some((node) => node.getAttribute("aria-label") === "设备标识"));
+  assert.match(mount.textContent, /终端选择 · 摄像头：USB 摄像头 · 麦克风：内置麦克风/);
+  findButton(mount, "确认更换监控来源").click();
+  await tick();
+  const sent = body("/api/v1/classes/class-a/classroom/camera");
+  assert.equal(sent.device_identifier, "usb-cam-1");
+  assert.equal(sent.microphone_identifier, "mic-1");
+  assert.equal(sent.audio_capable, true);
+  assert.equal(sent.expected_revision, 2);
+});
+
   assert.match(mount.textContent, /尚未接入媒体转发组件/);
   assert.match(mount.textContent, /MEDIA_NOT_CONFIGURED/);
   assert.match(mount.textContent, /声音 未授权 · 该摄像头没有可用音轨/);

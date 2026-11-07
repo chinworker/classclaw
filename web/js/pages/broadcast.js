@@ -129,6 +129,7 @@ export async function render(mount, ctx, helpers) {
     value: limits.display_seconds_default || 15, "aria-label": "停留时长（秒）" });
   const repeatInput = el("input", { type: "number", min: 1, max: limits.speak_repeat_max || 3, value: 1, "aria-label": "播报次数" });
   const volumeInput = el("input", { type: "number", min: 0, max: limits.volume_ceiling || 100, placeholder: "不改变", "aria-label": "本次播报音量" });
+  const localOutput = !!device?.inventory?.local_capture;
   const screenSelect = el("select", { "aria-label": "目标屏幕" },
     el("option", { value: "" }, "终端默认显示屏"),
     ...[...new Set([...(device?.capabilities?.displays || [])])].map((name) => el("option", { value: name }, name)));
@@ -144,7 +145,7 @@ export async function render(mount, ctx, helpers) {
       display_seconds: Number(displayInput.value) || null,
       repeat_count: Number(repeatInput.value) || 1,
       volume: volumeInput.value === "" ? null : Number(volumeInput.value),
-      target_screen: screenSelect.value || null,
+      target_screen: localOutput ? null : screenSelect.value || null,
     };
     return view.mode === "custom"
       ? { ...common, text: customInput.value }
@@ -196,8 +197,9 @@ export async function render(mount, ctx, helpers) {
     el("h3", {}, "编写广播内容"), modeButtons, picker.el, threePartHost, customHost,
     field("合并方式", mergeHost),
     el("div", { class: "form-grid" },
-      field("停留时长（秒）", displayInput), field("播报次数", repeatInput),
-      field("本次音量（%）", volumeInput, "留空表示不改变教室音量"), field("目标屏幕", screenSelect)),
+      field("逐段停留时长（秒）", displayInput, "新版终端最后一段读完 3 秒后关闭"), field("播报次数", repeatInput),
+      field("本次音量（%）", volumeInput, "留空表示不改变教室音量"),
+      localOutput ? el("p", { class: "muted" }, `使用 Classroom Mate 选择的显示屏：${device.display_name || "未设置"}`) : field("目标屏幕", screenSelect)),
     previewHost, warningHost, sendButton));
 
   /* ---------- 预览 ---------- */

@@ -57,7 +57,7 @@ export async function render(mount, ctx, helpers) {
   clear(mount);
   const refreshButton = el("button", { class: "secondary", type: "button" }, "刷新");
   mount.append(pageHeader("教室设备与实时监控",
-    "终端配对、显示屏与扬声器、音量、每班唯一摄像头与观看会话。摄像头的连接与更换只能在这里发起。", refreshButton));
+    "配对终端、调整教室音量、登记监控来源与管理观看会话。Windows 本机设备在 Classroom Mate 中选择。", refreshButton));
 
   const summaryHost = el("div");
   const pairingHost = el("div");
@@ -92,9 +92,9 @@ export async function render(mount, ctx, helpers) {
       clear(pairingHost);
       pairingHost.append(el("div", { class: "card" },
         el("h3", {}, "终端配对"),
-        el("p", {}, "在教室终端输入服务器地址和这个配对码。配对码只显示一次，兑换后立即失效。"),
+        el("p", {}, "在 Classroom Mate 的「设置 → 服务器与配对」输入这 4 位数字。默认服务器为 claw.dickhead.top。"),
         el("p", { class: "pairing-code" }, result.pairing_code),
-        el("p", { class: "muted" }, `有效期 ${Math.round((result.pairing_ttl_seconds || limits.pairing_code_ttl_seconds || 600) / 60)} 分钟 · 截止 ${fmtDateTime(result.pairing_expires_at)}`),
+        el("p", { class: "muted" }, `只显示一次 · 有效期 ${result.pairing_ttl_seconds || 120} 秒 · 截止 ${fmtDateTime(result.pairing_expires_at)}`),
         el("div", { class: "row-gap" },
           el("button", { class: "primary", type: "button",
             onclick: () => copyText(result.pairing_code).then(() => toast("配对码已复制", "success"), () => toast("复制失败，请手动抄写", "error")) }, "复制配对码"),
@@ -124,7 +124,7 @@ export async function render(mount, ctx, helpers) {
       const issueButton = el("button", { class: "primary", type: "button" }, "生成配对码");
       issueButton.addEventListener("click", () => { issueButton.disabled = true; void issue(nameInput.value).finally(() => { if (live()) issueButton.disabled = false; }); });
       card.append(el("p", { class: "muted" },
-        "本班还没有教室终端。生成一次性配对码，在教室电脑的 ClassClaw Classroom 中输入服务器地址和配对码；终端不持有全局共享 Token。"),
+        "本班还没有教室终端。生成一次性配对码，在教室电脑的 Classroom Mate 中输入。"),
       field("终端名称", nameInput), issueButton);
     } else if (device.pairing_status === "unpaired") {
       card.append(el("p", {}, "已生成配对码，等待教室终端兑换。"),
@@ -211,9 +211,10 @@ export async function render(mount, ctx, helpers) {
         deviceList("摄像头", inventory.cameras, "终端没有上报可用摄像头"),
         deviceList("麦克风", inventory.microphones, "终端没有上报可用麦克风"),
         deviceList("扬声器", inventory.speakers, "终端没有上报可用扬声器")),
-      el("p", { class: "muted" }, "清单由教室电脑的 Windows 接口检测上报；这里选择后下发给终端，权威配置在服务端。"),
-      el("div", { class: "form-grid" }, field("目标显示屏", displaySelect), field("扬声器", speakerSelect)),
-      applyOutput));
+      inventory.local_capture
+        ? el("p", { class: "muted" }, `本机设置 · 显示屏：${device.display_name || "未设置"} · 扬声器：${device.audio_output_name || "未设置"}`)
+        : el("div", {}, el("p", { class: "muted" }, "旧版终端可在这里设置，更新 Classroom Mate 后可直接在 Windows 选择。"),
+            el("div", { class: "form-grid" }, field("目标显示屏", displaySelect), field("扬声器", speakerSelect)), applyOutput)));
 
     const slider = el("input", { type: "range", min: 0, max: limits.volume_ceiling || 100, step: 1,
       value: device.volume_level == null ? 50 : device.volume_level, "aria-label": "教室系统音量" });
@@ -264,6 +265,10 @@ export async function render(mount, ctx, helpers) {
   function drawCamera(data) {
     clear(cameraHost);
     const camera = data.camera?.camera;
+    const inventory = data.device?.inventory || {};
+    const local = inventory.local_capture;
+    const selectedCamera = local && (inventory.cameras || []).find((row) => row.identifier === local.camera);
+    const selectedMic = local && (inventory.microphones || []).find((row) => row.identifier === local.microphone);
     const card = el("div", { class: "card" }, el("h3", {}, "教室摄像头"));
     if (camera) {
       card.append(el("p", {}, `${camera.name} `, statusBadge(camera.status),
@@ -286,6 +291,8 @@ export async function render(mount, ctx, helpers) {
     const kindSelect = el("select", { "aria-label": "来源类型" },
       el("option", { value: "windows_device" }, "Windows 检测到的设备"),
       el("option", { value: "network_stream" }, "网络流（RTSP 等）"));
+    pathSelect.value = "windows_capture";
+    kindSelect.value = "windows_device";
     const identifierInput = el("input", { type: "text", maxlength: 200, placeholder: "终端上报的设备标识", "aria-label": "设备标识" });
     const microphoneSelect = el("select", { "aria-label": "监控麦克风" },
       el("option", { value: "" }, "不选择麦克风"),
@@ -295,18 +302,42 @@ export async function render(mount, ctx, helpers) {
     const locationInput = el("input", { type: "text", maxlength: 500, placeholder: "rtsp://10.20.30.40:554/stream1", "aria-label": "流地址" });
     const credentialInput = el("input", { type: "text", maxlength: 100, placeholder: "例如 lab_one", "aria-label": "凭据引用" });
     const audioBox = el("input", { type: "checkbox", "aria-label": "该来源带音轨" });
+    const legacyAudio = el("input", { type: "checkbox", "aria-label": "使用所选麦克风" });
     const submit = el("button", { class: "primary", type: "button" }, camera ? "更换摄像头" : "连接摄像头");
+    const reported = el("p", { class: "muted" },
+      `终端选择 · 摄像头：${selectedCamera?.name || "未选择或不可用"} · 麦克风：${selectedMic?.name || "未选择或不可用"}。保存终端设置后可刷新本页。`);
+    const network = el("div", {}, el("p", { class: "muted" }, "网络流凭据由服务器配置。流地址请仅填写协议、主机和路径。"),
+      el("div", { class: "form-grid" }, field("协议", protocolSelect), field("流地址", locationInput),
+        field("凭据引用", credentialInput, "CLASSCLAW_CLASSROOM_CAMERA_<引用名>")),
+      el("label", { class: "checkbox-row" }, audioBox, "该来源带音轨"));
+    const legacy = el("div", { class: "form-grid" }, field("设备标识", identifierInput, "从上方终端上报的摄像头清单中复制"),
+      field("监控麦克风", microphoneSelect), el("label", { class: "checkbox-row" }, legacyAudio, "使用所选麦克风"));
+    const isLocal = () => kindSelect.value === "windows_device";
+    const syncSource = () => {
+      const builtIn = isLocal();
+      network.hidden = builtIn;
+      legacy.hidden = !builtIn || !!local;
+      reported.hidden = !builtIn || !local;
+      submit.disabled = builtIn && !!local && (!selectedCamera || !data.device?.online || (!!local.microphone && !selectedMic));
+      submit.textContent = builtIn && local ? (camera ? "确认更换监控来源" : "登记终端选择的来源") : (camera ? "更换摄像头" : "连接摄像头");
+    };
     pathSelect.addEventListener("change", () => {
-      kindSelect.value = pathSelect.value === "server_direct" ? "network_stream" : "windows_device";
+      kindSelect.value = pathSelect.value === "windows_capture" ? "windows_device" : "network_stream";
+      syncSource();
     });
+    kindSelect.addEventListener("change", syncSource);
 
     submit.addEventListener("click", async () => {
+      const builtIn = isLocal();
+      const microphone = builtIn ? (local ? selectedMic?.identifier : microphoneSelect.value) || null : null;
       const body = {
         access_path: pathSelect.value, source_kind: kindSelect.value,
-        device_identifier: identifierInput.value || null, protocol: protocolSelect.value || null,
-        microphone_identifier: microphoneSelect.value || null,
-        location: locationInput.value || "", credential_ref: credentialInput.value || "",
-        audio_capable: !!audioBox.checked,
+        device_identifier: builtIn ? (local ? selectedCamera?.identifier : identifierInput.value) || null : null,
+        protocol: builtIn ? null : protocolSelect.value || null,
+        microphone_identifier: microphone,
+        location: builtIn ? "" : locationInput.value,
+        credential_ref: builtIn ? "" : credentialInput.value,
+        audio_capable: builtIn ? (local ? !!microphone : !!legacyAudio.checked) : !!audioBox.checked,
       };
       if (camera) body.expected_revision = camera.config_revision;
       submit.disabled = true;
@@ -321,18 +352,15 @@ export async function render(mount, ctx, helpers) {
         const current = error.details?.current;
         toast(current ? `请先确认替换对象：${current.name}（配置版本 ${current.config_revision}）` : error.message, "error");
       } finally {
-        if (live()) submit.disabled = false;
+        if (live()) syncSource();
       }
     });
 
     card.append(el("h4", {}, camera ? "更换摄像头" : "连接摄像头"),
-      el("p", { class: "muted" }, "摄像头密码不要写进流地址；使用服务器侧凭据引用（环境变量 CLASSCLAW_CLASSROOM_CAMERA_<引用名>）。页面不显示也不保存明文。"),
-      el("div", { class: "form-grid" },
-        field("接入路径", pathSelect), field("来源类型", kindSelect),
-        field("设备标识", identifierInput, "从上方终端上报的摄像头清单中复制"),
-        field("监控麦克风", microphoneSelect), field("协议", protocolSelect), field("流地址", locationInput), field("凭据引用", credentialInput)),
-      el("label", { class: "checkbox-row" }, audioBox, "该来源带音轨"),
+      el("div", { class: "form-grid" }, field("接入路径", pathSelect), local ? null : field("来源类型", kindSelect)),
+      local ? reported : legacy, network,
       el("div", { class: "row-gap" }, submit, camera ? disconnectButton(camera) : null));
+    syncSource();
     cameraHost.append(card);
 
     function disconnectButton(target) {

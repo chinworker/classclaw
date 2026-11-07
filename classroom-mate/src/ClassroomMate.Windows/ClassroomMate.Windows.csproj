@@ -2,7 +2,8 @@
   <PropertyGroup>
     <OutputType>WinExe</OutputType><TargetFramework>net10.0-windows</TargetFramework>
     <UseWindowsForms>true</UseWindowsForms><EnableWindowsTargeting>true</EnableWindowsTargeting>
-    <AssemblyName>ClassroomMate</AssemblyName><Version>0.1.0</Version>
+    <AssemblyName>ClassroomMate</AssemblyName><Version>0.2.0</Version>
+    <ApplicationIcon>../../assets/ClassroomMate.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
   <ItemGroup>

@@ -15,6 +15,7 @@ static class SocketTest
         await using var app = builder.Build(); app.UseWebSockets();
         var helloSeen = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var receiptSeen = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var localSelectionSeen = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         app.Map("/api/v1/classroom/device-channel", async context =>
         {
             using var socket = await context.WebSockets.AcceptWebSocketAsync();
@@ -26,16 +27,23 @@ static class SocketTest
             }
             var hello = await Read();
             if (hello.Text("device_id") != "device-test" || hello.Text("credential") != "not-a-real-secret") throw new Exception("bad hello");
+            if (hello["inventory"]?["local_capture"] is not null) throw new Exception("hello must work with older servers");
             helloSeen.TrySetResult();
-            await Send(new { type = "welcome", protocol_version = 1, server_time = DateTimeOffset.UtcNow, heartbeat_interval_seconds = 1 });
+            await Send(new { type = "welcome", protocol_version = 1, server_time = DateTimeOffset.UtcNow,
+                heartbeat_interval_seconds = 1, local_device_selection = true });
             var message = new { type = "command", command_id = "socket-once", kind = "device.test_speak",
                 payload = new { text = "合成协议测试" }, expires_at = DateTimeOffset.UtcNow.AddMinutes(1) };
             await Send(message);
             int completed = 0;
-            while (completed < 2)
+            while (completed < 2 || !localSelectionSeen.Task.IsCompleted)
             {
                 var received = await Read();
-                if (received.Text("type") == "heartbeat") await Send(new { type = "heartbeat_ack", server_time = DateTimeOffset.UtcNow });
+                if (received.Text("type") == "heartbeat")
+                {
+                    if (received["inventory"]?["local_capture"] is JsonObject selection && selection.Text("camera") == "test-camera")
+                        localSelectionSeen.TrySetResult();
+                    await Send(new { type = "heartbeat_ack", server_time = DateTimeOffset.UtcNow });
+                }
                 if (received.Text("type") == "command_result" && received.Text("state") == "succeeded")
                 { completed++; if (completed == 1) await Send(message); }
             }
@@ -46,10 +54,12 @@ static class SocketTest
         var fake = new Fake(); var clock = new ServerClock(); var statuses = new List<string>();
         var executor = new Executor(fake, new Ledger(Path.Combine(directory, "socket.json")), clock);
         var connection = new Connection(new(app.Urls.Single(), "device-test", "class-test", "not-a-real-secret", true), clock, executor,
-            () => new JsonObject(), _ => Task.CompletedTask, () => Task.CompletedTask, s => statuses.Add(s));
+            () => new JsonObject { ["inventory"] = new JsonObject { ["local_capture"] = new JsonObject { ["camera"] = "test-camera" } } },
+            _ => Task.CompletedTask, () => Task.CompletedTask, s => statuses.Add(s));
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         await connection.Run(deadline.Token);
-        if (!helloSeen.Task.IsCompletedSuccessfully || !receiptSeen.Task.IsCompletedSuccessfully || fake.Spoken != 1
+        if (!helloSeen.Task.IsCompletedSuccessfully || !receiptSeen.Task.IsCompletedSuccessfully || !localSelectionSeen.Task.IsCompletedSuccessfully
+            || fake.Spoken != 1
             || !statuses.Any(s => s.Contains("DEVICE_REVOKED"))) throw new Exception("WebSocket integration failed");
         await app.StopAsync();
     }

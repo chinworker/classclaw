@@ -6,7 +6,8 @@ using Microsoft.Win32;
 
 namespace ClassroomMate.Windows;
 
-public sealed record Preferences(string DisplayName = "", string AudioOutputName = "");
+public sealed record Preferences(string DisplayName = "", string AudioOutputName = "",
+    string? CameraIdentifier = null, string? MicrophoneIdentifier = null);
 public sealed class Storage
 {
     public static string Root => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ClassClaw", "ClassroomMate");

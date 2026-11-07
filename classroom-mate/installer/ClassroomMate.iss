@@ -18,6 +18,7 @@ ArchitecturesAllowed=x64os
 ArchitecturesInstallIn64BitMode=x64os
 MinVersion=10.0.14393
 WizardStyle=modern
+SetupIconFile=..\assets\ClassroomMate.ico
 OutputDir=..\dist
 OutputBaseFilename=ClassroomMate-Setup-win-x64
 Compression=lzma2

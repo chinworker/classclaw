@@ -96,7 +96,7 @@ class WebConfig(_StrictSection):
 class ClassroomConfig(_StrictSection):
     """教室终端与实时监控。终端不在线时拒绝实时点名和音量操作，不积压离线命令。"""
 
-    pairing_code_ttl_seconds: int = Field(default=600, ge=60, le=3600)
+    pairing_code_ttl_seconds: int = Field(default=120, ge=60, le=3600)
     heartbeat_timeout_seconds: int = Field(default=90, ge=15, le=900)
     command_ttl_seconds: int = Field(default=600, ge=30, le=3600)
     broadcast_max_chars: int = Field(default=160, ge=10, le=400)

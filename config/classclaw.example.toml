@@ -71,7 +71,7 @@ gateway_wait_timeout_seconds = 15
 
 # 教室终端与实时监控。终端不在线时后端拒绝实时点名和音量操作，不积压离线命令。
 [classroom]
-pairing_code_ttl_seconds = 600
+pairing_code_ttl_seconds = 120
 heartbeat_timeout_seconds = 90
 # 必须大于 display_seconds_max * speak_repeat_max，否则命令会在执行完成前过期。
 command_ttl_seconds = 600

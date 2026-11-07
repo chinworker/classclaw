@@ -7,6 +7,7 @@ capture here. Never print exceptions/SDP/URLs/credentials from native libraries.
 from __future__ import annotations
 
 import asyncio
+import base64
 import ipaddress
 import json
 import logging
@@ -15,6 +16,7 @@ import time
 import urllib.parse
 import urllib.request
 from contextlib import suppress
+from fractions import Fraction
 
 import av
 from aiortc import MediaStreamTrack, RTCConfiguration, RTCIceServer, RTCPeerConnection, RTCRtpSender, RTCSessionDescription
@@ -120,6 +122,7 @@ class Capture(MediaStreamTrack):
         self.last_video = -1.0
         self.frame_received = False
         self.on_frame = lambda: None
+        self.on_preview = lambda _frame: None
 
     def read(self):
         try:
@@ -155,6 +158,8 @@ class Capture(MediaStreamTrack):
             delay = self.started + float(frame.pts * frame.time_base) - time.monotonic()
             if delay > 0:
                 await asyncio.sleep(min(delay, 1))
+        if self.kind == "video":
+            self.on_preview(frame)
         return frame
 
 
@@ -162,15 +167,28 @@ def emit(state, code=""):
     print(json.dumps({"state": state, "code": code}), flush=True)
 
 
+def preview_jpeg(frame):
+    """A small in-memory copy of an already authorized frame; no second capture."""
+    scale = min(1, 320 / frame.width, 240 / frame.height)
+    width, height = (max(2, int(size * scale) // 2 * 2) for size in (frame.width, frame.height))
+    codec = av.CodecContext.create("mjpeg", "w")
+    codec.width, codec.height, codec.pix_fmt, codec.time_base = width, height, "yuvj420p", Fraction(1, 10)
+    image = frame.reformat(width=width, height=height, format=codec.pix_fmt)
+    # reformat may return the input when its format and dimensions match. Do not mutate its timestamps.
+    return b"".join(bytes(packet) for packet in codec.encode(image))
+
+
 async def run(config, lines=None):
     expiry = time.monotonic() + min(900, max(0, config["valid_seconds"]))
+    preview_enabled = bool(config.get("preview"))
+    last_preview = 0.0
     stopped = asyncio.Event()
     peer = None
     capture = None
     peer_id = None
 
     async def renew():
-        nonlocal expiry
+        nonlocal expiry, preview_enabled
         while True:
             line = await asyncio.to_thread(sys.stdin.buffer.readline) if lines is None else await lines()
             if not line:
@@ -179,6 +197,7 @@ async def run(config, lines=None):
             try:
                 state = json.loads(line)
                 expiry = time.monotonic() + min(900, max(0, float(state["valid_seconds"])))
+                preview_enabled = bool(state.get("preview"))
             except (ValueError, KeyError, TypeError):
                 stopped.set()
                 return
@@ -193,6 +212,17 @@ async def run(config, lines=None):
     reader, guard = asyncio.create_task(renew()), asyncio.create_task(watchdog())
     try:
 
+        def preview(frame):
+            nonlocal last_preview
+            current = time.monotonic()
+            if not preview_enabled or stopped.is_set() or current >= expiry or current - last_preview < 0.5:
+                return
+            last_preview = current
+            with suppress(av.error.FFmpegError, OSError, ValueError):
+                jpeg = preview_jpeg(frame)
+                if 0 < len(jpeg) <= 48000:
+                    print("preview:" + base64.b64encode(jpeg).decode("ascii"), flush=True)
+
         async def connect():
             nonlocal peer, capture, peer_id
             capture = await asyncio.to_thread(Capture, config)
@@ -203,6 +233,7 @@ async def run(config, lines=None):
                     emit("connected")
 
             capture.on_frame = ready
+            capture.on_preview = preview
 
             @capture.on("ended")
             def ended():

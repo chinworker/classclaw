@@ -147,6 +147,18 @@ try
         await execute.Handle(Message("gap-expiry", "broadcast.show", payload, DateTimeOffset.UtcNow.AddSeconds(5)), r => { results.Add(r); return Task.CompletedTask; }, default);
         Check(results.Last().ErrorCode == "COMMAND_TOO_SHORT" && fake.Shown == 0 && fake.Spoken == 0 && fake.VolumeBegins == 0);
     });
+    await Test("最后一段读完三秒后关闭显示", async () =>
+    {
+        var fake = new Fake();
+        var execute = new Executor(fake, new Ledger(Path.Combine(dir, "last-segment.json")), new());
+        var payload = Broadcast(); payload["display_seconds"] = 20;
+        var timer = System.Diagnostics.Stopwatch.StartNew();
+        var execution = execute.Handle(Message("last-segment", "broadcast.show", payload), _ => Task.CompletedTask, default);
+        await fake.Started.Task;
+        Check(fake.Cleared.Count == 0);
+        await execution.WaitAsync(TimeSpan.FromSeconds(10));
+        Check(timer.Elapsed >= TimeSpan.FromSeconds(2.9) && fake.Cleared.SequenceEqual(["last-segment"]));
+    });
     await Test("真实 WebSocket 鉴权、回执、重复投递与撤销", () => SocketTest.Run(dir));
     Console.WriteLine($"{passed} tests passed");
 }

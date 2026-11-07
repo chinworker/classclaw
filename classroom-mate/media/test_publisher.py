@@ -1,4 +1,5 @@
 import importlib.util
+import io
 import pathlib
 import unittest
 from unittest.mock import patch
@@ -9,6 +10,16 @@ spec.loader.exec_module(publisher)
 
 
 class ProtocolTests(unittest.TestCase):
+    def test_preview_is_a_small_jpeg_of_the_existing_frame(self):
+        frame = publisher.av.VideoFrame(640, 360, "yuv420p")
+        frame.pts = 5
+        jpeg = publisher.preview_jpeg(frame)
+        self.assertEqual(frame.pts, 5)
+        self.assertTrue(jpeg.startswith(b"\xff\xd8"))
+        with publisher.av.open(io.BytesIO(jpeg), format="mjpeg") as image:
+            decoded = next(image.decode(video=0))
+            self.assertEqual((decoded.width, decoded.height), (320, 180))
+
     def test_endpoint_never_exfiltrates_device_credential(self):
         cfg = {"server": "https://class.example.com"}
         self.assertEqual(

@@ -51,8 +51,8 @@
 
 ### 3.1 配对
 
-1. 网页 `POST /classes/{id}/classroom/pairing` 生成一次性配对码（`K7M2-P9QX` 形式，29^8 空间，默认 600 秒有效）。已配对的班级必须先撤销凭据才能重新配对。
-2. 终端 `POST /api/v1/classroom/device/pair` 用配对码换取本设备专用凭据。该端点不需要用户会话，按来源 IP 限流（每 300 秒 10 次，超出返回 429 `DEVICE_PAIRING_THROTTLED`）。
+1. 网页 `POST /classes/{id}/classroom/pairing` 生成四位一次性数字码（如 `0007`），保留前导零，有效期最多 120 秒。重新生成会作废旧码，服务重启后须重新生成。已配对的班级须先撤销凭据才能重新配对。
+2. 终端 `POST /api/v1/classroom/device/pair` 用配对码换取本设备专用凭据。保留来源 IP 限流（每 300 秒 10 次）。存在待配对数字码时，共用同一限流逻辑计数（全站每 120 秒 10 次）。超限返回 429 `DEVICE_PAIRING_THROTTLED`。
 3. 凭据只返回一次；终端本地加密保存。终端不持有 `CLASSCLAW_API_TOKEN` 或 Gateway 管理员 Token。
 
 ### 3.2 控制通道
@@ -73,13 +73,15 @@
 | 终端→服务器 | `hello` | 鉴权并上报能力与设备清单；返回 `welcome` |
 | 终端→服务器 | `heartbeat` | 更新 `last_seen_at`、音量、输出设备、清单与摄像头采集状态；返回 `heartbeat_ack` |
 | 终端→服务器 | `command_result` | `state: started\|succeeded\|failed\|unknown`，并分别给出 `display` 与 `speak` 结果 |
-| 服务器→终端 | `welcome` | `class_id`、`config_revision`、`command_ttl_seconds`、建议心跳间隔 |
+| 服务器→终端 | `welcome` | `class_id`、`config_revision`、`command_ttl_seconds`、建议心跳间隔与 `local_device_selection` 能力 |
 | 服务器→终端 | `command` | `command_id`、`kind`、`payload`、`expires_at` |
 | 服务器→终端 | `error` | `code` 与说明 |
 
 关闭码：`4400` 协议错误、`4401` 凭据无效或已撤销、`4408` 心跳超时。撤销凭据、解绑终端或删除班级时，服务端主动发出 `DEVICE_REVOKED` 错误帧再关闭，让终端能区分「被撤销」和「网络断开」，不拿着失效凭据反复重连。
 
 连接是长连接，因此每次消息只开一个短数据库会话（`anyio.to_thread.run_sync` + `writer_session`），不整段持有写锁。`receive()` 只在消费完成后重建，绝不取消在途接收，避免丢消息。
+
+新版 Classroom Mate 在 `welcome.local_device_selection` 为真时，通过心跳上报 `inventory.local_capture`（`camera`、`microphone`）及本地显示屏和扬声器。旧终端沿用网页设备选择。本机改选后，网页确认的来源与终端最新选择一致才可登记。已经不匹配的媒体轨会停止，旧观看会话在网页确认更换时撤销。预览只复用有效授权下已经采集的本机视频帧。
 
 ### 3.3 命令白名单
 
@@ -91,7 +93,7 @@
 | `broadcast.stop` / `broadcast.clear` | `{target_command_id}`，指向原始 `broadcast.show` 命令；只停止该命令的播报或清除其画面，不影响其他广播 |
 | `volume.set` | `{volume?, mute?, restore_after_broadcast}` |
 | `device.test_display` / `device.test_speak` | `{text}`，测试文本由服务器固定生成 |
-| `device.configure` | `{display_name?, audio_output_name?}`，取值必须来自终端上报的清单 |
+| `device.configure` | `{display_name?, audio_output_name?}`，供旧版终端使用，取值必须来自其上报清单 |
 | `camera.start` / `camera.stop` | `{camera_id, config_revision, identifier?, access_path, audio}` |
 
 命令带包含时区的 `expires_at`（默认 600 秒）。终端必须拒绝已过期命令，并按 `command_id` 去重。`command_result` 的确认消息是 `command_ack`，含 `command_id`、`status`、`duplicate`。
@@ -206,7 +208,7 @@ GET 仍使用读会话；需要持久化到期状态时，Service 通过独立 `
 
 | 键 | 默认 | 说明 |
 | --- | --- | --- |
-| `pairing_code_ttl_seconds` | 600 | 一次性配对码有效期 |
+| `pairing_code_ttl_seconds` | 120 | 四位一次性配对码有效期，最长 120 秒 |
 | `heartbeat_timeout_seconds` | 90 | 超过该时间无心跳即视为离线 |
 | `command_ttl_seconds` | 600 | 命令有效期，必须大于 `display_seconds_max * speak_repeat_max` |
 | `broadcast_max_chars` | 160 | 单句字数上限 |

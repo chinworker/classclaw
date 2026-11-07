@@ -5,8 +5,10 @@ import json
 from dataclasses import replace
 from datetime import timedelta
 
+import pytest
 from sqlalchemy import select
 
+from app.core.errors import AppError
 from app.models.entities import (
     ClassAgentBinding,
     ClassroomBroadcast,
@@ -15,8 +17,8 @@ from app.models.entities import (
     ClassroomDeviceCommand,
     ClassroomMediaSession,
 )
-from app.schemas.classroom import DeviceHeartbeat
-from app.services import classroom_channel, classroom_devices
+from app.schemas.classroom import DeviceHeartbeat, DevicePairRequest
+from app.services import classroom_channel, classroom_devices, classroom_streaming
 from app.utils.time import now
 from tests.helpers import TERMINAL_CAPABILITIES, TERMINAL_INVENTORY, online_terminal, pair_terminal, report, teacher_for_class
 
@@ -32,7 +34,8 @@ def test_pairing_code_is_one_time_and_hashed(client, db, sample):
     issued = client.post(f"/api/v1/classes/{cls.id}/classroom/pairing", json={"name": "教室终端"}).json()["data"]
     code = issued["pairing_code"]
     assert issued["pairing_status"] == "unpaired" and issued["pairing_expires_at"]
-    assert len(code) == 9 and code[4] == "-"
+    assert len(code) == 4 and code.isascii() and code.isdigit()
+    assert issued["pairing_ttl_seconds"] <= 120
     # 配对码只以哈希入库，明文只在生成时返回一次。
     device = db.get(ClassroomDevice, issued["device_id"])
     assert device.pairing_code_hash and device.pairing_code_hash != code
@@ -52,6 +55,21 @@ def test_pairing_code_is_one_time_and_hashed(client, db, sample):
     status = client.get(f"/api/v1/classes/{cls.id}/classroom/status").json()["data"]
     assert credential not in json.dumps(status)
     assert device.credential_hash not in json.dumps(status)
+
+
+def test_short_codes_keep_leading_zero_avoid_collisions_and_limit_across_ips(db, sample, monkeypatch):
+    first, other, _ = sample
+    draws = iter((7, 7, 8, 7, 9))
+    monkeypatch.setattr(classroom_devices.secrets, "randbelow", lambda _: next(draws))
+    assert classroom_devices.issue_pairing(db, first.id, "终端")["pairing_code"] == "0007"
+    assert classroom_devices.issue_pairing(db, other.id, "另一终端")["pairing_code"] == "0008"
+    assert classroom_devices.issue_pairing(db, first.id, "终端")["pairing_code"] == "0009"
+    for index in range(classroom_devices.PAIR_MAX_ATTEMPTS):
+        with pytest.raises(AppError, match="配对码无效"):
+            classroom_devices.pair_device(db, DevicePairRequest(pairing_code="0007"), client_key=f"ip-{index}")
+    with pytest.raises(AppError) as throttled:
+        classroom_devices.pair_device(db, DevicePairRequest(pairing_code="0009"), client_key="new-ip")
+    assert throttled.value.code == "DEVICE_PAIRING_THROTTLED"
 
 
 def test_pairing_rejects_bad_code_expiry_and_brute_force(client, db, sample):
@@ -235,6 +253,34 @@ def test_output_configuration_must_come_from_reported_inventory(client, db, samp
         assert command["kind"] == "device.configure"
         assert db.get(ClassroomDeviceCommand, command["command_id"]).payload_json == {
             "display_name": "外接投影", "audio_output_name": "教室音箱"}
+
+
+def test_local_selection_owns_outputs_and_web_confirms_exact_capture(client, db, sample):
+    cls, _, _ = sample
+    paired = pair_terminal(client, cls)
+    device = db.get(ClassroomDevice, paired["device_id"])
+    inventory = {**TERMINAL_INVENTORY, "local_capture": {"camera": "usb-cam-1", "microphone": "mic-1"}}
+    with online_terminal(db, device.id, cls.id):
+        classroom_devices.heartbeat(db, device, DeviceHeartbeat(inventory=inventory, display_name="外接投影"))
+        classroom_devices.heartbeat(db, device, DeviceHeartbeat(inventory=inventory, display_name=""))
+        assert device.display_name is None
+        root = f"/api/v1/classes/{cls.id}/classroom"
+        assert client.post(root + "/device/output", json={"display_name": "教室一体机"}).json()["error"]["code"] == "DEVICE_LOCAL_SETTINGS"
+        body = {"access_path": "windows_capture", "source_kind": "windows_device", "device_identifier": "usb-cam-1",
+                "microphone_identifier": "mic-1", "audio_capable": True}
+        bad = client.post(root + "/camera", json={**body, "device_identifier": "other-camera"})
+        assert bad.status_code == 409 and bad.json()["error"]["code"] == "CAMERA_SELECTION_CHANGED"
+        connected = client.post(root + "/camera", json=body)
+        assert connected.status_code == 201 and connected.json()["data"]["device_label"] == "USB 摄像头"
+        camera = db.get(ClassroomCamera, connected.json()["data"]["camera_id"])
+        assert classroom_streaming.terminal_selection_allows(camera, device, "audio")
+        inventory["local_capture"]["microphone"] = ""
+        classroom_devices.heartbeat(db, device, DeviceHeartbeat(inventory=inventory))
+        assert classroom_streaming.terminal_selection_allows(camera, device, "video")
+        assert not classroom_streaming.terminal_selection_allows(camera, device, "audio")
+        inventory["local_capture"]["camera"] = ""
+        classroom_devices.heartbeat(db, device, DeviceHeartbeat(inventory=inventory))
+        assert not classroom_streaming.terminal_selection_allows(camera, device, "video")
 
 
 def test_volume_is_clamped_by_configured_ceiling(client, db, sample, monkeypatch):

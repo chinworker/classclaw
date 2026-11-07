@@ -146,8 +146,18 @@ def connect(db: Session, class_id: str, data: CameraConnectRequest, *, operator_
     location = validate_location(data.location, data.protocol) if data.location else None
     # 先解析终端，再构造待插入的行：任何查询都会触发 autoflush。
     device = _target_device(db, class_id, data)
+    inventory = (device.inventory_json or {}) if device else {}
+    local = inventory.get("local_capture")
+    device_label = data.device_label
+    if data.source_kind == "windows_device" and local is not None:
+        if not classroom_devices.is_online(db, device):
+            raise AppError("DEVICE_OFFLINE", "请保持终端在线，等待本地设置同步", 409)
+        selected = next((row for row in inventory.get("cameras", []) if row.get("identifier") == local.get("camera")), None)
+        if not selected or data.device_identifier != local.get("camera") or (data.microphone_identifier or "") != (local.get("microphone") or ""):
+            raise AppError("CAMERA_SELECTION_CHANGED", "请在终端选择设备，然后刷新网页并确认当前来源", 409)
+        device_label = str(selected.get("name") or data.device_identifier)[:200]
     if data.source_kind == "windows_device" and data.audio_capable:
-        microphones = (device.inventory_json or {}).get("microphones", []) if device else []
+        microphones = inventory.get("microphones", [])
         if not data.microphone_identifier or not any(row.get("identifier") == data.microphone_identifier for row in microphones):
             raise AppError("CAMERA_MICROPHONE_REQUIRED", "接收现场声音前，请选择终端上报的麦克风", 422)
     if data.access_path == "server_direct" and data.protocol != "rtsp":
@@ -178,7 +188,7 @@ def connect(db: Session, class_id: str, data: CameraConnectRequest, *, operator_
     camera.source_kind = data.source_kind
     camera.device_id = device.id if device else None
     camera.device_identifier = data.device_identifier
-    camera.device_label = data.device_label
+    camera.device_label = device_label
     camera.microphone_identifier = data.microphone_identifier
     camera.protocol = data.protocol
     camera.location = location

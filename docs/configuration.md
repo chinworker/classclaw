@@ -159,7 +159,7 @@ Gateway 管理 Token 只放在 `.env` 的 `CLASSCLAW_OPENCLAW_GATEWAY_TOKEN` 中
 
 | 字段 | 当前影响范围 |
 | --- | --- |
-| `pairing_code_ttl_seconds` | 网页生成的一次性配对码有效期；兑换一次或超时后立即失效 |
+| `pairing_code_ttl_seconds` | 四位一次性配对码有效期，默认且最长 120 秒，兑换或超时后立即失效 |
 | `heartbeat_timeout_seconds` | 超过该时间没有心跳即判定终端离线，离线时拒绝实时点名与音量 |
 | `command_ttl_seconds` | 终端命令有效期，超时未回执收敛为 `expired`（未送达）或 `unknown`（已开始执行） |
 | `broadcast_max_chars`、`broadcast_max_segments` | 单句字数与逐人播报句数上限；超出直接报错，不静默截断 |

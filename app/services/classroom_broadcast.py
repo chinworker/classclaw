@@ -145,6 +145,8 @@ def register(db: Session, composed: dict, *, requested_by: str | None, source_ty
              idempotency_key: str | None = None) -> tuple[ClassroomBroadcast, ClassroomDeviceCommand]:
     """Authorize a broadcast and its terminal command in one transaction; does not commit."""
     device = classroom_devices.require_online(db, composed["class_id"])
+    if composed["target_screen"] and (device.inventory_json or {}).get("local_capture") is not None:
+        raise AppError("DEVICE_LOCAL_SETTINGS", "请在 Classroom Mate 设置中选择广播显示屏", 409)
     if composed["target_screen"] and composed["target_screen"] not in (device.capabilities_json or {}).get("displays", []):
         raise AppError("DEVICE_OUTPUT_UNAVAILABLE", "所选显示屏不在终端上报的清单中", 422)
     existing = classroom_devices.find_command(db, idempotency_key)

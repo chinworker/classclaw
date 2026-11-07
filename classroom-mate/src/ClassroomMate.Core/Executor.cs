@@ -25,8 +25,20 @@ public sealed class Executor(IPlatform platform, Ledger ledger, ServerClock cloc
     }
     readonly object gate = new();
     Active? active;
+    bool configuring;
     public int VolumeCeiling { get; set; } = 100;
     public void ClearFromWindow(string id) { lock (gate) if (active?.Id == id) active.Cleared = true; }
+
+    public async Task ConfigureOutput(Func<Task> configure)
+    {
+        lock (gate)
+        {
+            if (active is not null || configuring) throw new TerminalException("BUSY", "请等当前广播或设备设置完成");
+            configuring = true;
+        }
+        try { await configure(); }
+        finally { lock (gate) configuring = false; }
+    }
 
     public async Task Handle(JsonObject message, Func<Receipt, Task> send, CancellationToken connection)
     {
@@ -73,8 +85,7 @@ public sealed class Executor(IPlatform platform, Ledger ledger, ServerClock cloc
                         throw new TerminalException("BUSY", "临时音量只可在下一次广播开始前设置");
                     await platform.SetVolume(command.Payload, VolumeCeiling); break;
                 case "device.configure":
-                    lock (gate) if (active is not null) throw new TerminalException("BUSY", "正在播报，请结束后再更换输出设备");
-                    await platform.Configure(command.Payload); break;
+                    await ConfigureOutput(() => platform.Configure(command.Payload)); break;
                 case "camera.start": case "camera.stop": await platform.CameraCommand(command); break;
             }
             await Finish(new(command.Id, "succeeded"), send);
@@ -89,7 +100,7 @@ public sealed class Executor(IPlatform platform, Ledger ledger, ServerClock cloc
         Active run;
         lock (gate)
         {
-            if (active is not null) throw new TerminalException("BUSY", "已有广播正在执行；本次未排队");
+            if (active is not null || configuring) throw new TerminalException("BUSY", "已有广播或设备设置正在执行；本次未排队");
             active = run = new(command.Id, token);
         }
         var payload = command.Payload;
@@ -105,16 +116,21 @@ public sealed class Executor(IPlatform platform, Ledger ledger, ServerClock cloc
         Receipt outcome = new(command.Id, "failed", display, speak);
         try
         {
-            int minimumSegmentSeconds = Math.Max(displayEnabled ? seconds : 0, speechEnabled ? (repeats - 1) * gap : 0);
-            if (TimeSpan.FromSeconds(texts.Length * minimumSegmentSeconds) >= clock.Remaining(command.ExpiresAt))
+            const int speechTail = 3;
+            int repeatGap = speechEnabled ? (repeats - 1) * gap : 0;
+            int minimumSegmentSeconds = Math.Max(displayEnabled ? seconds : 0, repeatGap);
+            int minimumFinalSeconds = displayEnabled && speechEnabled ? Math.Max(seconds, repeatGap + speechTail) : minimumSegmentSeconds;
+            if (TimeSpan.FromSeconds((texts.Length - 1) * minimumSegmentSeconds + minimumFinalSeconds) >= clock.Remaining(command.ExpiresAt))
                 throw new TerminalException("COMMAND_TOO_SHORT", "剩余有效期不足以完成显示或重复播报间隔，未执行");
             if (command.Kind == "broadcast.show") volume = await platform.BroadcastVolume(payload["volume"]?.GetValue<int>(), VolumeCeiling);
-            foreach (var text in texts)
+            for (var index = 0; index < texts.Length; index++)
             {
+                var text = texts[index];
                 token.ThrowIfCancellationRequested();
+                bool shown = false, spoken = false;
                 if (displayEnabled && !run.Cleared)
                 {
-                    try { await platform.Show(command.Id, text, payload.Text("target_screen"), token); if (!displayFailed) display = "shown"; }
+                    try { await platform.Show(command.Id, text, payload.Text("target_screen"), token); shown = true; if (!displayFailed) display = "shown"; }
                     catch (TerminalException) { display = "unavailable"; displayFailed = true; }
                 }
                 var hold = Task.Delay(displayEnabled ? TimeSpan.FromSeconds(seconds) : TimeSpan.Zero, token);
@@ -127,12 +143,15 @@ public sealed class Executor(IPlatform platform, Ledger ledger, ServerClock cloc
                             await platform.Speak(text, run.Speech.Token);
                             if (i < repeats - 1) await Task.Delay(TimeSpan.FromSeconds(gap), run.Speech.Token);
                         }
+                        spoken = true;
                         if (!speechFailed) speak = "spoken";
                     }
                     catch (OperationCanceledException) when (!token.IsCancellationRequested) { speak = "skipped"; }
                     catch (TerminalException) { speak = "unavailable"; speechFailed = true; }
                 }
-                await hold;
+                if (index == texts.Length - 1 && shown && spoken && !run.Cleared && !run.Stopped)
+                    await Task.Delay(TimeSpan.FromSeconds(speechTail), token);
+                else await hold;
             }
             if (run.Cleared) display = "cleared";
             if (run.Stopped) speak = "skipped";

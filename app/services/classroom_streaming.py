@@ -126,6 +126,15 @@ def demand(db: Session, camera: ClassroomCamera) -> dict:
     return {"video": bool(valid) or bool(grace), "audio": bool(audio), "viewers": len(valid)}
 
 
+def terminal_selection_allows(camera: ClassroomCamera, device: ClassroomDevice, track: str) -> bool:
+    local = (device.inventory_json or {}).get("local_capture") or {}
+    if camera.source_kind != "windows_device":
+        return True
+    return local.get("camera") in (None, camera.device_identifier) and (
+        track != "audio" or local.get("microphone") in (None, camera.microphone_identifier)
+    )
+
+
 def device_state(db: Session, device: ClassroomDevice) -> dict:
     camera = db.scalar(select(ClassroomCamera).where(ClassroomCamera.device_id == device.id))
     state = {"type": "media_state", "enabled": False, "camera": None, "video": False, "audio": False,
@@ -141,6 +150,10 @@ def device_state(db: Session, device: ClassroomDevice) -> dict:
         state["reason"] = "MEDIA_NOT_CONFIGURED" if not configured() else "MEDIA_UNAVAILABLE"
         return state
     state.update(demand(db, camera))
+    for track in ("video", "audio"):
+        if not terminal_selection_allows(camera, device, track):
+            state[track] = False
+            state["reason"] = "LOCAL_CAPTURE_CHANGED"
     state["enabled"] = state["video"] or state["audio"]
     prefix = f"{settings.api_prefix}/classroom/device/media/{camera.id}/{camera.config_revision}"
     state["publish"] = {track: f"{prefix}/{track}/offer" for track in ("video", "audio") if state[track]}
@@ -158,7 +171,8 @@ def publisher_camera(db: Session, device: ClassroomDevice, camera_id: str, revis
     camera = db.get(ClassroomCamera, camera_id)
     if (track not in {"video", "audio"} or not camera or camera.device_id != device.id or camera.config_revision != revision
             or camera.status == "disconnected"
-            or not classroom_devices.is_online(db, device) or not demand(db, camera).get(track)):
+            or not classroom_devices.is_online(db, device) or not demand(db, camera).get(track)
+            or not terminal_selection_allows(camera, device, track)):
         raise AppError("MEDIA_PUBLISH_DENIED", "当前设备、摄像头版本或音视频采集授权已失效", 403)
     return camera
 

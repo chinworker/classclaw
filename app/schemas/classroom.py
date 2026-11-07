@@ -96,12 +96,18 @@ class DeviceCapabilities(_Strict):
     displays: list[str] = Field(default_factory=list, max_length=20)
 
 
+class LocalCaptureSelection(_Strict):
+    camera: str | None = Field(default=None, max_length=200)
+    microphone: str | None = Field(default=None, max_length=200)
+
+
 class DeviceInventory(_Strict):
-    """Windows 检测到的设备清单；只用于网页展示与选择，不作为绑定权威。"""
+    """Windows 检测到的设备和本地选择。网页仍负责登记与授权。"""
 
     cameras: list[dict] = Field(default_factory=list, max_length=40)
     microphones: list[dict] = Field(default_factory=list, max_length=40)
     speakers: list[dict] = Field(default_factory=list, max_length=40)
+    local_capture: LocalCaptureSelection | None = None
 
 
 class DevicePairRequest(_Strict):
